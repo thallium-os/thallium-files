@@ -1,0 +1,11 @@
+# Build output
+build/
+dist/
+target/
+*.deb
+*.buildinfo
+*.changes
+
+# Editors / OS
+.DS_Store
+*.swp
