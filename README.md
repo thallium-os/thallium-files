@@ -22,6 +22,20 @@ cargo check --workspace
 cargo test --workspace
 ```
 
+## Status
+
+The backend is exercised end to end by `thallium-backend/tests/end_to_end.rs`,
+which drives a real `Backend` over a temporary directory: copy, move, delete,
+conflict policies, navigation history, selection, refresh, task dismissal and
+shutdown all round-trip through coordinator, scheduler and VFS.
+
+Known gaps, each pinned by a test rather than left silent:
+
+- Copy handles regular files only. Delete recurses; copy does not.
+- `LocalFs` is the only VFS backend.
+- Trashing depends on an XDG trash directory being present and reachable.
+- The watcher's reporter is a stub, so refresh is explicit rather than live.
+
 ## Installation
 
 Not packaged yet. No `debian/` at repo root.
