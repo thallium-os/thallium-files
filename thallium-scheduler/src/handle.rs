@@ -37,6 +37,10 @@ impl TaskHandle {
 	pub fn snapshot(&self) -> TaskInfo { self.snapshots.borrow().clone() }
 
 	/// Wait until a newer snapshot is published.
+	// Both variants carry the same snapshot: the Err arm reports that the
+	// publisher is gone, not a different payload. Boxing one side would grow
+	// the type rather than shrink it.
+	#[allow(clippy::result_large_err)]
 	pub async fn changed(&mut self) -> Result<TaskInfo, TaskInfo> {
 		match self.snapshots.changed().await {
 			Ok(()) => Ok(self.snapshot()),
