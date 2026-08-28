@@ -2,43 +2,133 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Layouts
 import org.thallium.FileManager 1.0
 
+// Thallium Files.
+//
+// Thallium the element is named for the bright green line in its emission
+// spectrum. That line is the only chroma in this interface: it marks the
+// active view and live work, and nothing else. Everything that carries
+// structure is graphite. Every path, byte count and timestamp is set in a
+// monospace face, because in a file manager the data is the content.
 ApplicationWindow {
     id: root
 
-    readonly property color accent: "#6ad2df"
-    readonly property color backgroundColor: "#181818"
-    readonly property color panelColor: "#232323"
-    readonly property color raisedColor: "#2c2c2c"
-    readonly property color hoverColor: "#353535"
-    readonly property color textColor: "#e8e8e8"
-    readonly property color mutedColor: "#ababab"
-    readonly property color selectedTextColor: "#102326"
-    property alias backend: backendObject
-    readonly property int entryCount: backendObject.entryCount() + backendObject.modelRevision * 0
-    readonly property int selectedCount: backendObject.selectionCount() + backendObject.modelRevision * 0
-    readonly property int taskCount: backendObject.taskCount() + backendObject.modelRevision * 0
-    property bool editingLocation: false
+    // Surfaces: one hue, lightness steps only.
+    readonly property color canvas: "#0E0F10"
+    readonly property color raised: "#17191A"
+    readonly property color raisedHigh: "#1D2021"
+    readonly property color hover: "#202324"
+    readonly property color inset: "#0A0B0C"
+    // Borders: low-opacity so they define edges without being seen.
+    readonly property color line: "#14FFFFFF"
+    readonly property color lineSoft: "#0BFFFFFF"
+    readonly property color lineStrong: "#26FFFFFF"
+    // Text: four levels, used consistently.
+    readonly property color ink: "#E6E8E7"
+    readonly property color inkMuted: "#9AA0A0"
+    readonly property color inkFaint: "#6B7272"
+    readonly property color inkGhost: "#454B4B"
+    // The emission line.
+    readonly property color spectral: "#5FDC82"
+    readonly property color spectralDim: "#2E5FDC82"
+    readonly property color destructive: "#E0645C"
 
-    width: 1120
-    height: 720
-    minimumWidth: 760
-    minimumHeight: 480
+    readonly property string sansFamily: "Inter, Adwaita Sans, Cantarell, Noto Sans, DejaVu Sans"
+    readonly property string monoFamily: "JetBrains Mono, IBM Plex Mono, DejaVu Sans Mono, monospace"
+
+    readonly property int unit: 4
+    readonly property int railWidth: 52
+    readonly property int sidebarWidth: 268
+    readonly property int rowHeight: 34
+
+    property string view: "browse"
+    property string query: ""
+    property var homeFolders: []
+
+    // Re-read the imperative bridge whenever it stamps a new revision.
+    readonly property int revision: backendObject.modelRevision
+    readonly property int selectedCount: {
+        void root.revision
+        return backendObject.selectionCount()
+    }
+    readonly property int taskCount: {
+        void root.revision
+        return backendObject.taskCount()
+    }
+
+    // Directories first, then case-insensitive name, then the search filter.
+    readonly property var rows: {
+        void root.revision
+        const needle = root.query.toLowerCase()
+        const total = backendObject.entryCount()
+        const kept = []
+        for (let i = 0; i < total; ++i) {
+            const name = backendObject.entryName(i)
+            if (needle.length === 0 || name.toLowerCase().indexOf(needle) >= 0)
+                kept.push({ row: i, name: name, folder: backendObject.entryIsDirectory(i) })
+        }
+        kept.sort(function (a, b) {
+            if (a.folder !== b.folder)
+                return a.folder ? -1 : 1
+            return a.name.localeCompare(b.name)
+        })
+        return kept.map(function (entry) { return entry.row })
+    }
+
+    readonly property var tasks: {
+        void root.revision
+        const out = []
+        const total = backendObject.taskCount()
+        for (let i = 0; i < total; ++i)
+            out.push(i)
+        return out
+    }
+
+    readonly property var crumbs: {
+        const path = backendObject.currentPath
+        if (!path || path === "/")
+            return [{ label: "/", path: "/" }]
+        const parts = path.split("/").filter(function (part) { return part.length > 0 })
+        const out = [{ label: "/", path: "/" }]
+        let walked = ""
+        for (let i = 0; i < parts.length; ++i) {
+            walked += "/" + parts[i]
+            out.push({ label: parts[i], path: walked })
+        }
+        return out
+    }
+
+    // The standard places, narrowed to the ones home actually contains once
+    // we have seen home. Never invent a directory that is not there.
+    readonly property var places: {
+        const known = ["Desktop", "Documents", "Downloads", "Music", "Pictures", "Videos"]
+        const seen = root.homeFolders
+        const out = [{ label: "Home", folder: "" }]
+        for (let i = 0; i < known.length; ++i) {
+            if (seen.length === 0 || seen.indexOf(known[i]) >= 0)
+                out.push({ label: known[i], folder: known[i] })
+        }
+        return out
+    }
+
+    width: 1240
+    height: 780
+    minimumWidth: 880
+    minimumHeight: 520
     visible: true
-    color: backgroundColor
-    title: folderTitle(backendObject.currentPath) + " — Thallium Files"
+    color: canvas
+    title: leafName(backendObject.currentPath) + " — Thallium Files"
 
-    function folderTitle(path) {
+    function leafName(path) {
         if (!path || path === "/")
             return "Filesystem"
         const clean = path.endsWith("/") ? path.slice(0, -1) : path
         const parts = clean.split("/")
-        return parts[parts.length - 1] || "Home"
+        return parts[parts.length - 1] || "/"
     }
 
-    function homeLocation(folder) {
+    function placePath(folder) {
         return folder.length === 0 ? backendObject.homePath : backendObject.homePath + "/" + folder
     }
 
@@ -47,12 +137,13 @@ ApplicationWindow {
             return "—"
         const value = new Date(seconds * 1000)
         const now = new Date()
-        const sameDay = value.getFullYear() === now.getFullYear()
-            && value.getMonth() === now.getMonth()
-            && value.getDate() === now.getDate()
-        if (sameDay)
-            return "Today, " + value.toLocaleTimeString(Qt.locale(), "h:mm AP")
-        return value.toLocaleDateString(Qt.locale(), "MMM d, yyyy")
+        if (value.getFullYear() === now.getFullYear()
+                && value.getMonth() === now.getMonth()
+                && value.getDate() === now.getDate())
+            return value.toLocaleTimeString(Qt.locale(), "HH:mm")
+        if (value.getFullYear() === now.getFullYear())
+            return value.toLocaleDateString(Qt.locale(), "dd MMM  HH:mm")
+        return value.toLocaleDateString(Qt.locale(), "dd MMM yyyy")
     }
 
     BackendBridge { id: backendObject }
@@ -64,145 +155,366 @@ ApplicationWindow {
         onTriggered: backendObject.poll()
     }
 
-    background: Rectangle { color: root.backgroundColor }
+    // Remember what home holds, so the places list stays truthful.
+    Connections {
+        target: backendObject
+        function onCurrentPathChanged() {
+            if (backendObject.currentPath !== backendObject.homePath)
+                return
+            const found = []
+            const total = backendObject.entryCount()
+            for (let i = 0; i < total; ++i) {
+                if (backendObject.entryIsDirectory(i))
+                    found.push(backendObject.entryName(i))
+            }
+            root.homeFolders = found
+        }
+    }
 
-    ColumnLayout {
+    // ---- Small shared pieces -------------------------------------------
+
+    component Glyph: Text {
+        color: root.inkMuted
+        font.family: root.sansFamily
+        font.pixelSize: 15
+        horizontalAlignment: Text.AlignHCenter
+        verticalAlignment: Text.AlignVCenter
+    }
+
+    component SectionTitle: Text {
+        color: root.ink
+        font.family: root.sansFamily
+        font.pixelSize: 17
+        font.weight: Font.DemiBold
+        font.letterSpacing: -0.2
+    }
+
+    component Overline: Text {
+        color: root.inkGhost
+        font.family: root.sansFamily
+        font.pixelSize: 10
+        font.weight: Font.DemiBold
+        font.letterSpacing: 0.9
+    }
+
+    component Mono: Text {
+        color: root.inkFaint
+        font.family: root.monoFamily
+        font.pixelSize: 12
+        elide: Text.ElideRight
+        verticalAlignment: Text.AlignVCenter
+    }
+
+    component IconAction: Rectangle {
+        id: iconAction
+        property string glyph: ""
+        property string hint: ""
+        property bool enabled: true
+        signal activated
+
+        implicitWidth: 28
+        implicitHeight: 28
+        radius: 6
+        color: mouse.containsMouse && iconAction.enabled ? root.hover : "transparent"
+
+        Text {
+            anchors.centerIn: parent
+            text: iconAction.glyph
+            color: iconAction.enabled
+                   ? (mouse.containsMouse ? root.ink : root.inkMuted)
+                   : root.inkGhost
+            font.family: root.sansFamily
+            font.pixelSize: 14
+        }
+
+        MouseArea {
+            id: mouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: iconAction.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+            onClicked: if (iconAction.enabled) iconAction.activated()
+        }
+
+        ToolTip.visible: mouse.containsMouse && iconAction.hint.length > 0
+        ToolTip.text: iconAction.hint
+        ToolTip.delay: 500
+    }
+
+    component TextAction: Rectangle {
+        id: textAction
+        property string label: ""
+        property bool danger: false
+        signal activated
+
+        implicitWidth: caption.implicitWidth + 22
+        implicitHeight: 26
+        radius: 6
+        color: textMouse.containsMouse ? root.hover : root.raisedHigh
+        border.width: 1
+        border.color: textMouse.containsMouse ? root.lineStrong : root.line
+
+        Text {
+            id: caption
+            anchors.centerIn: parent
+            text: textAction.label
+            color: textAction.danger ? root.destructive : root.ink
+            font.family: root.sansFamily
+            font.pixelSize: 12
+            font.weight: Font.Medium
+        }
+
+        MouseArea {
+            id: textMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: textAction.activated()
+        }
+    }
+
+    // ---- Layout ---------------------------------------------------------
+
+    Row {
         anchors.fill: parent
         spacing: 0
 
+        // Icon rail. The active view carries the emission line.
         Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 50
-            color: root.backgroundColor
+            width: root.railWidth
+            height: parent.height
+            color: root.canvas
 
-            RowLayout {
-                anchors.fill: parent
-                anchors.leftMargin: 14
-                anchors.rightMargin: 12
-                spacing: 4
+            Column {
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.top: parent.top
+                anchors.topMargin: 14
+                spacing: 6
 
-                Label {
-                    text: "▣"
-                    color: root.accent
-                    font.pixelSize: 18
-                    Layout.rightMargin: 14
+                // Mark.
+                Rectangle {
+                    width: 28
+                    height: 28
+                    radius: 8
+                    color: root.raisedHigh
+                    border.width: 1
+                    border.color: root.line
+                    anchors.horizontalCenter: parent.horizontalCenter
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: "◈"
+                        color: root.spectral
+                        font.pixelSize: 13
+                    }
                 }
 
+                Item { width: 1; height: 10 }
+
                 Repeater {
-                    model: ["File", "Edit", "View", "Sort"]
-                    delegate: ToolButton {
-                        id: menuButton
-                        required property string modelData
-                        text: modelData
-                        font.pixelSize: 14
-                        palette.buttonText: root.mutedColor
-                        background: Rectangle {
-                            radius: 6
-                            color: menuButton.hovered ? root.raisedColor : "transparent"
+                    model: [
+                        { id: "browse", glyph: "▤", hint: "Files" },
+                        { id: "tasks", glyph: "⇅", hint: "Transfers" }
+                    ]
+
+                    delegate: Item {
+                        id: railItem
+                        required property var modelData
+                        readonly property bool active: root.view === railItem.modelData.id
+
+                        width: root.railWidth
+                        height: 38
+
+                        Rectangle {
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.left: parent.left
+                            width: 2
+                            height: 18
+                            radius: 1
+                            color: root.spectral
+                            visible: railItem.active
+                        }
+
+                        Rectangle {
+                            anchors.centerIn: parent
+                            width: 30
+                            height: 30
+                            radius: 8
+                            color: railItem.active ? root.raisedHigh
+                                                   : (railMouse.containsMouse ? root.raised : "transparent")
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: railItem.modelData.glyph
+                                color: railItem.active ? root.ink : root.inkFaint
+                                font.pixelSize: 14
+                            }
+                        }
+
+                        // Live work is the only other place green appears.
+                        Rectangle {
+                            visible: railItem.modelData.id === "tasks" && root.taskCount > 0
+                            anchors.right: parent.right
+                            anchors.rightMargin: 9
+                            anchors.top: parent.top
+                            anchors.topMargin: 5
+                            width: 6
+                            height: 6
+                            radius: 3
+                            color: root.spectral
+                        }
+
+                        MouseArea {
+                            id: railMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.view = railItem.modelData.id
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sidebar. Same canvas as the content, separated by one hairline.
+        Rectangle {
+            width: root.sidebarWidth
+            height: parent.height
+            color: root.canvas
+
+            Rectangle {
+                anchors.left: parent.left
+                width: 1
+                height: parent.height
+                color: root.lineSoft
+            }
+
+            Column {
+                anchors.fill: parent
+                anchors.leftMargin: 12
+                anchors.rightMargin: 12
+                anchors.topMargin: 14
+                spacing: 12
+
+                Item {
+                    width: parent.width
+                    height: 26
+
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "Thallium Files"
+                        color: root.ink
+                        font.family: root.sansFamily
+                        font.pixelSize: 13
+                        font.weight: Font.DemiBold
+                    }
+
+                    IconAction {
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        glyph: "↻"
+                        hint: "Refresh"
+                        onActivated: backendObject.refresh()
+                    }
+                }
+
+                // Search is inset: darker than its surroundings, because it
+                // receives content rather than presenting it.
+                Rectangle {
+                    width: parent.width
+                    height: 32
+                    radius: 8
+                    color: root.inset
+                    border.width: 1
+                    border.color: searchInput.activeFocus ? root.lineStrong : root.line
+
+                    Text {
+                        anchors.left: parent.left
+                        anchors.leftMargin: 10
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "⌕"
+                        color: root.inkFaint
+                        font.pixelSize: 13
+                    }
+
+                    TextInput {
+                        id: searchInput
+                        anchors.fill: parent
+                        anchors.leftMargin: 28
+                        anchors.rightMargin: 10
+                        verticalAlignment: Text.AlignVCenter
+                        color: root.ink
+                        font.family: root.sansFamily
+                        font.pixelSize: 12
+                        selectionColor: root.spectralDim
+                        selectedTextColor: root.ink
+                        clip: true
+                        onTextChanged: root.query = text
+
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "Filter this folder"
+                            color: root.inkGhost
+                            font.family: root.sansFamily
+                            font.pixelSize: 12
+                            visible: searchInput.text.length === 0
                         }
                     }
                 }
 
-                Item { Layout.fillWidth: true }
-
-                Label {
-                    text: root.selectedCount > 0 ? root.selectedCount + " selected" : ""
-                    color: root.mutedColor
-                    font.pixelSize: 13
-                    Layout.rightMargin: 10
+                Overline {
+                    text: "PLACES"
+                    leftPadding: 2
                 }
 
-                ToolButton {
-                    id: refreshButton
-                    text: "↻"
-                    font.pixelSize: 19
-                    palette.buttonText: root.accent
-                    ToolTip.visible: hovered
-                    ToolTip.text: "Refresh"
-                    onClicked: root.backend.refresh()
-                    background: Rectangle {
-                        radius: 7
-                        color: refreshButton.hovered ? root.raisedColor : "transparent"
-                    }
-                }
-            }
-
-            Rectangle {
-                anchors.bottom: parent.bottom
-                width: parent.width
-                height: 1
-                color: "#303030"
-            }
-        }
-
-        RowLayout {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            spacing: 0
-
-            Rectangle {
-                Layout.preferredWidth: 245
-                Layout.fillHeight: true
-                color: root.panelColor
-
-                ColumnLayout {
-                    anchors.fill: parent
-                    anchors.topMargin: 12
-                    anchors.bottomMargin: 10
-                    anchors.leftMargin: 10
-                    anchors.rightMargin: 10
-                    spacing: 2
-
-                    Label {
-                        text: "PLACES"
-                        color: "#777777"
-                        font.pixelSize: 10
-                        font.weight: Font.DemiBold
-                        leftPadding: 12
-                        topPadding: 5
-                        bottomPadding: 5
-                    }
+                Column {
+                    width: parent.width
+                    spacing: 1
 
                     Repeater {
-                        model: [
-                            { label: "Home", icon: "⌂", folder: "" },
-                            { label: "Documents", icon: "▤", folder: "Documents" },
-                            { label: "Downloads", icon: "↓", folder: "Downloads" },
-                            { label: "Music", icon: "♪", folder: "Music" },
-                            { label: "Pictures", icon: "▧", folder: "Pictures" },
-                            { label: "Videos", icon: "▶", folder: "Videos" }
-                        ]
+                        model: root.places
 
                         delegate: Rectangle {
-                            id: placeDelegate
+                            id: place
                             required property var modelData
-                            readonly property string targetPath: root.homeLocation(modelData.folder)
-                            readonly property bool active: root.backend.currentPath === targetPath
+                            readonly property string target: root.placePath(place.modelData.folder)
+                            readonly property bool active: backendObject.currentPath === place.target
 
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 38
-                            radius: 9
-                            color: active ? root.hoverColor : (placeMouse.containsMouse ? "#2e2e2e" : "transparent")
+                            width: parent.width
+                            height: 30
+                            radius: 7
+                            color: place.active ? root.raisedHigh
+                                                : (placeMouse.containsMouse ? root.raised : "transparent")
 
-                            RowLayout {
-                                anchors.fill: parent
+                            Rectangle {
+                                anchors.verticalCenter: parent.verticalCenter
+                                anchors.left: parent.left
+                                width: 2
+                                height: 14
+                                radius: 1
+                                color: root.spectral
+                                visible: place.active
+                            }
+
+                            Text {
+                                anchors.left: parent.left
                                 anchors.leftMargin: 12
-                                anchors.rightMargin: 10
-                                spacing: 11
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: place.modelData.folder.length === 0 ? "⌂" : "▸"
+                                color: place.active ? root.spectral : root.inkGhost
+                                font.pixelSize: 11
+                            }
 
-                                Label {
-                                    text: placeDelegate.modelData.icon
-                                    color: placeDelegate.active ? root.accent : "#c9c9c9"
-                                    font.pixelSize: 17
-                                    Layout.preferredWidth: 18
-                                    horizontalAlignment: Text.AlignHCenter
-                                }
-                                Label {
-                                    text: placeDelegate.modelData.label
-                                    color: placeDelegate.active ? root.accent : root.textColor
-                                    font.pixelSize: 14
-                                    Layout.fillWidth: true
-                                }
+                            Text {
+                                anchors.left: parent.left
+                                anchors.leftMargin: 30
+                                anchors.right: parent.right
+                                anchors.rightMargin: 10
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: place.modelData.label
+                                color: place.active ? root.ink : root.inkMuted
+                                font.family: root.sansFamily
+                                font.pixelSize: 12
+                                elide: Text.ElideRight
                             }
 
                             MouseArea {
@@ -210,431 +522,666 @@ ApplicationWindow {
                                 anchors.fill: parent
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
-                                onClicked: root.backend.navigate(placeDelegate.targetPath)
+                                onClicked: backendObject.navigate(place.target)
                             }
                         }
                     }
-
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 1
-                        Layout.topMargin: 10
-                        Layout.bottomMargin: 10
-                        color: "#3a3a3a"
-                    }
-
-                    Label {
-                        text: "DEVICES"
-                        color: "#777777"
-                        font.pixelSize: 10
-                        font.weight: Font.DemiBold
-                        leftPadding: 12
-                        bottomPadding: 5
-                    }
-
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 38
-                        radius: 9
-                        color: filesystemMouse.containsMouse ? "#2e2e2e" : "transparent"
-
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: 12
-                            anchors.rightMargin: 10
-                            spacing: 11
-                            Label { text: "◉"; color: "#c9c9c9"; font.pixelSize: 15; Layout.preferredWidth: 18 }
-                            Label { text: "Filesystem"; color: root.textColor; font.pixelSize: 14; Layout.fillWidth: true }
-                        }
-
-                        MouseArea {
-                            id: filesystemMouse
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.backend.navigate("/")
-                        }
-                    }
-
-                    Item { Layout.fillHeight: true }
-
-                    Label {
-                        text: "THALLIUM 81"
-                        color: "#626262"
-                        font.pixelSize: 10
-                        font.letterSpacing: 2
-                        Layout.alignment: Qt.AlignHCenter
-                        bottomPadding: 4
-                    }
-                }
-
-                Rectangle {
-                    anchors.right: parent.right
-                    height: parent.height
-                    width: 1
-                    color: "#303030"
                 }
             }
 
+            // Selection summary sits at the foot of the sidebar, where it is
+            // out of the way until there is a selection to act on.
             Rectangle {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                color: root.backgroundColor
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                anchors.margins: 12
+                height: root.selectedCount > 0 ? 66 : 0
+                visible: root.selectedCount > 0
+                radius: 10
+                color: root.raised
+                border.width: 1
+                border.color: root.line
 
-                ColumnLayout {
-                    anchors.fill: parent
-                    anchors.leftMargin: 22
-                    anchors.rightMargin: 22
-                    spacing: 0
+                Text {
+                    anchors.left: parent.left
+                    anchors.leftMargin: 12
+                    anchors.top: parent.top
+                    anchors.topMargin: 10
+                    text: root.selectedCount + (root.selectedCount === 1 ? " item selected" : " items selected")
+                    color: root.ink
+                    font.family: root.sansFamily
+                    font.pixelSize: 12
+                    font.weight: Font.Medium
+                }
 
-                    Item {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 56
+                Row {
+                    anchors.left: parent.left
+                    anchors.leftMargin: 12
+                    anchors.bottom: parent.bottom
+                    anchors.bottomMargin: 10
+                    spacing: 6
 
-                        RowLayout {
-                            anchors.fill: parent
-                            spacing: 4
-
-                            ToolButton {
-                                id: backButton
-                                text: "‹"
-                                font.pixelSize: 30
-                                palette.buttonText: root.textColor
-                                ToolTip.visible: hovered
-                                ToolTip.text: "Back"
-                                onClicked: root.backend.back()
-                                background: Rectangle { radius: 7; color: backButton.hovered ? root.raisedColor : "transparent" }
-                            }
-                            ToolButton {
-                                id: forwardButton
-                                text: "›"
-                                font.pixelSize: 30
-                                palette.buttonText: root.textColor
-                                ToolTip.visible: hovered
-                                ToolTip.text: "Forward"
-                                onClicked: root.backend.forward()
-                                background: Rectangle { radius: 7; color: forwardButton.hovered ? root.raisedColor : "transparent" }
-                            }
-                            ToolButton {
-                                id: upButton
-                                text: "↑"
-                                font.pixelSize: 20
-                                palette.buttonText: root.textColor
-                                ToolTip.visible: hovered
-                                ToolTip.text: "Parent folder"
-                                onClicked: root.backend.up()
-                                background: Rectangle { radius: 7; color: upButton.hovered ? root.raisedColor : "transparent" }
-                            }
-
-                            TextField {
-                                id: locationField
-                                Layout.fillWidth: true
-                                Layout.leftMargin: 6
-                                text: root.backend.currentPath
-                                readOnly: !root.editingLocation
-                                selectByMouse: true
-                                color: root.editingLocation ? root.textColor : root.accent
-                                font.pixelSize: 15
-                                font.weight: root.editingLocation ? Font.Normal : Font.DemiBold
-                                leftPadding: 12
-                                rightPadding: 12
-                                onAccepted: {
-                                    root.backend.navigate(text)
-                                    root.editingLocation = false
-                                }
-                                onActiveFocusChanged: if (!activeFocus) root.editingLocation = false
-                                background: Rectangle {
-                                    radius: 8
-                                    color: root.editingLocation ? root.raisedColor : "transparent"
-                                    border.width: root.editingLocation ? 1 : 0
-                                    border.color: root.accent
-                                }
-
-                                MouseArea {
-                                    anchors.fill: parent
-                                    enabled: !root.editingLocation
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: {
-                                        root.editingLocation = true
-                                        locationField.forceActiveFocus()
-                                        locationField.selectAll()
-                                    }
-                                }
-                            }
-
-                            ToolButton {
-                                id: editLocationButton
-                                text: "✎"
-                                font.pixelSize: 17
-                                palette.buttonText: root.accent
-                                ToolTip.visible: hovered
-                                ToolTip.text: "Edit location"
-                                onClicked: {
-                                    root.editingLocation = true
-                                    locationField.forceActiveFocus()
-                                    locationField.selectAll()
-                                }
-                                background: Rectangle { radius: 7; color: editLocationButton.hovered ? root.raisedColor : "transparent" }
-                            }
-                        }
-
-                        Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: root.accent }
+                    TextAction {
+                        label: "Trash"
+                        onActivated: backendObject.trashSelected()
                     }
-
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 34
-                        color: root.backgroundColor
-
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: 12
-                            anchors.rightMargin: 12
-                            spacing: 0
-
-                            Label { text: "Name"; color: root.textColor; font.weight: Font.DemiBold; Layout.fillWidth: true }
-                            Label { text: "Modified"; color: root.textColor; font.weight: Font.DemiBold; Layout.preferredWidth: 185 }
-                            Label { text: "Size"; color: root.textColor; font.weight: Font.DemiBold; Layout.preferredWidth: 110 }
-                        }
-
-                        Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#343434" }
+                    TextAction {
+                        label: "Delete"
+                        danger: true
+                        onActivated: backendObject.deleteSelected()
                     }
-
-                    ListView {
-                        id: entryList
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        clip: true
-                        boundsBehavior: Flickable.StopAtBounds
-                        model: root.entryCount
-                        spacing: 2
-
-                        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-                        delegate: Rectangle {
-                            id: entryDelegate
-                            required property int index
-                            readonly property bool selected: root.backend.entrySelected(index)
-
-                            width: ListView.view.width
-                            height: 38
-                            radius: 6
-                            color: selected ? root.accent : (entryMouse.containsMouse ? root.raisedColor : "transparent")
-
-                            RowLayout {
-                                anchors.fill: parent
-                                anchors.leftMargin: 10
-                                anchors.rightMargin: 12
-                                spacing: 0
-
-                                Label {
-                                    text: root.backend.entryIsDirectory(entryDelegate.index) ? "▣" : "▪"
-                                    color: entryDelegate.selected ? root.selectedTextColor : root.accent
-                                    font.pixelSize: 15
-                                    Layout.preferredWidth: 28
-                                }
-                                Label {
-                                    text: root.backend.entryName(entryDelegate.index)
-                                    color: entryDelegate.selected ? root.selectedTextColor : root.textColor
-                                    font.pixelSize: 14
-                                    elide: Text.ElideRight
-                                    Layout.fillWidth: true
-                                }
-                                Label {
-                                    text: root.modifiedText(root.backend.entryModified(entryDelegate.index))
-                                    color: entryDelegate.selected ? root.selectedTextColor : root.mutedColor
-                                    font.pixelSize: 13
-                                    Layout.preferredWidth: 185
-                                }
-                                Label {
-                                    text: root.backend.entryDetail(entryDelegate.index)
-                                    color: entryDelegate.selected ? root.selectedTextColor : root.mutedColor
-                                    font.pixelSize: 13
-                                    Layout.preferredWidth: 110
-                                }
-                            }
-
-                            MouseArea {
-                                id: entryMouse
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                acceptedButtons: Qt.LeftButton | Qt.RightButton
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: root.backend.toggleSelection(entryDelegate.index)
-                                onDoubleClicked: {
-                                    if (root.backend.entryIsDirectory(entryDelegate.index))
-                                        root.backend.navigateRow(entryDelegate.index)
-                                }
-                            }
-                        }
-
-                        Label {
-                            anchors.centerIn: parent
-                            visible: root.entryCount === 0
-                            text: "This folder is empty"
-                            color: root.mutedColor
-                            font.pixelSize: 15
-                        }
-                    }
-
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: root.selectedCount > 0 ? 58 : 0
-                        visible: height > 0
-                        color: root.panelColor
-                        radius: 9
-
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: 12
-                            anchors.rightMargin: 10
-                            spacing: 8
-
-                            Label {
-                                text: root.selectedCount + " selected"
-                                color: root.accent
-                                font.weight: Font.DemiBold
-                                Layout.preferredWidth: 82
-                            }
-                            TextField {
-                                id: destinationField
-                                Layout.fillWidth: true
-                                text: root.backend.currentPath
-                                placeholderText: "Destination folder"
-                                color: root.textColor
-                                leftPadding: 10
-                                background: Rectangle { color: root.raisedColor; radius: 7; border.color: "#444444" }
-                            }
-                            Button {
-                                id: copyButton
-                                text: "Copy"
-                                palette.buttonText: root.textColor
-                                onClicked: root.backend.copySelected(destinationField.text)
-                                background: Rectangle { radius: 7; color: copyButton.hovered ? root.hoverColor : root.raisedColor }
-                            }
-                            Button {
-                                id: moveButton
-                                text: "Move"
-                                palette.buttonText: root.textColor
-                                onClicked: root.backend.moveSelected(destinationField.text)
-                                background: Rectangle { radius: 7; color: moveButton.hovered ? root.hoverColor : root.raisedColor }
-                            }
-                            Button {
-                                id: trashButton
-                                text: "Trash"
-                                palette.buttonText: root.textColor
-                                onClicked: root.backend.trashSelected()
-                                background: Rectangle { radius: 7; color: trashButton.hovered ? root.hoverColor : root.raisedColor }
-                            }
-                            Button {
-                                id: deleteButton
-                                text: "Delete"
-                                palette.buttonText: "#ff9b9b"
-                                onClicked: deleteDialog.open()
-                                background: Rectangle { radius: 7; color: deleteButton.hovered ? "#4a2929" : root.raisedColor }
-                            }
-                            ToolButton {
-                                id: clearSelectionButton
-                                text: "×"
-                                font.pixelSize: 20
-                                palette.buttonText: root.mutedColor
-                                onClicked: root.backend.clearSelection()
-                                background: Rectangle { radius: 7; color: clearSelectionButton.hovered ? root.hoverColor : "transparent" }
-                            }
-                        }
-                    }
-
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: root.taskCount > 0 ? Math.min(142, taskList.contentHeight + 38) : 0
-                        visible: height > 0
-                        color: root.panelColor
-                        radius: 9
-
-                        ColumnLayout {
-                            anchors.fill: parent
-                            anchors.margins: 8
-                            spacing: 4
-
-                            Label { text: "File operations"; color: root.mutedColor; font.pixelSize: 12 }
-
-                            ListView {
-                                id: taskList
-                                Layout.fillWidth: true
-                                Layout.fillHeight: true
-                                clip: true
-                                model: root.taskCount
-                                spacing: 4
-
-                                delegate: RowLayout {
-                                    id: taskDelegate
-                                    required property int index
-                                    width: ListView.view.width
-                                    spacing: 9
-
-                                    Label { text: root.backend.taskTitle(taskDelegate.index); color: root.textColor; Layout.fillWidth: true; elide: Text.ElideRight }
-                                    ProgressBar {
-                                        from: 0
-                                        to: 10000
-                                        value: root.backend.taskProgress(taskDelegate.index)
-                                        Layout.preferredWidth: 180
-                                    }
-                                    Label { text: root.backend.taskStatus(taskDelegate.index); color: root.mutedColor; Layout.preferredWidth: 72 }
-                                    Button {
-                                        text: "Cancel"
-                                        enabled: root.backend.taskActive(taskDelegate.index)
-                                        onClicked: root.backend.cancelTask(root.backend.taskId(taskDelegate.index))
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    Item {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 28
-
-                        RowLayout {
-                            anchors.fill: parent
-                            Label {
-                                text: root.entryCount + (root.entryCount === 1 ? " item" : " items")
-                                color: root.mutedColor
-                                font.pixelSize: 12
-                            }
-                            Item { Layout.fillWidth: true }
-                            Label {
-                                visible: root.backend.lastError.length > 0
-                                text: root.backend.lastError
-                                color: "#ff8f8f"
-                                font.pixelSize: 12
-                                elide: Text.ElideRight
-                                Layout.maximumWidth: 520
-                            }
-                        }
+                    TextAction {
+                        label: "Clear"
+                        onActivated: backendObject.clearSelection()
                     }
                 }
             }
         }
-    }
 
-    Dialog {
-        id: deleteDialog
-        x: Math.round((root.width - width) / 2)
-        y: Math.round((root.height - height) / 2)
-        width: 420
-        title: "Delete permanently?"
-        modal: true
-        standardButtons: Dialog.Yes | Dialog.No
-        onAccepted: root.backend.deleteSelected()
-        background: Rectangle { color: root.panelColor; radius: 10; border.color: "#464646" }
-        contentItem: Label {
-            text: "The selected items will be permanently deleted."
-            color: root.textColor
-            wrapMode: Text.WordWrap
-            leftPadding: 16
-            rightPadding: 16
-            topPadding: 12
-            bottomPadding: 12
+        // Content.
+        Rectangle {
+            width: parent.width - root.railWidth - root.sidebarWidth
+            height: parent.height
+            color: root.canvas
+
+            Rectangle {
+                anchors.left: parent.left
+                width: 1
+                height: parent.height
+                color: root.lineSoft
+            }
+
+            Column {
+                anchors.fill: parent
+                spacing: 0
+
+                // Header: where you are, and how to move.
+                Item {
+                    width: parent.width
+                    height: 52
+
+                    Row {
+                        anchors.left: parent.left
+                        anchors.leftMargin: 16
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 2
+
+                        IconAction {
+                            glyph: "‹"
+                            hint: "Back"
+                            onActivated: backendObject.back()
+                        }
+                        IconAction {
+                            glyph: "›"
+                            hint: "Forward"
+                            onActivated: backendObject.forward()
+                        }
+                        IconAction {
+                            glyph: "↑"
+                            hint: "Parent folder"
+                            onActivated: backendObject.up()
+                        }
+                    }
+
+                    // Breadcrumb, in mono: a path is data.
+                    Row {
+                        anchors.left: parent.left
+                        anchors.leftMargin: 16 + 28 * 3 + 12
+                        anchors.right: parent.right
+                        anchors.rightMargin: 16
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 0
+                        clip: true
+
+                        Repeater {
+                            model: root.crumbs
+
+                            delegate: Row {
+                                id: crumb
+                                required property var modelData
+                                required property int index
+                                readonly property bool last: crumb.index === root.crumbs.length - 1
+                                spacing: 0
+
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "/"
+                                    color: root.inkGhost
+                                    font.family: root.monoFamily
+                                    font.pixelSize: 12
+                                    visible: crumb.index > 1
+                                }
+
+                                Rectangle {
+                                    height: 24
+                                    width: crumbLabel.implicitWidth + 12
+                                    radius: 6
+                                    color: crumbMouse.containsMouse && !crumb.last ? root.hover : "transparent"
+
+                                    Text {
+                                        id: crumbLabel
+                                        anchors.centerIn: parent
+                                        text: crumb.modelData.label
+                                        color: crumb.last ? root.ink : root.inkFaint
+                                        font.family: root.monoFamily
+                                        font.pixelSize: 12
+                                        font.weight: crumb.last ? Font.DemiBold : Font.Normal
+                                    }
+
+                                    MouseArea {
+                                        id: crumbMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: crumb.last ? Qt.ArrowCursor : Qt.PointingHandCursor
+                                        onClicked: if (!crumb.last) backendObject.navigate(crumb.modelData.path)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        anchors.bottom: parent.bottom
+                        width: parent.width
+                        height: 1
+                        color: root.lineSoft
+                    }
+                }
+
+                // Error banner. Failures are told, never swallowed.
+                Rectangle {
+                    width: parent.width
+                    height: backendObject.lastError.length > 0 ? 34 : 0
+                    visible: backendObject.lastError.length > 0
+                    color: root.raised
+
+                    Text {
+                        anchors.left: parent.left
+                        anchors.leftMargin: 16
+                        anchors.right: parent.right
+                        anchors.rightMargin: 16
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: backendObject.lastError
+                        color: root.destructive
+                        font.family: root.monoFamily
+                        font.pixelSize: 11
+                        elide: Text.ElideRight
+                    }
+
+                    Rectangle {
+                        anchors.bottom: parent.bottom
+                        width: parent.width
+                        height: 1
+                        color: root.lineSoft
+                    }
+                }
+
+                // ---- Browse view --------------------------------------
+
+                Item {
+                    width: parent.width
+                    height: parent.height - 52 - (backendObject.lastError.length > 0 ? 34 : 0)
+                    visible: root.view === "browse"
+
+                    Column {
+                        anchors.fill: parent
+                        spacing: 0
+
+                        // Quick access, as dimensional folder cards.
+                        Item {
+                            width: parent.width
+                            height: 172
+
+                            SectionTitle {
+                                id: quickTitle
+                                anchors.left: parent.left
+                                anchors.leftMargin: 16
+                                anchors.top: parent.top
+                                anchors.topMargin: 18
+                                text: "Quick access"
+                            }
+
+                            Row {
+                                anchors.left: parent.left
+                                anchors.leftMargin: 16
+                                anchors.top: quickTitle.bottom
+                                anchors.topMargin: 14
+                                spacing: 10
+
+                                Repeater {
+                                    model: root.places
+
+                                    delegate: Rectangle {
+                                        id: card
+                                        required property var modelData
+                                        readonly property string target: root.placePath(card.modelData.folder)
+                                        readonly property bool active: backendObject.currentPath === card.target
+
+                                        width: 148
+                                        height: 96
+                                        radius: 10
+                                        color: cardMouse.containsMouse ? root.raisedHigh : root.raised
+                                        border.width: 1
+                                        border.color: card.active ? root.lineStrong : root.line
+
+                                        // Folder mark: a tab and a face, lit
+                                        // from above like brushed metal.
+                                        Item {
+                                            id: mark
+                                            anchors.left: parent.left
+                                            anchors.leftMargin: 14
+                                            anchors.top: parent.top
+                                            anchors.topMargin: 14
+                                            width: 34
+                                            height: 26
+
+                                            Rectangle {
+                                                width: 15
+                                                height: 5
+                                                radius: 2
+                                                color: "#313536"
+                                                anchors.top: parent.top
+                                                anchors.left: parent.left
+                                            }
+
+                                            Rectangle {
+                                                anchors.fill: parent
+                                                anchors.topMargin: 4
+                                                radius: 4
+                                                border.width: 1
+                                                border.color: root.line
+                                                gradient: Gradient {
+                                                    GradientStop { position: 0.0; color: "#3A3F40" }
+                                                    GradientStop { position: 1.0; color: "#242829" }
+                                                }
+                                            }
+                                        }
+
+                                        Text {
+                                            anchors.left: parent.left
+                                            anchors.leftMargin: 14
+                                            anchors.right: parent.right
+                                            anchors.rightMargin: 12
+                                            anchors.bottom: cardHint.top
+                                            anchors.bottomMargin: 3
+                                            text: card.modelData.label
+                                            color: root.ink
+                                            font.family: root.sansFamily
+                                            font.pixelSize: 13
+                                            font.weight: Font.Medium
+                                            elide: Text.ElideRight
+                                        }
+
+                                        Mono {
+                                            id: cardHint
+                                            anchors.left: parent.left
+                                            anchors.leftMargin: 14
+                                            anchors.right: parent.right
+                                            anchors.rightMargin: 12
+                                            anchors.bottom: parent.bottom
+                                            anchors.bottomMargin: 12
+                                            text: card.modelData.folder.length === 0 ? "~" : "~/" + card.modelData.folder
+                                            color: root.inkGhost
+                                            font.pixelSize: 11
+                                        }
+
+                                        MouseArea {
+                                            id: cardMouse
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: backendObject.navigate(card.target)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // The listing.
+                        Item {
+                            width: parent.width
+                            height: parent.height - 172
+
+                            Item {
+                                id: listHeader
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.top: parent.top
+                                height: 40
+
+                                SectionTitle {
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 16
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: root.leafName(backendObject.currentPath)
+                                }
+
+                                Mono {
+                                    anchors.right: parent.right
+                                    anchors.rightMargin: 16
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: root.rows.length + (root.query.length > 0 ? " of " + backendObject.entryCount() : "")
+                                          + (root.rows.length === 1 ? " item" : " items")
+                                    color: root.inkGhost
+                                    font.pixelSize: 11
+                                }
+                            }
+
+                            // Column rule.
+                            Item {
+                                id: columns
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.top: listHeader.bottom
+                                height: 26
+
+                                Overline {
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 16 + 26
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "NAME"
+                                }
+                                Overline {
+                                    anchors.right: parent.right
+                                    anchors.rightMargin: 16 + 150
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: 84
+                                    horizontalAlignment: Text.AlignRight
+                                    text: "SIZE"
+                                }
+                                Overline {
+                                    anchors.right: parent.right
+                                    anchors.rightMargin: 16
+                                    width: 132
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "MODIFIED"
+                                }
+
+                                Rectangle {
+                                    anchors.bottom: parent.bottom
+                                    width: parent.width
+                                    height: 1
+                                    color: root.lineSoft
+                                }
+                            }
+
+                            ListView {
+                                id: listing
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.top: columns.bottom
+                                anchors.bottom: parent.bottom
+                                clip: true
+                                model: root.rows
+                                boundsBehavior: Flickable.StopAtBounds
+
+                                delegate: Item {
+                                    id: entry
+                                    required property int modelData
+                                    readonly property string name: {
+                                        void root.revision
+                                        return backendObject.entryName(entry.modelData)
+                                    }
+                                    readonly property bool folder: {
+                                        void root.revision
+                                        return backendObject.entryIsDirectory(entry.modelData)
+                                    }
+                                    readonly property bool picked: {
+                                        void root.revision
+                                        return backendObject.entrySelected(entry.modelData)
+                                    }
+
+                                    width: listing.width
+                                    height: root.rowHeight
+
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 8
+                                        anchors.rightMargin: 8
+                                        radius: 6
+                                        color: entry.picked ? root.raisedHigh
+                                                            : (entryMouse.containsMouse ? root.raised : "transparent")
+                                    }
+
+                                    Rectangle {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        anchors.left: parent.left
+                                        anchors.leftMargin: 8
+                                        width: 2
+                                        height: 16
+                                        radius: 1
+                                        color: root.spectral
+                                        visible: entry.picked
+                                    }
+
+                                    Text {
+                                        anchors.left: parent.left
+                                        anchors.leftMargin: 18
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: 18
+                                        text: entry.folder ? "▸" : "·"
+                                        color: entry.folder ? root.inkMuted : root.inkGhost
+                                        font.pixelSize: entry.folder ? 11 : 15
+                                    }
+
+                                    Text {
+                                        anchors.left: parent.left
+                                        anchors.leftMargin: 16 + 26
+                                        anchors.right: parent.right
+                                        anchors.rightMargin: 16 + 150 + 90
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: entry.name
+                                        color: entry.picked ? root.ink : (entry.folder ? root.ink : root.inkMuted)
+                                        font.family: root.monoFamily
+                                        font.pixelSize: 12
+                                        elide: Text.ElideMiddle
+                                    }
+
+                                    Mono {
+                                        anchors.right: parent.right
+                                        anchors.rightMargin: 16 + 150
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: 84
+                                        horizontalAlignment: Text.AlignRight
+                                        text: {
+                                            void root.revision
+                                            return backendObject.entryDetail(entry.modelData)
+                                        }
+                                        color: root.inkFaint
+                                        font.pixelSize: 11
+                                    }
+
+                                    Mono {
+                                        anchors.right: parent.right
+                                        anchors.rightMargin: 16
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: 132
+                                        text: {
+                                            void root.revision
+                                            return root.modifiedText(backendObject.entryModified(entry.modelData))
+                                        }
+                                        color: root.inkGhost
+                                        font.pixelSize: 11
+                                    }
+
+                                    MouseArea {
+                                        id: entryMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: backendObject.toggleSelection(entry.modelData)
+                                        onDoubleClicked: if (entry.folder) backendObject.navigateRow(entry.modelData)
+                                    }
+                                }
+                            }
+
+                            // Empty states, distinguished: a folder with
+                            // nothing in it is not a filter that matched
+                            // nothing.
+                            Column {
+                                anchors.centerIn: parent
+                                spacing: 6
+                                visible: root.rows.length === 0
+
+                                Text {
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                    text: root.query.length > 0 ? "No match" : "Empty folder"
+                                    color: root.inkFaint
+                                    font.family: root.sansFamily
+                                    font.pixelSize: 13
+                                }
+
+                                Mono {
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                    text: root.query.length > 0 ? "filter: " + root.query : backendObject.currentPath
+                                    color: root.inkGhost
+                                    font.pixelSize: 11
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ---- Transfers view -----------------------------------
+
+                Item {
+                    width: parent.width
+                    height: parent.height - 52 - (backendObject.lastError.length > 0 ? 34 : 0)
+                    visible: root.view === "tasks"
+
+                    SectionTitle {
+                        id: tasksTitle
+                        anchors.left: parent.left
+                        anchors.leftMargin: 16
+                        anchors.top: parent.top
+                        anchors.topMargin: 18
+                        text: "Transfers"
+                    }
+
+                    ListView {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: tasksTitle.bottom
+                        anchors.topMargin: 14
+                        anchors.bottom: parent.bottom
+                        anchors.leftMargin: 16
+                        anchors.rightMargin: 16
+                        clip: true
+                        spacing: 8
+                        model: root.tasks
+                        boundsBehavior: Flickable.StopAtBounds
+
+                        delegate: Rectangle {
+                            id: task
+                            required property int modelData
+                            readonly property string title: {
+                                void root.revision
+                                return backendObject.taskTitle(task.modelData)
+                            }
+                            readonly property string status: {
+                                void root.revision
+                                return backendObject.taskStatus(task.modelData)
+                            }
+                            readonly property int basisPoints: {
+                                void root.revision
+                                return backendObject.taskProgress(task.modelData)
+                            }
+                            readonly property bool live: {
+                                void root.revision
+                                return backendObject.taskActive(task.modelData)
+                            }
+
+                            width: ListView.view.width
+                            height: 62
+                            radius: 10
+                            color: root.raised
+                            border.width: 1
+                            border.color: root.line
+
+                            Text {
+                                anchors.left: parent.left
+                                anchors.leftMargin: 14
+                                anchors.top: parent.top
+                                anchors.topMargin: 12
+                                text: task.title
+                                color: root.ink
+                                font.family: root.sansFamily
+                                font.pixelSize: 12
+                                font.weight: Font.Medium
+                            }
+
+                            Mono {
+                                anchors.right: cancel.left
+                                anchors.rightMargin: 10
+                                anchors.top: parent.top
+                                anchors.topMargin: 13
+                                text: task.status + "  " + Math.round(task.basisPoints / 100) + "%"
+                                color: task.live ? root.spectral : root.inkFaint
+                                font.pixelSize: 11
+                            }
+
+                            IconAction {
+                                id: cancel
+                                anchors.right: parent.right
+                                anchors.rightMargin: 10
+                                anchors.top: parent.top
+                                anchors.topMargin: 9
+                                glyph: "✕"
+                                hint: "Cancel"
+                                enabled: task.live
+                                onActivated: backendObject.cancelTask(backendObject.taskId(task.modelData))
+                            }
+
+                            // Progress reads as the same emission line,
+                            // stretched.
+                            Rectangle {
+                                anchors.left: parent.left
+                                anchors.leftMargin: 14
+                                anchors.right: parent.right
+                                anchors.rightMargin: 14
+                                anchors.bottom: parent.bottom
+                                anchors.bottomMargin: 14
+                                height: 3
+                                radius: 2
+                                color: root.inset
+
+                                Rectangle {
+                                    height: parent.height
+                                    radius: 2
+                                    width: parent.width * Math.min(1, task.basisPoints / 10000)
+                                    color: task.live ? root.spectral : root.inkGhost
+
+                                    Behavior on width {
+                                        NumberAnimation { duration: 160; easing.type: Easing.OutCubic }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Column {
+                        anchors.centerIn: parent
+                        spacing: 6
+                        visible: root.tasks.length === 0
+
+                        Text {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: "No transfers"
+                            color: root.inkFaint
+                            font.family: root.sansFamily
+                            font.pixelSize: 13
+                        }
+
+                        Mono {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: "copy, move, trash and delete appear here"
+                            color: root.inkGhost
+                            font.pixelSize: 11
+                        }
+                    }
+                }
+            }
         }
     }
 }
