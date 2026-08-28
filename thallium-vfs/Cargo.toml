@@ -1,0 +1,21 @@
+[package]
+name = "thallium-vfs"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+filetime = "0.2.26"
+thallium-fs-core = { path = "../thallium-fs-core" }
+tokio.workspace = true
+trash = "5.2.6"
+
+[dev-dependencies]
+tempfile = "3.25.0"
+
+[lints]
+workspace = true

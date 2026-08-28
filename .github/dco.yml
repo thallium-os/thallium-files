@@ -1,0 +1,11 @@
+# Developer Certificate of Origin enforcement.
+#
+# Thallium takes DCO sign-off instead of a CLA: contributors keep their
+# copyright and certify origin, rather than assigning rights to a maintainer.
+#
+# require.members: false means the check applies to everyone, maintainers
+# included. An unsigned maintainer commit is exactly as unprovenanced as an
+# unsigned drive-by one, and this repository ships signed binaries to other
+# people's machines.
+require:
+  members: false

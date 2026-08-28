@@ -1,0 +1,39 @@
+[workspace]
+resolver        = "3"
+members         = [ "thallium-*" ]
+default-members = [ "thallium-backend" ]
+
+[workspace.package]
+edition      = "2024"
+version      = "0.1.0"
+license      = "GPL-3.0-or-later"
+authors      = [ "Dronzer Studios" ]
+homepage     = "https://github.com/thallium-os/thallium-files"
+repository   = "https://github.com/thallium-os/thallium-files"
+rust-version = "1.95.0"
+
+[profile.release]
+codegen-units = 1
+lto           = true
+strip         = true
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[workspace.dependencies]
+tokio      = { version = "1.53.1", features = [ "full" ] }
+tokio-util = "0.7.19"
+
+[workspace.lints.clippy]
+format_push_string   = "warn"
+if_same_then_else    = "allow"
+implicit_clone       = "warn"
+len_without_is_empty = "allow"
+missing_safety_doc   = "allow"
+module_inception     = "allow"
+option_map_unit_fn   = "allow"
+unit_arg             = "allow"
+use_self             = "warn"

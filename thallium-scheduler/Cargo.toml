@@ -1,0 +1,19 @@
+[package]
+name = "thallium-scheduler"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thallium-fs-core = { path = "../thallium-fs-core" }
+thallium-protocol = { path = "../thallium-protocol" }
+thallium-vfs = { path = "../thallium-vfs" }
+tokio = { workspace = true, features = [ "sync" ] }
+tokio-util = { workspace = true }
+
+[lints]
+workspace = true

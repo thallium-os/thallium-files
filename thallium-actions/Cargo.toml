@@ -1,0 +1,24 @@
+[package]
+name = "thallium-actions"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thallium-fs-core   = { path = "../thallium-fs-core" }
+thallium-protocol  = { path = "../thallium-protocol" }
+thallium-scheduler = { path = "../thallium-scheduler" }
+thallium-state     = { path = "../thallium-state" }
+thallium-vfs       = { path = "../thallium-vfs" }
+thallium-watcher   = { path = "../thallium-watcher" }
+tokio              = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true
