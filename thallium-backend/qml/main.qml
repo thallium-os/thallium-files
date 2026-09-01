@@ -2,6 +2,7 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Shapes
 import QtQuick.Effects
 import org.thallium.FileManager 1.0
 
@@ -45,6 +46,11 @@ ApplicationWindow {
 
     readonly property int unit: 4
     readonly property int sidebarWidth: 292
+    // Every control on the header line is this tall, and every band
+    // in the folder bar is the next one. Mixing 30 with 34 is what
+    // made the top of the window look ragged.
+    readonly property int controlHeight: 34
+    readonly property int bandHeight: 52
     readonly property int inspectorWidth: 348
     readonly property int rowHeight: 40
 
@@ -52,7 +58,7 @@ ApplicationWindow {
     property string query: ""
     property string folderQuery: ""
     property bool showHidden: false
-    property string sidebarTab: "folders"
+    property string sidebarTab: "places"
     property bool previewOpen: true
     property string sortKey: "name"
     property bool sortAscending: true
@@ -153,7 +159,10 @@ ApplicationWindow {
     readonly property var places: {
         const known = ["Desktop", "Documents", "Downloads", "Music", "Pictures", "Videos"]
         const seen = root.homeFolders
-        const out = [{ label: "Home", folder: "" }]
+        const out = [
+            { label: "Recent", folder: null, recent: true },
+            { label: "Home", folder: "" }
+        ]
         for (let i = 0; i < known.length; ++i) {
             if (seen.length === 0 || seen.indexOf(known[i]) >= 0)
                 out.push({ label: known[i], folder: known[i] })
@@ -233,6 +242,16 @@ ApplicationWindow {
         return out
     }
 
+    // Segments with nothing in them are not drawn, and a Row gives no spacing
+    // to what it does not lay out, so the bar has to know how many there are.
+    readonly property int compositionShown: {
+        let shown = 0
+        for (let i = 0; i < root.composition.length; ++i)
+            if (root.composition[i].count > 0)
+                shown += 1
+        return shown
+    }
+
     readonly property int compositionTotal: {
         let sum = 0
         for (let i = 0; i < root.composition.length; ++i)
@@ -264,6 +283,27 @@ ApplicationWindow {
         if (folder === "/")
             return "/"
         return backendObject.homePath + "/" + folder
+    }
+
+    // Bytes as a disk is spoken about: three significant figures, no more.
+    function readableSize(bytes) {
+        const units = ["B", "KB", "MB", "GB", "TB", "PB"]
+        let value = bytes
+        let at = 0
+        while (value >= 1024 && at < units.length - 1) {
+            value /= 1024
+            at += 1
+        }
+        return (value >= 100 || at === 0 ? Math.round(value) : value.toFixed(1)) + " " + units[at]
+    }
+
+    // The desktop's recent files, shown in place of a directory.
+    property bool recentOpen: false
+
+    function showRecent() {
+        root.endDeepSearch()
+        root.recentOpen = true
+        backendObject.refreshRecents()
     }
 
     function isHidden(name) {
@@ -1364,15 +1404,15 @@ ApplicationWindow {
                     Segment {
                         width: (parent.width - 3) / 2
                         height: parent.height
-                        label: "Folders"
-                        key: "folders"
+                        label: "Places"
+                        key: "places"
                     }
 
                     Segment {
                         width: (parent.width - 3) / 2
                         height: parent.height
-                        label: "Places"
-                        key: "places"
+                        label: "Tree"
+                        key: "folders"
                     }
                 }
             }
@@ -1420,13 +1460,16 @@ ApplicationWindow {
                     required property var modelData
                     readonly property bool adds: placeEntry.modelData.add === true
                     readonly property bool remote: placeEntry.modelData.remote === true
+                    readonly property bool recent: placeEntry.modelData.recent === true
                     readonly property string target: placeEntry.remote
                                                      ? placeEntry.modelData.target
                                                      : root.placePath(placeEntry.modelData.folder)
                     width: placesView.width
                     glyph: placeEntry.adds
                            ? "+"
-                           : (placeEntry.remote
+                           : (placeEntry.recent
+                              ? "◴"
+                              : placeEntry.remote
                               ? "◈"
                               : (placeEntry.modelData.folder === "/"
                                  ? "◆"
@@ -1434,127 +1477,200 @@ ApplicationWindow {
                     label: placeEntry.modelData.label
                     // A remote is named, not pathed; say what it is.
                     trailing: placeEntry.remote ? "remote" : ""
-                    active: !placeEntry.adds && backendObject.currentPath === placeEntry.target
+                    active: placeEntry.recent
+                            ? root.recentOpen
+                            : (!placeEntry.adds && !root.recentOpen
+                               && backendObject.currentPath === placeEntry.target)
                     onActivated: {
-                        if (placeEntry.adds) {
+                        if (placeEntry.recent) {
+                            root.showRecent()
+                        } else if (placeEntry.adds) {
                             root.remoteDraftName = ""
                             root.providerQuery = ""
                             root.remoteSheetOpen = true
                         } else {
+                            root.recentOpen = false
                             backendObject.navigate(placeEntry.target)
                         }
                     }
                 }
             }
 
-            // What this folder is made of. A stacked rule reads the same as
-            // a ring at a fifth of the height, and the sidebar needs the room.
+            // How full the disk is. The ring earns its height here only
+            // because what this folder holds now sits beside its name.
             Rectangle {
                 id: ringPanel
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
                 anchors.margins: 12
-                height: mixColumn.implicitHeight + 22
+                height: 128
                 radius: 10
                 color: root.raised
                 border.width: 1
                 border.color: root.line
 
-                Column {
-                    id: mixColumn
+                Overline {
+                    id: storageHead
                     anchors.left: parent.left
-                    anchors.right: parent.right
                     anchors.top: parent.top
                     anchors.margins: 11
-                    spacing: 9
+                    text: "STORAGE"
+                }
 
-                    Item {
-                        width: parent.width
-                        height: 12
+                Item {
+                    id: ring
+                    anchors.left: parent.left
+                    anchors.leftMargin: 11
+                    anchors.top: storageHead.bottom
+                    anchors.topMargin: 8
+                    width: 62
+                    height: 62
 
-                        Overline {
-                            anchors.left: parent.left
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: "THIS FOLDER"
+                    // What this folder takes of the disk it sits on. It fills
+                    // in as the count runs, so a large tree shows progress
+                    // rather than nothing.
+                    readonly property real share: {
+                        void root.revision
+                        return backendObject.folderShare()
+                    }
+                    readonly property bool counting: {
+                        void root.revision
+                        return backendObject.folderMeasuring()
+                    }
+
+                    Shape {
+                        anchors.fill: parent
+                        preferredRendererType: Shape.CurveRenderer
+
+                        // The whole disk.
+                        ShapePath {
+                            fillColor: "transparent"
+                            strokeColor: root.raisedHigh
+                            strokeWidth: 9
+                            capStyle: ShapePath.FlatCap
+                            PathAngleArc {
+                                centerX: ring.width / 2
+                                centerY: ring.height / 2
+                                radiusX: ring.width / 2 - 5
+                                radiusY: ring.height / 2 - 5
+                                startAngle: -90
+                                sweepAngle: 360
+                            }
                         }
 
-                        Mono {
-                            anchors.right: parent.right
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: root.compositionTotal + " items"
-                            font.pixelSize: 10
+                        // What is on it.
+                        ShapePath {
+                            fillColor: "transparent"
+                            strokeColor: ring.share > 0.9 ? root.ember : root.spectral
+                            strokeWidth: 9
+                            capStyle: ShapePath.FlatCap
+                            PathAngleArc {
+                                centerX: ring.width / 2
+                                centerY: ring.height / 2
+                                radiusX: ring.width / 2 - 5
+                                radiusY: ring.height / 2 - 5
+                                startAngle: -90
+                                sweepAngle: 360 * ring.share
+                            }
                         }
                     }
 
-                    Row {
-                        width: parent.width
-                        height: 6
-                        spacing: 2
+                    Mono {
+                        anchors.centerIn: parent
+                        text: {
+                            void root.revision
+                            return root.readableSize(backendObject.folderBytes())
+                        }
+                        color: ring.counting ? root.inkFaint : root.inkMuted
+                        font.pixelSize: 10
+                    }
+                }
 
-                        Repeater {
-                            model: root.composition
+                Column {
+                    anchors.left: ring.right
+                    anchors.leftMargin: 12
+                    anchors.right: parent.right
+                    anchors.rightMargin: 11
+                    anchors.verticalCenter: ring.verticalCenter
+                    spacing: 7
 
-                            delegate: Rectangle {
-                                id: mixSegment
-                                required property var modelData
-                                readonly property real share: root.compositionTotal > 0
-                                                              ? mixSegment.modelData.count / root.compositionTotal
-                                                              : 0
-                                visible: mixSegment.modelData.count > 0
-                                width: Math.max(0, (mixColumn.width - 8) * mixSegment.share)
+                    Repeater {
+                        model: {
+                            void root.revision
+                            if (!backendObject.storageKnown())
+                                return []
+                            return [
+                                {
+                                    label: "This folder",
+                                    value: root.readableSize(backendObject.folderBytes()),
+                                    shade: root.spectral
+                                },
+                                {
+                                    label: "Disk free",
+                                    value: root.readableSize(backendObject.storageTotal()
+                                                             - backendObject.storageUsed()),
+                                    shade: root.raisedHigh
+                                }
+                            ]
+                        }
+
+                        delegate: Row {
+                            id: storageLegend
+                            required property var modelData
+                            spacing: 6
+
+                            Rectangle {
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 6
                                 height: 6
                                 radius: 3
-                                color: mixSegment.modelData.shade
+                                color: storageLegend.modelData.shade
                             }
-                        }
 
-                        Rectangle {
-                            visible: root.compositionTotal === 0
-                            width: mixColumn.width
-                            height: 6
-                            radius: 3
-                            color: root.raisedHigh
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: storageLegend.modelData.label
+                                color: root.inkFaint
+                                font.family: root.sansFamily
+                                font.pixelSize: 10
+                            }
+
+                            Mono {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: storageLegend.modelData.value
+                                color: root.inkGhost
+                                font.pixelSize: 10
+                            }
                         }
                     }
 
-                    Flow {
-                        width: parent.width
-                        spacing: 10
-
-                        Repeater {
-                            model: root.composition
-
-                            delegate: Row {
-                                id: mixLegend
-                                required property var modelData
-                                visible: mixLegend.modelData.count > 0
-                                spacing: 5
-
-                                Rectangle {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    width: 5
-                                    height: 5
-                                    radius: 3
-                                    color: mixLegend.modelData.shade
-                                }
-
-                                Text {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    text: mixLegend.modelData.label
-                                    color: root.inkFaint
-                                    font.family: root.sansFamily
-                                    font.pixelSize: 10
-                                }
-
-                                Mono {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    text: mixLegend.modelData.count
-                                    color: root.inkGhost
-                                    font.pixelSize: 10
-                                }
-                            }
+                    Text {
+                        visible: {
+                            void root.revision
+                            return backendObject.storageKnown()
                         }
+                        text: {
+                            void root.revision
+                            const files = backendObject.folderFiles()
+                            return ring.counting
+                                   ? "counting… " + files + " files"
+                                   : files + " files in all"
+                        }
+                        color: root.inkGhost
+                        font.family: root.sansFamily
+                        font.pixelSize: 10
+                    }
+
+                    Text {
+                        visible: {
+                            void root.revision
+                            return !backendObject.storageKnown()
+                        }
+                        text: "Not this machine's disk"
+                        color: root.inkGhost
+                        font.family: root.sansFamily
+                        font.pixelSize: 10
                     }
                 }
             }
@@ -1566,42 +1682,199 @@ ApplicationWindow {
             width: parent.width - root.sidebarWidth - (root.previewOpen ? root.inspectorWidth : 0)
             height: parent.height
 
-            // ---- Header: search and path share the first line ----
+            // ---- Header: one line, as the mockup has it ----
+            // Where you are and how to get elsewhere, left to right: the mark,
+            // the way back, the path, the search, the reload.
             Item {
                 id: header
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.top: parent.top
-                anchors.leftMargin: 20
-                anchors.rightMargin: 20
-                anchors.topMargin: 16
-                height: 96
+                anchors.leftMargin: 16
+                anchors.rightMargin: 16
+                anchors.topMargin: 14
+                height: root.controlHeight
+
+                // The mark, and the one thing it offers: somewhere new.
+                Rectangle {
+                    id: brand
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: brandRow.implicitWidth + 22
+                    height: root.controlHeight
+                    radius: 9
+                    color: root.inset
+                    border.width: 1
+                    border.color: root.line
+
+                    Row {
+                        id: brandRow
+                        anchors.centerIn: parent
+                        spacing: 9
+
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "FILES"
+                            color: root.ink
+                            font.family: root.sansFamily
+                            font.pixelSize: 14
+                            font.weight: Font.DemiBold
+                            font.letterSpacing: 1.6
+                        }
+
+                        Rectangle {
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 1
+                            height: 16
+                            color: root.line
+                        }
+
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "+"
+                            color: newFolderMouse.containsMouse ? root.spectral : root.inkMuted
+                            font.family: root.sansFamily
+                            font.pixelSize: 17
+
+                            MouseArea {
+                                id: newFolderMouse
+                                anchors.fill: parent
+                                anchors.margins: -6
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.remoteSheetOpen = true
+                            }
+                        }
+                    }
+                }
+
+                Row {
+                    id: headerNav
+                    anchors.left: brand.right
+                    anchors.leftMargin: 10
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 5
+
+                    IconAction {
+                        implicitWidth: root.controlHeight
+                        implicitHeight: root.controlHeight
+                        glyph: "←"
+                        hint: "Back"
+                        onActivated: backendObject.back()
+                    }
+
+                    IconAction {
+                        implicitWidth: root.controlHeight
+                        implicitHeight: root.controlHeight
+                        glyph: "→"
+                        hint: "Forward"
+                        onActivated: backendObject.forward()
+                    }
+
+                    IconAction {
+                        implicitWidth: root.controlHeight
+                        implicitHeight: root.controlHeight
+                        glyph: "↑"
+                        hint: "Parent folder"
+                        onActivated: backendObject.up()
+                    }
+                }
+
+                // The path, given the width the mockup gives it.
+                Rectangle {
+                    id: pathBar
+                    anchors.left: headerNav.right
+                    anchors.leftMargin: 10
+                    anchors.right: headerSearch.left
+                    anchors.rightMargin: 10
+                    anchors.verticalCenter: parent.verticalCenter
+                    height: root.controlHeight
+                    radius: 9
+                    color: root.inset
+                    border.width: 1
+                    border.color: root.line
+
+                    Flickable {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.leftMargin: 12
+                        anchors.rightMargin: 12
+                        anchors.verticalCenter: parent.verticalCenter
+                        height: 20
+                        contentWidth: crumbRow.width
+                        clip: true
+                        flickableDirection: Flickable.HorizontalFlick
+
+                        Row {
+                            id: crumbRow
+                            height: parent.height
+                            spacing: 3
+
+                            Repeater {
+                                model: root.crumbs
+                                delegate: Row {
+                                    id: crumb
+                                    required property int index
+                                    required property var modelData
+                                    readonly property bool last: crumb.index === root.crumbs.length - 1
+                                    spacing: 3
+                                    anchors.verticalCenter: parent.verticalCenter
+
+                                    Text {
+                                        text: crumb.modelData.label
+                                        color: crumb.last
+                                               ? root.ink
+                                               : (crumbMouse.containsMouse ? root.ink : root.inkFaint)
+                                        font.family: root.monoFamily
+                                        font.pixelSize: 12
+
+                                        MouseArea {
+                                            id: crumbMouse
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: backendObject.navigate(crumb.modelData.path)
+                                        }
+                                    }
+
+                                    Text {
+                                        visible: !crumb.last
+                                        text: "\u203a"
+                                        color: root.inkGhost
+                                        font.family: root.sansFamily
+                                        font.pixelSize: 11
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
 
                 Rectangle {
-                    id: searchField
-                    anchors.left: parent.left
-                    anchors.top: parent.top
-                    width: 280
-                    height: 32
-                    radius: 7
-                    color: root.raised
+                    id: headerSearch
+                    anchors.right: headerReload.left
+                    anchors.rightMargin: 10
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 260
+                    height: root.controlHeight
+                    radius: 9
+                    color: root.inset
                     border.width: 1
-                    border.color: searchInput.activeFocus ? root.lineStrong : root.line
+                    border.color: searchInput.activeFocus ? root.spectralDim : root.line
 
-                    Text {
-                        id: searchGlyph
+                    Glyph {
+                        id: searchMark
                         anchors.left: parent.left
-                        anchors.leftMargin: 10
+                        anchors.leftMargin: 11
                         anchors.verticalCenter: parent.verticalCenter
-                        text: "⌕"
-                        color: root.inkFaint
-                        font.family: root.sansFamily
-                        font.pixelSize: 14
+                        text: root.deepSearch ? "\u2318" : "\u2315"
+                        color: root.deepSearch ? root.spectral : root.inkGhost
+                        font.pixelSize: 13
                     }
 
                     TextInput {
                         id: searchInput
-                        anchors.left: searchGlyph.right
+                        anchors.left: searchMark.right
                         anchors.leftMargin: 8
                         anchors.right: clearSearch.left
                         anchors.rightMargin: 6
@@ -1626,7 +1899,7 @@ ApplicationWindow {
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
                             visible: searchInput.text.length === 0
-                            text: "Search files  ·  ⏎ to search everywhere"
+                            text: "search"
                             color: root.inkGhost
                             font.family: root.sansFamily
                             font.pixelSize: 12
@@ -1636,121 +1909,217 @@ ApplicationWindow {
                     IconAction {
                         id: clearSearch
                         anchors.right: parent.right
-                        anchors.rightMargin: 2
+                        anchors.rightMargin: 3
                         anchors.verticalCenter: parent.verticalCenter
                         visible: root.query.length > 0
                         implicitWidth: 24
                         implicitHeight: 24
-                        glyph: "✕"
+                        glyph: "\u2715"
                         hint: "Clear search"
-                        onActivated: root.query = ""
+                        onActivated: {
+                            root.endDeepSearch()
+                            root.query = ""
+                        }
                     }
                 }
 
-                // Path, on the same line as the search.
-                Flickable {
-                    anchors.left: searchField.right
-                    anchors.leftMargin: 14
+                IconAction {
+                    id: headerReload
                     anchors.right: parent.right
-                    anchors.verticalCenter: searchField.verticalCenter
-                    height: 20
-                    contentWidth: crumbRow.width
-                    clip: true
-                    flickableDirection: Flickable.HorizontalFlick
+                    anchors.verticalCenter: parent.verticalCenter
+                    implicitWidth: root.controlHeight
+                    implicitHeight: root.controlHeight
+                    glyph: "\u27f3"
+                    hint: "Refresh"
+                    onActivated: backendObject.refresh()
+                }
+            }
 
-                    Row {
-                        id: crumbRow
-                        height: parent.height
-                        spacing: 3
+            // ---- Folder bar: the name, what is in here, how to look at it ----
+            Item {
+                id: folderBar
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: header.bottom
+                anchors.leftMargin: 16
+                anchors.rightMargin: 16
+                anchors.topMargin: 12
+                height: root.bandHeight
 
-                        Repeater {
-                            model: root.crumbs
-                            delegate: Row {
-                                id: crumb
-                                required property int index
-                                required property var modelData
-                                readonly property bool last: crumb.index === root.crumbs.length - 1
-                                spacing: 3
+                // The name sits on a tab that runs into the pane below it, so
+                // the folder reads as the label of what is being shown.
+                Item {
+                    id: folderTab
+                    anchors.left: parent.left
+                    anchors.bottom: parent.bottom
+                    width: Math.min(folderName.implicitWidth + 34, parent.width * 0.42)
+                    height: parent.height
+
+                    Shape {
+                        anchors.fill: parent
+                        preferredRendererType: Shape.CurveRenderer
+
+                        ShapePath {
+                            fillColor: root.raised
+                            strokeColor: root.line
+                            strokeWidth: 1
+                            // Square at the top-left, cut away at the
+                            // bottom-right so the tab leans into the pane.
+                            startX: 1; startY: 1
+                            PathLine { x: folderTab.width - 1; y: 1 }
+                            PathLine { x: folderTab.width - 1; y: folderTab.height - 15 }
+                            PathLine { x: folderTab.width - 15; y: folderTab.height - 1 }
+                            PathLine { x: 1; y: folderTab.height - 1 }
+                            PathLine { x: 1; y: 1 }
+                        }
+                    }
+
+                    Text {
+                        id: folderName
+                        anchors.left: parent.left
+                        anchors.leftMargin: 16
+                        anchors.right: parent.right
+                        anchors.rightMargin: 18
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.verticalCenterOffset: -3
+                        text: root.recentOpen
+                              ? "Recent"
+                              : root.leafName(backendObject.currentPath)
+                        elide: Text.ElideMiddle
+                        color: root.ink
+                        font.family: root.sansFamily
+                        font.pixelSize: 19
+                        font.weight: Font.DemiBold
+                    }
+                }
+
+                // What this folder is made of, beside its name.
+                Rectangle {
+                    id: mixPanel
+                    anchors.left: folderTab.right
+                    anchors.leftMargin: 14
+                    anchors.bottom: parent.bottom
+                    // Bounded, not stretched. Given the whole gap it grew to a
+                    // thousand pixels of bar for five numbers, which is what
+                    // made the top of the window look lopsided.
+                    width: Math.max(0, Math.min(440, parent.width - folderTab.width
+                                                     - viewControls.width - 40))
+                    height: parent.height
+                    radius: 9
+                    color: root.inset
+                    border.width: 1
+                    border.color: root.line
+                    visible: width > 180
+
+                    Column {
+                        id: mixColumn
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.margins: 10
+                        spacing: 6
+
+                        Item {
+                            width: parent.width
+                            height: 11
+
+                            Overline {
+                                anchors.left: parent.left
                                 anchors.verticalCenter: parent.verticalCenter
+                                text: "THIS FOLDER"
+                            }
 
-                                Text {
-                                    text: crumb.modelData.label
-                                    color: crumb.last
-                                           ? root.inkMuted
-                                           : (crumbMouse.containsMouse ? root.ink : root.inkFaint)
-                                    font.family: root.monoFamily
-                                    font.pixelSize: 12
+                            Mono {
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: root.compositionTotal + " items"
+                                font.pixelSize: 10
+                            }
+                        }
 
-                                    MouseArea {
-                                        id: crumbMouse
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: backendObject.navigate(crumb.modelData.path)
-                                    }
+                        Row {
+                            width: parent.width
+                            height: 5
+                            spacing: 2
+
+                            Repeater {
+                                model: root.composition
+
+                                delegate: Rectangle {
+                                    id: mixSegment
+                                    required property var modelData
+                                    readonly property real share: root.compositionTotal > 0
+                                                                  ? mixSegment.modelData.count / root.compositionTotal
+                                                                  : 0
+                                    visible: mixSegment.modelData.count > 0
+                                    width: Math.max(0, (mixColumn.width
+                                                        - 2 * Math.max(0, root.compositionShown - 1))
+                                                       * mixSegment.share)
+                                    height: 5
+                                    radius: 3
+                                    color: mixSegment.modelData.shade
                                 }
+                            }
 
-                                Text {
-                                    visible: !crumb.last
-                                    text: "›"
-                                    color: root.inkGhost
-                                    font.family: root.sansFamily
-                                    font.pixelSize: 11
+                            Rectangle {
+                                visible: root.compositionTotal === 0
+                                width: mixColumn.width
+                                height: 5
+                                radius: 3
+                                color: root.raisedHigh
+                            }
+                        }
+
+                        Row {
+                            width: parent.width
+                            spacing: 10
+                            clip: true
+
+                            Repeater {
+                                model: root.composition
+
+                                delegate: Row {
+                                    id: mixLegend
+                                    required property var modelData
+                                    visible: mixLegend.modelData.count > 0
+                                    spacing: 5
+
+                                    Rectangle {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: 5
+                                        height: 5
+                                        radius: 3
+                                        color: mixLegend.modelData.shade
+                                    }
+
+                                    Text {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: mixLegend.modelData.label
+                                        color: root.inkFaint
+                                        font.family: root.sansFamily
+                                        font.pixelSize: 10
+                                    }
+
+                                    Mono {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: mixLegend.modelData.count
+                                        color: root.inkGhost
+                                        font.pixelSize: 10
+                                    }
                                 }
                             }
                         }
                     }
                 }
 
-                // ---- Title line ----
-                Column {
-                    anchors.left: parent.left
-                    anchors.bottom: parent.bottom
-                    spacing: 6
-
-                    SectionTitle {
-                        text: root.leafName(backendObject.currentPath)
-                        font.pixelSize: 30
-                    }
-
-                    Mono {
-                        text: root.rows.length + " shown · " + backendObject.entryCount() + " in folder"
-                        font.pixelSize: 11
-                    }
-                }
-
                 Row {
+                    id: viewControls
                     anchors.right: parent.right
-                    anchors.bottom: parent.bottom
-                    anchors.bottomMargin: 2
+                    anchors.verticalCenter: parent.verticalCenter
                     spacing: 6
 
                     IconAction {
-                        glyph: "←"
-                        hint: "Back"
-                        onActivated: backendObject.back()
-                    }
-
-                    IconAction {
-                        glyph: "→"
-                        hint: "Forward"
-                        onActivated: backendObject.forward()
-                    }
-
-                    IconAction {
-                        glyph: "↑"
-                        hint: "Parent folder"
-                        onActivated: backendObject.up()
-                    }
-
-                    IconAction {
-                        glyph: "⟳"
-                        hint: "Refresh"
-                        onActivated: backendObject.refresh()
-                    }
-
-                    IconAction {
-                        glyph: root.showHidden ? "◉" : "◌"
+                        glyph: root.showHidden ? "\u25c9" : "\u25cc"
                         active: root.showHidden
                         hint: root.showHidden
                               ? "Hide dotfiles  (Ctrl+H)"
@@ -1759,7 +2128,7 @@ ApplicationWindow {
                     }
 
                     IconAction {
-                        glyph: root.previewOpen ? "◨" : "◧"
+                        glyph: root.previewOpen ? "\u25e8" : "\u25e7"
                         hint: root.previewOpen ? "Hide preview" : "Show preview"
                         onActivated: root.previewOpen = !root.previewOpen
                     }
@@ -1778,7 +2147,7 @@ ApplicationWindow {
                             spacing: 2
 
                             Repeater {
-                                model: [{ mode: "list", glyph: "≡" }, { mode: "grid", glyph: "▦" }]
+                                model: [{ mode: "list", glyph: "\u2261" }, { mode: "grid", glyph: "\u25a6" }]
                                 delegate: Rectangle {
                                     id: viewOption
                                     required property var modelData
@@ -1788,14 +2157,13 @@ ApplicationWindow {
                                     radius: 6
                                     color: viewOption.current ? root.raisedHigh : "transparent"
                                     border.width: viewOption.current ? 1 : 0
-                                    border.color: root.lineStrong
+                                    border.color: root.line
 
-                                    Text {
+                                    Glyph {
                                         anchors.centerIn: parent
                                         text: viewOption.modelData.glyph
                                         color: viewOption.current ? root.ink : root.inkGhost
-                                        font.family: root.sansFamily
-                                        font.pixelSize: 14
+                                        font.pixelSize: 13
                                     }
 
                                     MouseArea {
@@ -1811,21 +2179,49 @@ ApplicationWindow {
             }
 
             // ---- Browser ----
-            Rectangle {
+            Item {
                 id: browser
                 anchors.left: parent.left
                 anchors.right: parent.right
-                anchors.top: header.bottom
+                anchors.top: folderBar.bottom
                 anchors.bottom: parent.bottom
-                anchors.leftMargin: 20
-                anchors.rightMargin: 20
-                anchors.topMargin: 12
-                anchors.bottomMargin: 16
-                radius: 12
-                color: root.raised
-                border.width: 1
-                border.color: root.line
+                anchors.leftMargin: 16
+                anchors.rightMargin: 16
+                anchors.topMargin: 0
+                anchors.bottomMargin: 14
                 clip: true
+
+                // The pane is cut away at the bottom-right, as the mockup draws
+                // it. A Shape rather than a Rectangle, since a corner cannot be
+                // taken out of a radius.
+                Shape {
+                    anchors.fill: parent
+                    preferredRendererType: Shape.CurveRenderer
+
+                    ShapePath {
+                        fillColor: root.raised
+                        strokeColor: root.line
+                        strokeWidth: 1
+                        startX: 12; startY: 1
+                        PathLine { x: browser.width - 12; y: 1 }
+                        PathArc {
+                            x: browser.width - 1; y: 12
+                            radiusX: 11; radiusY: 11
+                        }
+                        PathLine { x: browser.width - 1; y: browser.height - 54 }
+                        PathLine { x: browser.width - 54; y: browser.height - 1 }
+                        PathLine { x: 12; y: browser.height - 1 }
+                        PathArc {
+                            x: 1; y: browser.height - 12
+                            radiusX: 11; radiusY: 11
+                        }
+                        PathLine { x: 1; y: 12 }
+                        PathArc {
+                            x: 12; y: 1
+                            radiusX: 11; radiusY: 11
+                        }
+                    }
+                }
 
                 // Selection toolbar, present only while something is held.
                 Rectangle {
@@ -2018,7 +2414,7 @@ ApplicationWindow {
                 Column {
                     anchors.centerIn: parent
                     spacing: 10
-                    visible: !root.deepSearch && backendObject.loading && root.rows.length === 0
+                    visible: !root.deepSearch && !root.recentOpen && backendObject.loading && root.rows.length === 0
 
                     Item {
                         id: spinnerTrack
@@ -2076,7 +2472,7 @@ ApplicationWindow {
                 Column {
                     anchors.centerIn: parent
                     spacing: 6
-                    visible: !root.deepSearch && !backendObject.loading && root.rows.length === 0
+                    visible: !root.deepSearch && !root.recentOpen && !backendObject.loading && root.rows.length === 0
 
                     Glyph {
                         anchors.horizontalCenter: parent.horizontalCenter
@@ -2096,6 +2492,119 @@ ApplicationWindow {
                     }
                 }
 
+                // ---- Recent ----
+                // The desktop's own record of what was opened, by any
+                // application. Nothing is written back to it: browsing is not
+                // using, and the rest of the desktop reads this list too.
+                ListView {
+                    id: recentBrowser
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: selectionBar.bottom
+                    anchors.bottom: parent.bottom
+                    anchors.margins: 12
+                    visible: root.recentOpen
+                    clip: true
+                    model: {
+                        void root.revision
+                        return backendObject.recentCount()
+                    }
+                    boundsBehavior: Flickable.StopAtBounds
+                    cacheBuffer: 800
+
+                    delegate: Rectangle {
+                        id: recentRow
+                        required property int index
+                        readonly property string name: {
+                            void root.revision
+                            return backendObject.recentName(recentRow.index)
+                        }
+                        readonly property string where: {
+                            void root.revision
+                            return backendObject.recentFolder(recentRow.index)
+                        }
+                        readonly property string kind: root.kindOf(recentRow.name, false)
+
+                        width: ListView.view.width
+                        height: 44
+                        radius: 6
+                        color: recentMouse.containsMouse ? root.hover : "transparent"
+
+                        EntryIcon {
+                            id: recentGlyph
+                            anchors.left: parent.left
+                            anchors.leftMargin: 10
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 20
+                            height: 20
+                            entry: -1
+                            allowThumbnail: false
+                            kind: recentRow.kind
+                            tint: root.markTone(recentRow.kind)
+                            markSize: recentRow.kind === "Code" ? 10 : 12
+                        }
+
+                        Text {
+                            id: recentName
+                            anchors.left: recentGlyph.right
+                            anchors.leftMargin: 10
+                            anchors.right: parent.right
+                            anchors.rightMargin: 12
+                            anchors.top: parent.top
+                            anchors.topMargin: 6
+                            text: recentRow.name
+                            elide: Text.ElideMiddle
+                            color: root.inkMuted
+                            font.family: root.sansFamily
+                            font.pixelSize: 13
+                        }
+
+                        Mono {
+                            anchors.left: recentName.left
+                            anchors.right: parent.right
+                            anchors.rightMargin: 12
+                            anchors.top: recentName.bottom
+                            anchors.topMargin: 1
+                            text: recentRow.where
+                            elide: Text.ElideLeft
+                            font.pixelSize: 10
+                        }
+
+                        MouseArea {
+                            id: recentMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                root.recentOpen = false
+                                backendObject.navigate(recentRow.where)
+                            }
+                            onDoubleClicked: backendObject.openPath(backendObject.recentPath(recentRow.index))
+                        }
+                    }
+
+                    Column {
+                        anchors.centerIn: parent
+                        spacing: 6
+                        visible: recentBrowser.count === 0
+
+                        Glyph {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: "◴"
+                            font.pixelSize: 20
+                            color: root.inkGhost
+                        }
+
+                        Text {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: "The desktop has no record of recent files"
+                            color: root.inkFaint
+                            font.family: root.sansFamily
+                            font.pixelSize: 13
+                        }
+                    }
+                }
+
                 // ---- Search results ----
                 // Everything beneath this folder whose name matches. Results
                 // appear while the walk is still running, so a match in the
@@ -2107,7 +2616,7 @@ ApplicationWindow {
                     anchors.top: selectionBar.bottom
                     anchors.bottom: resultsFoot.top
                     anchors.margins: 12
-                    visible: root.deepSearch
+                    visible: root.deepSearch && !root.recentOpen
                     clip: true
                     model: root.searchHits
                     boundsBehavior: Flickable.StopAtBounds
@@ -2250,7 +2759,7 @@ ApplicationWindow {
                     anchors.leftMargin: 14
                     anchors.rightMargin: 14
                     anchors.bottomMargin: 8
-                    visible: !root.deepSearch && root.view === "list" && root.rows.length > 0
+                    visible: !root.deepSearch && !root.recentOpen && root.view === "list" && root.rows.length > 0
                     clip: true
                     model: root.rows
                     boundsBehavior: Flickable.StopAtBounds
@@ -2489,7 +2998,7 @@ ApplicationWindow {
                     anchors.top: selectionBar.bottom
                     anchors.bottom: parent.bottom
                     anchors.margins: 12
-                    visible: !root.deepSearch && root.view === "grid" && root.rows.length > 0
+                    visible: !root.deepSearch && !root.recentOpen && root.view === "grid" && root.rows.length > 0
                     clip: true
                     model: root.rows
                     cellWidth: Math.floor(width / Math.max(3, Math.floor(width / 116)))
