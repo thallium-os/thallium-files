@@ -8,9 +8,9 @@ use std::{sync::Arc, time::Duration};
 use thallium_actions::{Command, CommandEnvelope, Coordinator, CoordinatorConfig};
 use thallium_fs_core::{Location, NativePath};
 use thallium_protocol::{StateDelta, StateSnapshot};
+use thallium_rclone::{Rclone, Remotes, RoutedFs, config::{Provider, Session}};
 use thallium_scheduler::Scheduler;
 use thallium_state::BrowserState;
-use thallium_vfs::LocalBackend;
 use thallium_watcher::Watcher;
 use tokio::{runtime::Runtime, sync::{mpsc, oneshot}, task::JoinHandle};
 
@@ -22,6 +22,11 @@ pub struct Backend {
 	requests:   Option<mpsc::Sender<ServiceRequest>>,
 	events:     mpsc::Receiver<StateDelta>,
 	owner_task: Option<JoinHandle<()>>,
+	/// The remote services this session found configured. Shared with the
+	/// router, so a remote configured from the interface is reachable at once.
+	remotes:    Remotes,
+	/// The rclone daemon, absent when rclone is not installed.
+	daemon:     Option<Arc<Rclone>>,
 }
 
 impl Backend {
@@ -46,8 +51,15 @@ impl Backend {
 		let (requests, request_rx) = mpsc::channel(capacity);
 		let (event_tx, events) = mpsc::channel(capacity);
 		let (ready, startup) = oneshot::channel();
+		let mut remotes = Remotes::default();
+		let mut daemon = None;
 		let owner_task = runtime.block_on(async {
-			let vfs = Arc::new(LocalBackend::new());
+			// Remote services are optional: without rclone this is exactly the
+			// local filesystem, and the browser is unaffected.
+			let remoting = thallium_rclone::connect().await;
+			remotes = remoting.remotes;
+			daemon = remoting.daemon;
+			let vfs = Arc::new(remoting.router);
 			let scheduler = Scheduler::new(Arc::clone(&vfs), config.scheduler);
 			let watcher = Watcher::new(Arc::clone(&vfs), config.watcher)
 				.map_err(|error| BackendError::Configuration(error.to_string()))?;
@@ -75,12 +87,95 @@ impl Backend {
 			requests: Some(requests),
 			events,
 			owner_task: Some(owner_task),
+			remotes,
+			daemon,
 		})
+	}
+
+	/// The remote services available this session.
+	pub fn remotes(&self) -> &Remotes { &self.remotes }
+
+	/// Whether remotes can be configured at all, which is to say whether
+	/// rclone is installed.
+	pub fn can_configure_remotes(&self) -> bool { self.daemon.is_some() }
+
+	/// Every storage system this rclone build supports.
+	pub fn remote_providers(&self) -> BackendResult<Vec<Provider>> {
+		self.on_daemon(|rclone| async move { thallium_rclone::config::providers(&rclone).await })
+	}
+
+	/// Start configuring a remote, returning its first question.
+	pub fn begin_remote(&self, name: &str, kind: &str) -> BackendResult<Session> {
+		let (name, kind) = (name.to_owned(), kind.to_owned());
+		self.on_daemon(
+			|rclone| async move { thallium_rclone::config::begin(&rclone, &name, &kind).await },
+		)
+	}
+
+	/// Answer the outstanding question and return what rclone asks next.
+	pub fn answer_remote(&self, session: &Session, response: &str) -> BackendResult<Session> {
+		let (session, response) = (session.clone(), response.to_owned());
+		self.on_daemon(|rclone| async move {
+			thallium_rclone::config::answer(&rclone, &session, &response).await
+		})
+	}
+
+	/// Remove a remote from the user's rclone configuration.
+	pub fn forget_remote(&self, name: &str) -> BackendResult<()> {
+		let name = name.to_owned();
+		self.on_daemon(|rclone| async move { thallium_rclone::config::delete(&rclone, &name).await })
+	}
+
+	/// Re-read the configuration, so a remote just added becomes navigable.
+	pub fn refresh_remotes(&self) -> BackendResult<()> {
+		let names = self.on_daemon(|rclone| async move { rclone.remotes().await })?;
+		self.remotes.replace(names);
+		Ok(())
+	}
+
+	/// Run one daemon call on the owned runtime.
+	/// Start a browser consent flow for a provider that needs OAuth.
+	///
+	/// The handle it returns is filled in by a child process, so the caller can
+	/// keep drawing while the user logs in; see [`thallium_rclone::authorize`].
+	pub fn begin_consent(&self, kind: &str) -> BackendResult<thallium_rclone::authorize::Shared> {
+		let runtime = self.runtime.as_ref().ok_or(BackendError::NotStarted)?;
+		let _guard = runtime.enter();
+		Ok(thallium_rclone::authorize::start(kind))
+	}
+
+	fn on_daemon<T, F>(&self, call: impl FnOnce(Arc<Rclone>) -> F) -> BackendResult<T>
+	where
+		F: Future<Output = thallium_fs_core::FsResult<T>>,
+	{
+		let rclone = self.daemon.clone().ok_or_else(|| {
+			BackendError::Configuration("rclone is not installed, so remotes cannot be configured".into())
+		})?;
+		let runtime = self.runtime.as_ref().ok_or(BackendError::NotStarted)?;
+		runtime.block_on(call(rclone)).map_err(|error| BackendError::Action(error.message))
 	}
 
 	/// Validate and enqueue a semantic command for the single action/state owner.
 	pub fn submit_command(&mut self, command: CommandEnvelope) -> BackendResult<()> {
 		self.request(|reply| ServiceRequest::Dispatch(command, reply))?.map_err(BackendError::Action)
+	}
+
+	/// Dispatch without waiting for the outcome.
+	///
+	/// The owner does not answer a dispatch until its effects have run, and a
+	/// remote listing is a network round trip. Waiting for that on the thread
+	/// that draws is what made opening a remote look like a hang, so the reply
+	/// is handed back for the caller to collect on a later poll.
+	pub fn submit_detached(
+		&mut self,
+		command: Command,
+	) -> BackendResult<oneshot::Receiver<Result<(), String>>> {
+		let sender = self.requests.as_ref().ok_or(BackendError::NotStarted)?;
+		let (reply, response) = oneshot::channel();
+		sender
+			.try_send(ServiceRequest::DispatchCurrent(command, reply))
+			.map_err(|_| BackendError::ServiceUnavailable)?;
+		Ok(response)
 	}
 
 	/// Dispatch against the latest owner-side revision, suitable for a frontend
@@ -137,7 +232,7 @@ impl Drop for Backend {
 }
 
 async fn run_owner(
-	mut coordinator: Coordinator<LocalBackend>,
+	mut coordinator: Coordinator<RoutedFs>,
 	mut requests: mpsc::Receiver<ServiceRequest>,
 	events: mpsc::Sender<StateDelta>,
 	initial: Location,
