@@ -1,0 +1,24 @@
+[package]
+name = "thallium-icons"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+freedesktop-icons = "0.4.0"
+image = { version = "0.25.6", default-features = false, features = [ "bmp", "gif", "jpeg", "png", "tiff", "webp" ] }
+mime = "0.3.17"
+md-5 = "0.10.6"
+percent-encoding = "2.3.2"
+png = "0.17.16"
+xdg-mime = "0.4.0"
+
+[dev-dependencies]
+tempfile = "3.25.0"
+
+[lints]
+workspace = true

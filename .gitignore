@@ -9,3 +9,10 @@ target/
 # Editors / OS
 .DS_Store
 *.swp
+
+# Secrets
+.env
+.env.*
+*.key
+*.pem
+secrets/
