@@ -8,6 +8,7 @@
 mod backend;
 mod config;
 mod error;
+mod search;
 mod services;
 
 #[cfg(feature = "qt")]
