@@ -11,7 +11,7 @@ use thallium_icons::{IconService, Thumbnail};
 use thallium_protocol::{BrowserStateSnapshot, DirectoryEntryRow, PathBytes, TaskInfo, TaskStatus};
 use thallium_rclone::{Remotes, authorize, config::{Provider, Session, Step}};
 
-use crate::{Backend, BackendConfig, BackendResult, search::Search};
+use crate::{Backend, BackendConfig, BackendResult, recents::Recent, search::Search, storage::Measure};
 
 #[cxx_qt::bridge]
 pub mod ffi {
@@ -121,6 +121,45 @@ pub mod ffi {
 		#[qinvokable]
 		#[rust_name = "open_path"]
 		fn openPath(&self, path: &QString);
+		#[qinvokable]
+		#[rust_name = "refresh_recents"]
+		fn refreshRecents(self: Pin<&mut Self>);
+		#[qinvokable]
+		#[rust_name = "recent_count"]
+		fn recentCount(&self) -> i32;
+		#[qinvokable]
+		#[rust_name = "recent_name"]
+		fn recentName(&self, index: i32) -> QString;
+		#[qinvokable]
+		#[rust_name = "recent_path"]
+		fn recentPath(&self, index: i32) -> QString;
+		#[qinvokable]
+		#[rust_name = "recent_folder"]
+		fn recentFolder(&self, index: i32) -> QString;
+		#[qinvokable]
+		#[rust_name = "storage_total"]
+		fn storageTotal(&self) -> f64;
+		#[qinvokable]
+		#[rust_name = "storage_used"]
+		fn storageUsed(&self) -> f64;
+		#[qinvokable]
+		#[rust_name = "storage_known"]
+		fn storageKnown(&self) -> bool;
+		#[qinvokable]
+		#[rust_name = "storage_share"]
+		fn storageShare(&self) -> f64;
+		#[qinvokable]
+		#[rust_name = "folder_bytes"]
+		fn folderBytes(&self) -> f64;
+		#[qinvokable]
+		#[rust_name = "folder_files"]
+		fn folderFiles(&self) -> f64;
+		#[qinvokable]
+		#[rust_name = "folder_measuring"]
+		fn folderMeasuring(&self) -> bool;
+		#[qinvokable]
+		#[rust_name = "folder_share"]
+		fn folderShare(&self) -> f64;
 		#[qinvokable]
 		#[rust_name = "config_waiting"]
 		fn configWaiting(&self) -> bool;
@@ -253,6 +292,13 @@ pub struct BackendBridgeRust {
 	pending:        Option<tokio::sync::oneshot::Receiver<Result<(), String>>>,
 	/// Recursive name search over the local filesystem.
 	search:         Search,
+	/// The desktop's recent-files list, re-read when the panel is opened.
+	recents:        Vec<Recent>,
+	/// A running count of what the open directory holds.
+	measure:        Measure,
+	/// The directory `measure` was last started for, so navigating restarts it
+	/// and a redraw does not.
+	measured:       String,
 }
 
 /// Polls between full reconciles, at the frontend's 100ms poll interval.
@@ -296,6 +342,9 @@ impl Default for BackendBridgeRust {
 					searching: false,
 					pending: None,
 					search: Search::new(),
+					recents: Vec::new(),
+					measure: Measure::new(),
+					measured: String::new(),
 				}
 			}
 			Err(error) => Self {
@@ -314,6 +363,9 @@ impl Default for BackendBridgeRust {
 				searching:      false,
 				pending:        None,
 				search:         Search::new(),
+				recents:        Vec::new(),
+				measure:        Measure::new(),
+				measured:       String::new(),
 			},
 		}
 	}
@@ -334,6 +386,10 @@ impl ffi::BackendBridge {
 
 		let settled = self.as_mut().collect_pending();
 
+		// Navigating starts a new count of what the directory holds.
+		self.as_mut().measure_folder();
+		let counting = self.rust().measure.walking();
+
 		// A search publishes as it walks, so the view is told whenever results
 		// have arrived and again when the walk stops.
 		let found = self.rust().search.take_arrived() > 0;
@@ -342,7 +398,8 @@ impl ffi::BackendBridge {
 		if walking != was_walking {
 			self.as_mut().set_searching(walking);
 		}
-		if found || walking != was_walking {
+		// A count in progress changes the sidebar on every tick until it stops.
+		if found || walking != was_walking || counting {
 			let revision = self.model_revision().saturating_add(1);
 			self.as_mut().set_model_revision(revision);
 		}
@@ -388,7 +445,20 @@ impl ffi::BackendBridge {
 
 	pub fn forward(self: Pin<&mut Self>) { self.submit_detached(Command::NavigateForward); }
 
-	pub fn refresh(self: Pin<&mut Self>) { self.submit_detached(Command::Refresh); }
+	/// Re-read the directory, and count what it holds again.
+	///
+	/// A count stands for a while once made, so refreshing is how the size is
+	/// asked for afresh rather than waiting for that to lapse.
+	pub fn refresh(mut self: Pin<&mut Self>) {
+		if let Some(location) = self.rust().snapshot.current_location.as_ref()
+			&& location.backend_id == 0
+		{
+			let path = native_path(&location.path);
+			self.rust().measure.forget(&path);
+			self.as_mut().rust_mut().measured = String::new();
+		}
+		self.submit_detached(Command::Refresh);
+	}
 
 	pub fn entry_count(&self) -> i32 { count(self.rust().snapshot.directory.entries.len()) }
 
@@ -729,6 +799,101 @@ impl ffi::BackendBridge {
 
 	fn hit(&self, index: i32) -> Option<crate::search::Hit> {
 		usize::try_from(index).ok().and_then(|index| self.rust().search.hit(index))
+	}
+
+	/// Re-read the desktop's recent-files list.
+	///
+	/// Read on demand rather than watched: other applications append to it
+	/// constantly, and the panel is only looked at now and then.
+	pub fn refresh_recents(mut self: Pin<&mut Self>) {
+		let home = PathBuf::from(String::from(self.home_path()));
+		let found = crate::recents::read(&home);
+		self.as_mut().rust_mut().recents = found;
+		let revision = self.model_revision().saturating_add(1);
+		self.as_mut().set_model_revision(revision);
+	}
+
+	pub fn recent_count(&self) -> i32 { count(self.rust().recents.len()) }
+
+	pub fn recent_name(&self, index: i32) -> QString {
+		self.recent(index).map_or_else(QString::default, |entry| QString::from(&entry.name))
+	}
+
+	pub fn recent_path(&self, index: i32) -> QString {
+		self.recent(index).map_or_else(QString::default, |entry| {
+			QString::from(&entry.path.to_string_lossy().into_owned())
+		})
+	}
+
+	pub fn recent_folder(&self, index: i32) -> QString {
+		self.recent(index).map_or_else(QString::default, |entry| {
+			let folder =
+				entry.path.parent().map_or_else(String::new, |at| at.to_string_lossy().into_owned());
+			QString::from(&folder)
+		})
+	}
+
+	fn recent(&self, index: i32) -> Option<&Recent> {
+		usize::try_from(index).ok().and_then(|index| self.rust().recents.get(index))
+	}
+
+	/// Capacity of the filesystem the open directory lives on. A remote reports
+	/// nothing: its capacity is not this machine's to describe.
+	fn usage(&self) -> Option<crate::storage::Usage> {
+		let location = self.rust().snapshot.current_location.as_ref()?;
+		if location.backend_id != 0 {
+			return None;
+		}
+		crate::storage::of(&native_path(&location.path))
+	}
+
+	pub fn storage_total(&self) -> f64 { self.usage().map_or(0.0, |usage| usage.total as f64) }
+
+	pub fn storage_used(&self) -> f64 { self.usage().map_or(0.0, |usage| usage.used() as f64) }
+
+	pub fn storage_known(&self) -> bool { self.usage().is_some_and(|usage| usage.total > 0) }
+
+	/// How full the disk is, as a fraction. Computed here rather than in the
+	/// frontend so the division has one home and one guard against a zero size.
+	pub fn storage_share(&self) -> f64 { self.usage().map_or(0.0, |usage| usage.share_used()) }
+
+	pub fn folder_bytes(&self) -> f64 { self.rust().measure.bytes() as f64 }
+
+	pub fn folder_files(&self) -> f64 { self.rust().measure.files() as f64 }
+
+	pub fn folder_measuring(&self) -> bool { self.rust().measure.walking() }
+
+	/// What the open directory takes of the disk it is on. This is what the ring
+	/// draws: the folder against its filesystem, not the filesystem alone.
+	pub fn folder_share(&self) -> f64 {
+		let total = self.usage().map_or(0, |usage| usage.total);
+		if total == 0 {
+			return 0.0;
+		}
+		(self.rust().measure.bytes() as f64 / total as f64).clamp(0.0, 1.0)
+	}
+
+	/// Count what the open directory holds, once per directory.
+	///
+	/// A remote is not counted: every subdirectory would be another network
+	/// round trip, which is not worth a number in the sidebar.
+	fn measure_folder(mut self: Pin<&mut Self>) {
+		let local = self
+			.rust()
+			.snapshot
+			.current_location
+			.as_ref()
+			.filter(|location| location.backend_id == 0)
+			.map(|location| native_path(&location.path));
+		let here = local.as_ref().map_or_else(String::new, |path| path.to_string_lossy().into_owned());
+		if here == self.rust().measured {
+			return;
+		}
+		self.as_mut().rust_mut().measured = here;
+		match local {
+			Some(path) => self.rust().measure.start(path),
+			None => self.rust().measure.cancel(),
+		}
 	}
 
 	/// Hand an arbitrary local path to the desktop.

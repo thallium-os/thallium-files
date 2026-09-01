@@ -1633,6 +1633,7 @@ dependencies = [
  "cxx-qt",
  "cxx-qt-build",
  "cxx-qt-lib",
+ "libc",
  "tempfile",
  "thallium-actions",
  "thallium-fs-core",

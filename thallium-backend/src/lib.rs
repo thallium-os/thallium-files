@@ -8,8 +8,10 @@
 mod backend;
 mod config;
 mod error;
+mod recents;
 mod search;
 mod services;
+mod storage;
 
 #[cfg(feature = "qt")]
 pub mod qt_bridge;
