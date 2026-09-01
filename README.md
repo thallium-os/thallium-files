@@ -32,9 +32,13 @@ shutdown all round-trip through coordinator, scheduler and VFS.
 Known gaps, each pinned by a test rather than left silent:
 
 - Copy handles regular files only. Delete recurses; copy does not.
-- `LocalFs` is the only VFS backend.
+- Remote services need `rclone` installed; remotes themselves are added from
+  the sidebar. Without rclone the browser is local-only. Remotes have no trash,
+  links or mode bits.
 - Trashing depends on an XDG trash directory being present and reachable.
 - The watcher's reporter is a stub, so refresh is explicit rather than live.
+- Video thumbnails need `ffmpegthumbnailer` installed; without it those files
+  keep their type icon. SVG files are not thumbnailed either and keep theirs.
 
 ## Installation
 
@@ -46,6 +50,8 @@ Not packaged yet. No `debian/` at repo root.
 thallium-fs-core    types, paths, metadata, deltas, errors
 thallium-protocol   frontend-visible DTOs (depends on fs-core)
 thallium-vfs        VfsFacade trait + LocalFs backend
+thallium-rclone     rclone-backed remotes + local/remote routing
+thallium-icons      XDG icon theme lookup + freedesktop thumbnails
 thallium-watcher    notify-backed watcher, batching, refresh
 thallium-scheduler  task queue, progress, cancellation
 thallium-state      browser state reducer + history
