@@ -348,7 +348,15 @@ impl<V: FileSystem + 'static> Coordinator<V> {
 				Err(error) => Ok(EffectFeedback::DirectoryScanFailed { location, generation, error }),
 			},
 			StateEffect::WatchLocations { locations } => {
-				let desired = WatchedSet::new(locations.into_iter().map(thallium_watcher::Watchee::local));
+				// The watcher is inotify over the local filesystem. A remote has
+				// no equivalent to offer it, so those locations go unwatched and
+				// are refreshed when they are navigated to instead.
+				let desired = WatchedSet::new(
+					locations
+						.into_iter()
+						.filter(|location| location.backend == BackendId::LOCAL)
+						.map(thallium_watcher::Watchee::local),
+				);
 				let (reply, response) = oneshot::channel();
 				self.send_watcher(WatcherCommand::Synchronize(desired, reply))?;
 				let diff = response
@@ -550,11 +558,12 @@ async fn run_watcher<V: FileSystem>(
 	}
 }
 
+/// A location is addressable if its path is absolute. Which backend answers for
+/// it is the router's business, not this one's: rejecting anything but
+/// [`BackendId::LOCAL`] here made every remote unreachable, since a command
+/// naming one never survived validation to be dispatched at all.
 fn validate_locations(locations: &[Location]) -> Result<(), ValidationError> {
-	if locations
-		.iter()
-		.any(|location| location.backend != BackendId::LOCAL || !location.is_absolute())
-	{
+	if locations.iter().any(|location| !location.is_absolute()) {
 		return Err(ValidationError::InvalidLocation);
 	}
 	Ok(())
