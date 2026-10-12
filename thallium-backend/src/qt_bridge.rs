@@ -11,7 +11,7 @@ use thallium_icons::{IconService, Thumbnail};
 use thallium_protocol::{BrowserStateSnapshot, DirectoryEntryRow, PathBytes, TaskInfo, TaskStatus};
 use thallium_rclone::{Remotes, authorize, config::{Provider, Session, Step}};
 
-use crate::{Backend, BackendConfig, BackendResult, apps, properties, recents::Recent, search::Search, storage::Measure, trash_bin, uri};
+use crate::{Backend, BackendConfig, BackendResult, apps, bookmarks, properties, recents::Recent, search::Search, storage::Measure, trash_bin, uri};
 
 #[cxx_qt::bridge]
 pub mod ffi {
@@ -213,6 +213,24 @@ pub mod ffi {
 		#[qinvokable]
 		#[rust_name = "open_terminal_here"]
 		fn openTerminalHere(self: Pin<&mut Self>);
+		#[qinvokable]
+		#[rust_name = "bookmark_count"]
+		fn bookmarkCount(&self) -> i32;
+		#[qinvokable]
+		#[rust_name = "bookmark_label"]
+		fn bookmarkLabel(&self, index: i32) -> QString;
+		#[qinvokable]
+		#[rust_name = "bookmark_path"]
+		fn bookmarkPath(&self, index: i32) -> QString;
+		#[qinvokable]
+		#[rust_name = "add_bookmark"]
+		fn addBookmark(self: Pin<&mut Self>, path: &QString);
+		#[qinvokable]
+		#[rust_name = "remove_bookmark"]
+		fn removeBookmark(self: Pin<&mut Self>, index: i32);
+		#[qinvokable]
+		#[rust_name = "rename_bookmark"]
+		fn renameBookmark(self: Pin<&mut Self>, index: i32, label: &QString);
 		#[qinvokable]
 		fn inspect(self: Pin<&mut Self>, row: i32);
 		#[qinvokable]
@@ -576,6 +594,40 @@ impl ffi::BackendBridge {
 		self.as_mut().rust_mut().revealing = Some(name.as_bytes().to_vec());
 		let parent = Location::local(NativePath::from(parent));
 		self.submit_detached(Command::Navigate(parent));
+	}
+
+	pub fn bookmark_count(&self) -> i32 { count(bookmarks::read().len()) }
+
+	pub fn bookmark_label(&self, index: i32) -> QString {
+		bookmark(index).map_or_else(QString::default, |mark| mark.label.as_str().into())
+	}
+
+	pub fn bookmark_path(&self, index: i32) -> QString {
+		bookmark(index)
+			.map_or_else(QString::default, |mark| String::from_utf8_lossy(&mark.path).as_ref().into())
+	}
+
+	pub fn add_bookmark(self: Pin<&mut Self>, path: &QString) {
+		let result = bookmarks::add(String::from(path).as_bytes());
+		self.after_bookmarks(result);
+	}
+
+	pub fn remove_bookmark(self: Pin<&mut Self>, index: i32) {
+		let Some(mark) = bookmark(index) else { return };
+		self.after_bookmarks(bookmarks::remove(&mark.path));
+	}
+
+	pub fn rename_bookmark(self: Pin<&mut Self>, index: i32, label: &QString) {
+		let Some(mark) = bookmark(index) else { return };
+		self.after_bookmarks(bookmarks::rename(&mark.path, &String::from(label)));
+	}
+
+	fn after_bookmarks(mut self: Pin<&mut Self>, result: Result<(), String>) {
+		if let Err(error) = result {
+			self.as_mut().set_last_error(error.into());
+		}
+		let revision = self.model_revision().saturating_add(1);
+		self.set_model_revision(revision);
 	}
 
 	/// Describe `row` for the Properties sheet; a folder's contents are
@@ -1658,6 +1710,10 @@ impl ffi::BackendBridge {
 			.map(|entry| entry.location.to_location())
 			.collect()
 	}
+}
+
+fn bookmark(index: i32) -> Option<bookmarks::Bookmark> {
+	usize::try_from(index).ok().and_then(|index| bookmarks::read().into_iter().nth(index))
 }
 
 /// Whether the clipboard's files were cut, and where they are. `None` when it

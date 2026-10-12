@@ -169,6 +169,14 @@ ApplicationWindow {
         }
         out.push({ label: "Filesystem", folder: "/" })
         out.push({ label: "Trash", folder: null, trash: true })
+        // The GTK bookmarks, less any that name a place already listed.
+        void root.revision
+        const listed = out.map(function (place) { return root.placePath(place.folder) })
+        for (let b = 0; b < backendObject.bookmarkCount(); ++b) {
+            const path = backendObject.bookmarkPath(b)
+            if (listed.indexOf(path) < 0)
+                out.push({ label: backendObject.bookmarkLabel(b), folder: null, target: path, bookmark: b })
+        }
         // Whatever rclone is configured for, listed after the local places
         // because that is the order they are reached in.
         void root.configTick
@@ -687,6 +695,12 @@ ApplicationWindow {
             contentItem: Rectangle { implicitHeight: 1; color: root.line }
         }
         MenuLine {
+            text: "Add bookmark"
+            visible: entryMenu.folder && entryMenu.held <= 1
+            height: visible ? implicitHeight : 0
+            onTriggered: backendObject.addBookmark(backendObject.entryPath(entryMenu.row))
+        }
+        MenuLine {
             text: "Properties…"
             enabled: entryMenu.held <= 1
             onTriggered: root.showProperties(entryMenu.row)
@@ -740,6 +754,7 @@ ApplicationWindow {
             contentItem: Rectangle { implicitHeight: 1; color: root.line }
         }
         MenuLine { text: "Open terminal here"; onTriggered: backendObject.openTerminalHere() }
+        MenuLine { text: "Bookmark this folder"; onTriggered: backendObject.addBookmark(backendObject.currentPath) }
         MenuSeparator {
             contentItem: Rectangle { implicitHeight: 1; color: root.line }
         }
@@ -976,6 +991,33 @@ ApplicationWindow {
         }
     }
 
+    // ---- Bookmarks ----
+    MenuSurface {
+        id: bookmarkMenu
+        property int index: -1
+        MenuLine {
+            text: "Rename bookmark…"
+            onTriggered: {
+                namePrompt.mode = "bookmark"
+                namePrompt.row = bookmarkMenu.index
+                namePrompt.template = ""
+                namePrompt.open()
+                promptField.text = backendObject.bookmarkLabel(bookmarkMenu.index)
+                promptField.selectAll()
+            }
+        }
+        MenuLine {
+            text: "Remove bookmark"
+            onTriggered: backendObject.removeBookmark(bookmarkMenu.index)
+        }
+    }
+
+    Shortcut {
+        sequences: ["Ctrl+D"]
+        enabled: !root.typing && !root.trashOpen && !root.recentOpen
+        onActivated: backendObject.addBookmark(backendObject.currentPath)
+    }
+
     // Bumped whenever the offered application list is re-read.
     property int offerTick: 0
 
@@ -1166,6 +1208,8 @@ ApplicationWindow {
                 return
             if (mode === "rename")
                 backendObject.renameRow(row, name)
+            else if (mode === "bookmark")
+                backendObject.renameBookmark(row, name)
             else if (mode === "folder")
                 backendObject.createFolder(name)
             else
@@ -1178,6 +1222,7 @@ ApplicationWindow {
             spacing: 10
             Text {
                 text: namePrompt.mode === "rename" ? "Rename"
+                    : namePrompt.mode === "bookmark" ? "Bookmark name"
                     : namePrompt.mode === "folder" ? "New folder" : "New file"
                 color: root.ink
                 font.family: root.sansFamily
@@ -1990,6 +2035,7 @@ ApplicationWindow {
         property string trailing: ""
         property bool active: false
         signal activated
+        signal menuRequested
 
         width: parent ? parent.width : 0
         implicitHeight: 30
@@ -2039,7 +2085,13 @@ ApplicationWindow {
             anchors.fill: parent
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
-            onClicked: navItem.activated()
+            acceptedButtons: Qt.LeftButton | Qt.RightButton
+            onClicked: function (mouse) {
+                if (mouse.button === Qt.RightButton)
+                    navItem.menuRequested()
+                else
+                    navItem.activated()
+            }
         }
     }
 
@@ -2279,7 +2331,8 @@ ApplicationWindow {
                     readonly property bool remote: placeEntry.modelData.remote === true
                     readonly property bool recent: placeEntry.modelData.recent === true
                     readonly property bool trash: placeEntry.modelData.trash === true
-                    readonly property string target: placeEntry.remote
+                    readonly property bool marked: placeEntry.modelData.bookmark !== undefined
+                    readonly property string target: placeEntry.remote || placeEntry.marked
                                                      ? placeEntry.modelData.target
                                                      : root.placePath(placeEntry.modelData.folder)
                     width: placesView.width
@@ -2289,6 +2342,8 @@ ApplicationWindow {
                               ? "◴"
                               : placeEntry.trash
                               ? "⌫"
+                              : placeEntry.marked
+                              ? "★"
                               : placeEntry.remote
                               ? "◈"
                               : (placeEntry.modelData.folder === "/"
@@ -2303,6 +2358,12 @@ ApplicationWindow {
                             ? root.trashOpen
                             : (!placeEntry.adds && !root.recentOpen && !root.trashOpen
                                && backendObject.currentPath === placeEntry.target)
+                    onMenuRequested: {
+                        if (!placeEntry.marked)
+                            return
+                        bookmarkMenu.index = placeEntry.modelData.bookmark
+                        bookmarkMenu.popup()
+                    }
                     onActivated: {
                         if (placeEntry.recent) {
                             root.showRecent()
