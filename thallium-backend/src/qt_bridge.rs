@@ -11,7 +11,7 @@ use thallium_icons::{IconService, Thumbnail};
 use thallium_protocol::{BrowserStateSnapshot, DirectoryEntryRow, PathBytes, TaskInfo, TaskStatus};
 use thallium_rclone::{Remotes, authorize, config::{Provider, Session, Step}};
 
-use crate::{Backend, BackendConfig, BackendResult, apps, bookmarks, drives, properties, recents::Recent, search::Search, storage::Measure, trash_bin, uri};
+use crate::{Backend, BackendConfig, BackendResult, apps, archive, bookmarks, drives, properties, recents::Recent, search::Search, storage::Measure, trash_bin, uri};
 
 #[cxx_qt::bridge]
 pub mod ffi {
@@ -213,6 +213,18 @@ pub mod ffi {
 		#[qinvokable]
 		#[rust_name = "open_terminal_here"]
 		fn openTerminalHere(self: Pin<&mut Self>);
+		#[qinvokable]
+		#[rust_name = "is_archive"]
+		fn isArchive(&self, row: i32) -> bool;
+		#[qinvokable]
+		#[rust_name = "extract_selected"]
+		fn extractSelected(self: Pin<&mut Self>);
+		#[qinvokable]
+		#[rust_name = "compress_selected"]
+		fn compressSelected(self: Pin<&mut Self>, name: &QString);
+		#[qinvokable]
+		#[rust_name = "archive_busy"]
+		fn archiveBusy(&self) -> bool;
 		#[qinvokable]
 		#[rust_name = "drive_count"]
 		fn driveCount(&self) -> i32;
@@ -461,6 +473,8 @@ pub struct BackendBridgeRust {
 	trash:          Vec<trash::TrashItem>,
 	/// A purge still running, collected on a later poll.
 	purge:          Option<trash_bin::Purge>,
+	/// Extractions and compressions still running.
+	archive_jobs:   Vec<archive::Job>,
 	/// Mountable drives as last listed, and a mount, unmount or eject still
 	/// running (with whether to open the drive once it is mounted).
 	drives:         Vec<drives::Drive>,
@@ -525,6 +539,7 @@ impl Default for BackendBridgeRust {
 					offered: Vec::new(),
 					inspected: None,
 					drives: drives::list(),
+					archive_jobs: Vec::new(),
 					drive_action: None,
 					inspected_type: String::new(),
 					inspect_size: Measure::new(),
@@ -556,6 +571,7 @@ impl Default for BackendBridgeRust {
 				offered:        Vec::new(),
 				inspected:      None,
 				drives:         Vec::new(),
+				archive_jobs:   Vec::new(),
 				drive_action:   None,
 				inspected_type: String::new(),
 				inspect_size:   Measure::new(),
@@ -606,6 +622,7 @@ impl ffi::BackendBridge {
 			self.as_mut().refresh_drives();
 		}
 		self.as_mut().collect_drive_action();
+		self.as_mut().collect_archive_jobs();
 		if moved || settled || reconcile {
 			self.as_mut().reload();
 		}
@@ -636,6 +653,67 @@ impl ffi::BackendBridge {
 		self.as_mut().rust_mut().revealing = Some(name.as_bytes().to_vec());
 		let parent = Location::local(NativePath::from(parent));
 		self.submit_detached(Command::Navigate(parent));
+	}
+
+	pub fn is_archive(&self, row: i32) -> bool {
+		self.row(row).is_some_and(|entry| {
+			!entry.is_directory()
+				&& archive::suffix(&String::from_utf8_lossy(&entry.name.bytes)).is_some()
+		})
+	}
+
+	/// Extract every selected archive beside itself.
+	pub fn extract_selected(mut self: Pin<&mut Self>) {
+		for path in self.selected_paths() {
+			let is_archive =
+				path.file_name().is_some_and(|name| archive::suffix(&name.to_string_lossy()).is_some());
+			if is_archive {
+				self.as_mut().rust_mut().archive_jobs.push(archive::extract(path));
+			}
+		}
+	}
+
+	/// Pack the selection into `name` in the open folder; the suffix picks
+	/// the format.
+	pub fn compress_selected(mut self: Pin<&mut Self>, name: &QString) {
+		let sources = self.selected_paths();
+		let Some(folder) = sources.first().and_then(|first| first.parent()).map(PathBuf::from) else {
+			return;
+		};
+		let output = folder.join(String::from(name));
+		self.as_mut().rust_mut().archive_jobs.push(archive::compress(sources, output));
+	}
+
+	pub fn archive_busy(&self) -> bool { !self.rust().archive_jobs.is_empty() }
+
+	fn collect_archive_jobs(mut self: Pin<&mut Self>) {
+		if self.rust().archive_jobs.is_empty() {
+			return;
+		}
+		let mut errors = Vec::new();
+		self.as_mut().rust_mut().archive_jobs.retain(|job| match job.take() {
+			None => true,
+			Some(Ok(_)) => false,
+			Some(Err(error)) => {
+				errors.push(error);
+				false
+			}
+		});
+		if let Some(error) = errors.pop() {
+			self.as_mut().set_last_error(error.into());
+		}
+		let revision = self.model_revision().saturating_add(1);
+		self.set_model_revision(revision);
+	}
+
+	/// The selected entries as local paths; remote entries are left out.
+	fn selected_paths(&self) -> Vec<PathBuf> {
+		self
+			.selected_locations()
+			.iter()
+			.filter(|location| location.backend == BackendId::LOCAL)
+			.map(|location| PathBuf::from(OsStr::from_bytes(location.path.as_bytes())))
+			.collect()
 	}
 
 	pub fn drive_count(&self) -> i32 { count(self.rust().drives.len()) }

@@ -700,6 +700,10 @@ ApplicationWindow {
             return entryMenu.row >= 0 && root.bridge.entryIsDirectory(entryMenu.row)
         }
         readonly property int held: root.selectedCount
+        readonly property bool archive: {
+            void root.revision
+            return entryMenu.row >= 0 && root.bridge.isArchive(entryMenu.row)
+        }
 
         MenuLine {
             text: "Open in new tab"
@@ -762,6 +766,16 @@ ApplicationWindow {
         }
         MenuSeparator {
             contentItem: Rectangle { implicitHeight: 1; color: root.line }
+        }
+        MenuLine {
+            text: "Extract here"
+            visible: entryMenu.archive
+            height: visible ? implicitHeight : 0
+            onTriggered: root.bridge.extractSelected()
+        }
+        MenuLine {
+            text: "Compress…"
+            onTriggered: root.beginCompress()
         }
         MenuLine {
             text: "Add bookmark"
@@ -1235,6 +1249,20 @@ ApplicationWindow {
         promptField.select(0, root.bridge.entryIsDirectory(row) || dot <= 0 ? promptField.text.length : dot)
     }
 
+    // Compress names the archive after the one entry, or after the folder
+    // when several are held; the suffix picks the format.
+    function beginCompress() {
+        namePrompt.mode = "compress"
+        namePrompt.row = -1
+        namePrompt.template = ""
+        namePrompt.open()
+        const base = root.selectedCount === 1
+            ? root.bridge.entryName(root.firstSelectedRow())
+            : root.leafName(root.bridge.currentPath)
+        promptField.text = root.bridge.freeName(base + ".zip")
+        promptField.select(0, promptField.text.length - 4)
+    }
+
     function beginCreate(kind, template) {
         namePrompt.mode = kind
         namePrompt.row = -1
@@ -1300,6 +1328,8 @@ ApplicationWindow {
                 root.bridge.renameRow(row, name)
             else if (mode === "bookmark")
                 root.bridge.renameBookmark(row, name)
+            else if (mode === "compress")
+                root.bridge.compressSelected(name)
             else if (mode === "folder")
                 root.bridge.createFolder(name)
             else
@@ -1313,6 +1343,7 @@ ApplicationWindow {
             Text {
                 text: namePrompt.mode === "rename" ? "Rename"
                     : namePrompt.mode === "bookmark" ? "Bookmark name"
+                    : namePrompt.mode === "compress" ? "Compress to (.zip, .tar.gz, .tar.xz, .tar.zst)"
                     : namePrompt.mode === "folder" ? "New folder" : "New file"
                 color: root.ink
                 font.family: root.sansFamily

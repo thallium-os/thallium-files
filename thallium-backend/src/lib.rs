@@ -13,6 +13,8 @@ mod error;
 #[cfg_attr(not(feature = "qt"), allow(dead_code))]
 mod apps;
 #[cfg_attr(not(feature = "qt"), allow(dead_code))]
+mod archive;
+#[cfg_attr(not(feature = "qt"), allow(dead_code))]
 mod bookmarks;
 #[cfg_attr(not(feature = "qt"), allow(dead_code))]
 mod drives;

@@ -28,6 +28,7 @@ thallium-vfs = { path = "../thallium-vfs" }
 thallium-watcher = { path = "../thallium-watcher" }
 trash = "5.2.6"
 tokio = { workspace = true, features = [ "rt-multi-thread", "sync" ] }
+zip = { version = "9.0.2", default-features = false, features = ["deflate"] }
 
 [build-dependencies]
 cxx-qt-build = { version = "0.9", features = [ "link_qt_object_files" ] }
