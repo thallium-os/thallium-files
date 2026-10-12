@@ -176,6 +176,30 @@ pub mod ffi {
 		#[qinvokable]
 		#[rust_name = "trash_selected"]
 		fn trashSelected(self: Pin<&mut Self>);
+		#[qinvokable]
+		#[rust_name = "rename_row"]
+		fn renameRow(self: Pin<&mut Self>, row: i32, name: &QString);
+		#[qinvokable]
+		#[rust_name = "create_folder"]
+		fn createFolder(self: Pin<&mut Self>, name: &QString);
+		#[qinvokable]
+		#[rust_name = "create_file"]
+		fn createFile(self: Pin<&mut Self>, name: &QString, source: &QString);
+		#[qinvokable]
+		#[rust_name = "link_selected"]
+		fn linkSelected(self: Pin<&mut Self>, destination: &QString);
+		#[qinvokable]
+		#[rust_name = "free_name"]
+		fn freeName(&self, base: &QString) -> QString;
+		#[qinvokable]
+		#[rust_name = "template_count"]
+		fn templateCount(&self) -> i32;
+		#[qinvokable]
+		#[rust_name = "template_name"]
+		fn templateName(&self, row: i32) -> QString;
+		#[qinvokable]
+		#[rust_name = "template_path"]
+		fn templatePath(&self, row: i32) -> QString;
 
 		#[qinvokable]
 		#[rust_name = "remotes_configurable"]
@@ -552,6 +576,71 @@ impl ffi::BackendBridge {
 		let sources = self.selected_locations();
 		let destination = self.as_mut().location(destination);
 		self.submit(Command::Move { sources, destination, conflict_policy: ConflictPolicy::Rename });
+	}
+
+	pub fn rename_row(self: Pin<&mut Self>, row: i32, name: &QString) {
+		let Some(source) = self.row(row).map(|entry| entry.location.to_location()) else {
+			return;
+		};
+		let name = NativePath::new(String::from(name).into_bytes());
+		self.submit(Command::Rename { source, name });
+	}
+
+	pub fn create_folder(self: Pin<&mut Self>, name: &QString) {
+		let Some(parent) = self.current() else { return };
+		let name = NativePath::new(String::from(name).into_bytes());
+		self.submit(Command::CreateFolder { parent, name });
+	}
+
+	pub fn create_file(self: Pin<&mut Self>, name: &QString, source: &QString) {
+		let Some(parent) = self.current() else { return };
+		let name = NativePath::new(String::from(name).into_bytes());
+		let template = (!source.is_empty()).then(|| self.location(source));
+		self.submit(Command::CreateFile { parent, name, template });
+	}
+
+	pub fn link_selected(mut self: Pin<&mut Self>, destination: &QString) {
+		let sources = self.selected_locations();
+		let destination = self.as_mut().location(destination);
+		self.submit(Command::Link { sources, destination });
+	}
+
+	/// `base`, or `base 2`, `base 3`, ... whichever is not yet taken in the
+	/// open folder. An extension stays at the end: `Untitled 2.txt`.
+	pub fn free_name(&self, base: &QString) -> QString {
+		let base = String::from(base);
+		let taken: BTreeSet<&[u8]> = self
+			.rust()
+			.snapshot
+			.directory
+			.entries
+			.iter()
+			.map(|entry| entry.name.bytes.as_slice())
+			.collect();
+		let (stem, extension) = match base.rfind('.') {
+			Some(dot) if dot > 0 => base.split_at(dot),
+			_ => (base.as_str(), ""),
+		};
+		let mut candidate = base.clone();
+		for number in 2.. {
+			if !taken.contains(candidate.as_bytes()) {
+				break;
+			}
+			candidate = format!("{stem} {number}{extension}");
+		}
+		candidate.into()
+	}
+
+	pub fn template_count(&self) -> i32 { count(templates().len()) }
+
+	pub fn template_name(&self, row: i32) -> QString {
+		template(row).map_or_else(QString::default, |path| {
+			path.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned()).into()
+		})
+	}
+
+	pub fn template_path(&self, row: i32) -> QString {
+		template(row).map_or_else(QString::default, |path| path.to_string_lossy().as_ref().into())
 	}
 
 	pub fn delete_selected(self: Pin<&mut Self>) {
@@ -1080,6 +1169,10 @@ impl ffi::BackendBridge {
 		}
 	}
 
+	fn current(&self) -> Option<Location> {
+		self.rust().snapshot.current_location.as_ref().map(|location| location.to_location())
+	}
+
 	fn row(&self, row: i32) -> Option<&DirectoryEntryRow> {
 		usize::try_from(row).ok().and_then(|row| self.rust().snapshot.directory.entries.get(row))
 	}
@@ -1164,6 +1257,47 @@ impl ffi::BackendBridge {
 			.map(|entry| entry.location.to_location())
 			.collect()
 	}
+}
+
+/// The files in the XDG templates folder, which "New file" offers as starting
+/// points. Read on demand: the folder is small and edited outside the app.
+fn templates() -> Vec<PathBuf> {
+	let Some(folder) = templates_folder() else { return Vec::new() };
+	let mut found: Vec<PathBuf> = std::fs::read_dir(folder)
+		.map(|entries| {
+			entries
+				.filter_map(Result::ok)
+				.filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+				.map(|entry| entry.path())
+				.collect()
+		})
+		.unwrap_or_default();
+	found.sort();
+	found
+}
+
+fn template(row: i32) -> Option<PathBuf> {
+	usize::try_from(row).ok().and_then(|row| templates().into_iter().nth(row))
+}
+
+/// `XDG_TEMPLATES_DIR` from `user-dirs.dirs`, or `~/Templates`. A value equal
+/// to the home folder means templates are switched off.
+fn templates_folder() -> Option<PathBuf> {
+	let home = PathBuf::from(std::env::var_os("HOME")?);
+	let config = std::env::var_os("XDG_CONFIG_HOME")
+		.map_or_else(|| home.join(".config"), PathBuf::from)
+		.join("user-dirs.dirs");
+	let configured = std::fs::read_to_string(config).ok().and_then(|text| {
+		text.lines().find_map(|line| {
+			let value = line.trim().strip_prefix("XDG_TEMPLATES_DIR=")?.trim_matches('"');
+			Some(match value.strip_prefix("$HOME") {
+				Some(rest) => home.join(rest.trim_start_matches('/')),
+				None => PathBuf::from(value),
+			})
+		})
+	});
+	let folder = configured.unwrap_or_else(|| home.join("Templates"));
+	(folder != home).then_some(folder)
 }
 
 /// The entry's exact filesystem bytes, which the icon layer needs: a name that

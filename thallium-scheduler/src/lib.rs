@@ -18,7 +18,7 @@ pub mod task;
 pub use error::{SchedulerError, SchedulerResult};
 pub use event::{CleanupOutcome, SchedulerEvent, WorkerEvent};
 pub use handle::TaskHandle;
-pub use input::{CopyTask, DeleteTask, MoveTask, TaskInput, TaskOptions, TrashTask};
+pub use input::{CopyTask, CreateTask, DeleteTask, LinkTask, MoveTask, RenameTask, TaskInput, TaskOptions, TrashTask};
 pub use ongoing::Ongoing;
 pub use progress::{ActiveWork, AggregateProgress, WorkPhase};
 pub use queue::{Priority, QueuedWork, ResourceClass, StableQueue, WorkItem};

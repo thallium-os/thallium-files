@@ -611,6 +611,18 @@ ApplicationWindow {
             contentItem: Rectangle { implicitHeight: 1; color: root.line }
         }
         MenuLine {
+            text: "Rename…"
+            enabled: entryMenu.held <= 1
+            onTriggered: root.beginRename(entryMenu.row)
+        }
+        MenuLine {
+            text: entryMenu.held > 1 ? "Make " + entryMenu.held + " links" : "Make link"
+            onTriggered: backendObject.linkSelected(backendObject.currentPath)
+        }
+        MenuSeparator {
+            contentItem: Rectangle { implicitHeight: 1; color: root.line }
+        }
+        MenuLine {
             text: entryMenu.held > 1 ? "Move " + entryMenu.held + " to Trash" : "Move to Trash"
             onTriggered: backendObject.trashSelected()
         }
@@ -623,6 +635,28 @@ ApplicationWindow {
     // Right-click on empty ground: about the folder, not about an entry.
     MenuSurface {
         id: groundMenu
+        MenuLine { text: "New folder…"; onTriggered: root.beginCreate("folder", "") }
+        MenuLine { text: "New empty file…"; onTriggered: root.beginCreate("file", "") }
+        MenuSurface {
+            id: templateMenu
+            title: "New from template"
+            enabled: templateList.count > 0
+            Repeater {
+                id: templateList
+                model: {
+                    void root.revision
+                    return backendObject.templateCount()
+                }
+                delegate: MenuLine {
+                    required property int index
+                    text: backendObject.templateName(index)
+                    onTriggered: root.beginCreate("file", backendObject.templatePath(index))
+                }
+            }
+        }
+        MenuSeparator {
+            contentItem: Rectangle { implicitHeight: 1; color: root.line }
+        }
         MenuLine { text: "Select all"; onTriggered: root.selectAll() }
         MenuLine {
             text: root.showHidden ? "Hide hidden files" : "Show hidden files"
@@ -632,6 +666,127 @@ ApplicationWindow {
             contentItem: Rectangle { implicitHeight: 1; color: root.line }
         }
         MenuLine { text: "Refresh"; onTriggered: backendObject.refresh() }
+    }
+
+    // One prompt names things: a rename, a new folder, a new file. `mode` says
+    // which; `row` is the entry being renamed and `template` the file a new
+    // one copies, empty for an empty file.
+    function beginRename(row) {
+        if (row < 0)
+            return
+        namePrompt.mode = "rename"
+        namePrompt.row = row
+        namePrompt.template = ""
+        namePrompt.open()
+        promptField.text = backendObject.entryName(row)
+        const dot = promptField.text.lastIndexOf(".")
+        promptField.select(0, backendObject.entryIsDirectory(row) || dot <= 0 ? promptField.text.length : dot)
+    }
+
+    function beginCreate(kind, template) {
+        namePrompt.mode = kind
+        namePrompt.row = -1
+        namePrompt.template = template
+        namePrompt.open()
+        const base = kind === "folder" ? "New Folder"
+            : template.length > 0 ? template.substring(template.lastIndexOf("/") + 1) : "Untitled"
+        promptField.text = backendObject.freeName(base)
+        const dot = promptField.text.lastIndexOf(".")
+        promptField.select(0, kind === "folder" || dot <= 0 ? promptField.text.length : dot)
+    }
+
+    function firstSelectedRow() {
+        for (let row = 0; row < backendObject.entryCount(); row++)
+            if (backendObject.entrySelected(row))
+                return row
+        return -1
+    }
+
+    Popup {
+        id: namePrompt
+        property string mode: "rename"
+        property int row: -1
+        property string template: ""
+        anchors.centerIn: Overlay.overlay
+        width: 380
+        modal: true
+        focus: true
+        padding: 16
+        onOpened: promptField.forceActiveFocus()
+        background: Rectangle {
+            color: root.raisedHigh
+            radius: 9
+            border.width: 1
+            border.color: root.line
+        }
+
+        function accept() {
+            const name = promptField.text.trim()
+            if (name.length === 0)
+                return
+            if (mode === "rename")
+                backendObject.renameRow(row, name)
+            else if (mode === "folder")
+                backendObject.createFolder(name)
+            else
+                backendObject.createFile(name, template)
+            close()
+        }
+
+        Column {
+            width: parent.width
+            spacing: 10
+            Text {
+                text: namePrompt.mode === "rename" ? "Rename"
+                    : namePrompt.mode === "folder" ? "New folder" : "New file"
+                color: root.ink
+                font.family: root.sansFamily
+                font.pixelSize: 14
+            }
+            Rectangle {
+                width: parent.width
+                height: 32
+                radius: 6
+                color: root.raised
+                border.width: 1
+                border.color: promptField.activeFocus ? root.lineStrong : root.line
+                TextInput {
+                    id: promptField
+                    anchors.fill: parent
+                    anchors.leftMargin: 8
+                    anchors.rightMargin: 8
+                    verticalAlignment: TextInput.AlignVCenter
+                    clip: true
+                    color: root.ink
+                    selectionColor: root.spectralDim
+                    selectedTextColor: root.ink
+                    font.family: root.sansFamily
+                    font.pixelSize: 13
+                    Keys.onReturnPressed: namePrompt.accept()
+                    Keys.onEnterPressed: namePrompt.accept()
+                    Keys.onEscapePressed: namePrompt.close()
+                }
+            }
+            Text {
+                visible: promptField.text.indexOf("/") >= 0
+                text: "A name cannot contain “/”."
+                color: root.inkMuted
+                font.family: root.sansFamily
+                font.pixelSize: 11
+            }
+        }
+    }
+
+    Shortcut {
+        sequence: "F2"
+        enabled: !namePrompt.opened
+        onActivated: root.beginRename(root.firstSelectedRow())
+    }
+
+    Shortcut {
+        sequence: "Ctrl+Shift+N"
+        enabled: !namePrompt.opened
+        onActivated: root.beginCreate("folder", "")
     }
 
     // Opening the menu for a row that is not part of the selection makes that

@@ -1,6 +1,6 @@
 //! Renderer-neutral commands accepted by the single action/state owner.
 
-use thallium_fs_core::{ConflictPolicy, EntryId, Location, StateRevision};
+use thallium_fs_core::{ConflictPolicy, EntryId, Location, NativePath, StateRevision};
 use thallium_protocol::TaskId;
 
 /// A command paired with the browser revision against which it was created.
@@ -41,6 +41,26 @@ pub enum Command {
 	},
 	Trash {
 		targets: Vec<Location>,
+	},
+	/// Give `source` a new final path component in the same folder.
+	Rename {
+		source: Location,
+		name:   NativePath,
+	},
+	CreateFolder {
+		parent: Location,
+		name:   NativePath,
+	},
+	/// Create an empty file, or a copy of `template` when one is given.
+	CreateFile {
+		parent:   Location,
+		name:     NativePath,
+		template: Option<Location>,
+	},
+	/// Place a symbolic link to each source inside `destination`.
+	Link {
+		sources:     Vec<Location>,
+		destination: Location,
 	},
 	CancelTask(TaskId),
 	DismissTask(TaskId),

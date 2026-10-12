@@ -311,6 +311,8 @@ fn admit(
 		TaskInput::Move(task) => task.sources.len(),
 		TaskInput::Delete(task) => task.targets.len(),
 		TaskInput::Trash(task) => task.targets.len(),
+		TaskInput::Link(task) => task.sources.len(),
+		TaskInput::Rename(_) | TaskInput::CreateFolder(_) | TaskInput::CreateFile(_) => 1,
 	};
 	if work_len > per_task_capacity {
 		return Err(SchedulerError::InvalidInput(format!(
@@ -421,8 +423,22 @@ fn describe(input: &TaskInput) -> (TaskKind, String) {
 		TaskInput::Move(task) => (TaskKind::Move, "Move", task.sources.len()),
 		TaskInput::Delete(task) => (TaskKind::Delete, "Delete", task.targets.len()),
 		TaskInput::Trash(task) => (TaskKind::Trash, "Trash", task.targets.len()),
+		TaskInput::Link(task) => (TaskKind::Link, "Link", task.sources.len()),
+		TaskInput::Rename(task) => {
+			return (TaskKind::Rename, format!("Rename to {}", display_name(&task.destination)));
+		}
+		TaskInput::CreateFolder(task) => {
+			return (TaskKind::CreateFolder, format!("Create folder {}", display_name(&task.target)));
+		}
+		TaskInput::CreateFile(task) => {
+			return (TaskKind::CreateFile, format!("Create file {}", display_name(&task.target)));
+		}
 	};
 	(kind, format!("{verb} {count} item{}", if count == 1 { "" } else { "s" }))
+}
+
+fn display_name(location: &Location) -> String {
+	location.path.file_name().map_or_else(String::new, |name| name.to_string_lossy())
 }
 
 async fn execute_task<V: FileSystem>(
@@ -433,6 +449,9 @@ async fn execute_task<V: FileSystem>(
 	updates: &mpsc::Sender<WorkerUpdate>,
 ) -> Result<(), FsError> {
 	check_cancelled(&cancellation, None)?;
+	if let Some(result) = execute_quick(vfs, id, &input, updates).await {
+		return result;
+	}
 	let prepared = prepare(vfs, &input).await?;
 	check_cancelled(&cancellation, None)?;
 	let total_bytes = prepared.iter().map(|item| item.size).sum();
@@ -457,9 +476,104 @@ async fn execute_task<V: FileSystem>(
 		TaskInput::Trash(task) => {
 			execute_trash(vfs, &task, prepared, &cancellation, &mut progress).await?
 		}
+		TaskInput::Rename(_)
+		| TaskInput::CreateFolder(_)
+		| TaskInput::CreateFile(_)
+		| TaskInput::Link(_) => {
+			unreachable!("quick tasks finish in execute_quick")
+		}
 	}
 	progress.flush().await?;
 	Ok(())
+}
+
+/// Run the single-step entry operations, which have no tree to measure.
+/// Returns `None` for the bulk operations handled by `prepare`.
+async fn execute_quick<V: FileSystem>(
+	vfs: &V,
+	id: TaskId,
+	input: &TaskInput,
+	updates: &mpsc::Sender<WorkerUpdate>,
+) -> Option<Result<(), FsError>> {
+	let items = match input {
+		TaskInput::Rename(_) | TaskInput::CreateFolder(_) | TaskInput::CreateFile(_) => 1,
+		TaskInput::Link(task) => task.sources.len() as u64,
+		_ => return None,
+	};
+	Some(
+		async {
+			send_update(updates, WorkerUpdate::Prepared { id, items, bytes: 0 }).await?;
+			let mut progress = ProgressReporter::new(id, updates);
+			match input {
+				TaskInput::Rename(task) => {
+					progress.item_started(task.source.clone()).await?;
+					if vfs.stat(&task.destination, StatOptions { follow_symlinks: false }).await.is_ok() {
+						return Err(FsError::new(
+							FsErrorCode::AlreadyExists,
+							"an entry with that name already exists",
+							Some(task.destination.clone()),
+						));
+					}
+					vfs.rename(&task.source, &task.destination).await?;
+				}
+				TaskInput::CreateFolder(task) => {
+					progress.item_started(task.target.clone()).await?;
+					vfs
+						.create_dir(&task.target, CreateDirOptions { recursive: false, attributes: None })
+						.await?;
+				}
+				TaskInput::CreateFile(task) => {
+					progress.item_started(task.target.clone()).await?;
+					match &task.template {
+						Some(template) => {
+							let entry = vfs.stat(template, StatOptions { follow_symlinks: true }).await?;
+							copy_file(
+								vfs,
+								template,
+								&task.target,
+								ConflictPolicy::Abort,
+								&FileAttrs::from_metadata(&entry.metadata),
+								&CancellationToken::new(),
+								&mut progress,
+							)
+							.await?;
+						}
+						None => {
+							let mut file = vfs
+								.open_write(&task.target, OpenWriteOptions {
+									create:     false,
+									create_new: true,
+									truncate:   false,
+									append:     false,
+									attributes: None,
+								})
+								.await?;
+							file
+								.shutdown()
+								.await
+								.map_err(|error| FsError::from_io(error, Some(task.target.clone())))?;
+						}
+					}
+				}
+				TaskInput::Link(task) => {
+					for source in &task.sources {
+						progress.item_started(source.clone()).await?;
+						let requested = task.destination.join(file_name(source)?);
+						let Some(link) = resolve_destination(vfs, &requested, ConflictPolicy::Rename).await?
+						else {
+							continue;
+						};
+						vfs.symlink(&source.path, &link).await?;
+						progress.item_completed(0).await?;
+					}
+					return Ok(());
+				}
+				_ => unreachable!("bulk tasks are filtered above"),
+			}
+			progress.item_completed(0).await
+		}
+		.await,
+	)
 }
 
 struct PreparedItem {
@@ -475,6 +589,12 @@ async fn prepare<V: FileSystem>(vfs: &V, input: &TaskInput) -> Result<Vec<Prepar
 		TaskInput::Move(task) => &task.sources,
 		TaskInput::Delete(task) => &task.targets,
 		TaskInput::Trash(task) => &task.targets,
+		TaskInput::Rename(_)
+		| TaskInput::CreateFolder(_)
+		| TaskInput::CreateFile(_)
+		| TaskInput::Link(_) => {
+			return Ok(Vec::new());
+		}
 	};
 	let mut prepared = Vec::with_capacity(locations.len());
 	for location in locations {

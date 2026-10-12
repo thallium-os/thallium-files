@@ -342,3 +342,110 @@ fn shutdown_is_idempotent() {
 	backend.shutdown().expect("first shutdown");
 	backend.shutdown().expect("second shutdown must be a no-op");
 }
+
+#[test]
+fn rename_moves_the_entry_and_refuses_to_replace_another() {
+	let root = TempDir::new().expect("root");
+	fs::write(root.path().join("old.txt"), b"keep").expect("seed");
+	fs::write(root.path().join("taken.txt"), b"other").expect("seed other");
+
+	let mut backend = start(root.path());
+	backend
+		.submit(Command::Rename {
+			source: at(&root.path().join("old.txt")),
+			name:   NativePath::from(Path::new("taken.txt")),
+		})
+		.expect("submit clashing rename");
+	let task = settle_task(&mut backend, TaskKind::Rename);
+	assert_eq!(task.status, TaskStatus::Failed);
+	assert_eq!(fs::read(root.path().join("taken.txt")).expect("untouched"), b"other");
+	backend.submit(Command::DismissTask(task.id)).expect("dismiss");
+
+	backend
+		.submit(Command::Rename {
+			source: at(&root.path().join("old.txt")),
+			name:   NativePath::from(Path::new("new.txt")),
+		})
+		.expect("submit rename");
+	let task = settle_task(&mut backend, TaskKind::Rename);
+	assert_eq!(task.status, TaskStatus::Succeeded);
+	assert_eq!(fs::read(root.path().join("new.txt")).expect("renamed"), b"keep");
+	assert!(!root.path().join("old.txt").exists());
+	backend.shutdown().expect("shutdown");
+}
+
+#[test]
+fn create_folder_file_and_template_copy() {
+	let root = TempDir::new().expect("root");
+	let template = root.path().join("template.md");
+	fs::write(&template, b"# Title").expect("seed template");
+
+	let mut backend = start(root.path());
+	backend
+		.submit(Command::CreateFolder {
+			parent: at(root.path()),
+			name:   NativePath::from(Path::new("folder")),
+		})
+		.expect("submit folder");
+	assert_eq!(settle_task(&mut backend, TaskKind::CreateFolder).status, TaskStatus::Succeeded);
+	assert!(root.path().join("folder").is_dir());
+	wait_for(&mut backend, "the new folder in the listing", |backend| {
+		names(backend).contains(&b"folder".to_vec()).then_some(())
+	});
+
+	backend
+		.submit(Command::CreateFile {
+			parent:   at(root.path()),
+			name:     NativePath::from(Path::new("empty.txt")),
+			template: None,
+		})
+		.expect("submit empty file");
+	let task = settle_task(&mut backend, TaskKind::CreateFile);
+	assert_eq!(task.status, TaskStatus::Succeeded);
+	assert_eq!(fs::read(root.path().join("empty.txt")).expect("empty file"), b"");
+	backend.submit(Command::DismissTask(task.id)).expect("dismiss");
+
+	backend
+		.submit(Command::CreateFile {
+			parent:   at(&root.path().join("folder")),
+			name:     NativePath::from(Path::new("notes.md")),
+			template: Some(at(&template)),
+		})
+		.expect("submit templated file");
+	assert_eq!(settle_task(&mut backend, TaskKind::CreateFile).status, TaskStatus::Succeeded);
+	assert_eq!(fs::read(root.path().join("folder/notes.md")).expect("templated"), b"# Title");
+	backend.shutdown().expect("shutdown");
+}
+
+#[test]
+fn link_places_a_symlink_and_never_replaces_an_entry() {
+	let root = TempDir::new().expect("root");
+	let source = root.path().join("data.bin");
+	let target = root.path().join("target");
+	fs::write(&source, b"x").expect("seed");
+	fs::create_dir(&target).expect("seed target");
+	fs::write(target.join("data.bin"), b"existing").expect("seed clash");
+
+	let mut backend = start(root.path());
+	backend
+		.submit(Command::Link { sources: vec![at(&source)], destination: at(&target) })
+		.expect("submit link");
+	assert_eq!(settle_task(&mut backend, TaskKind::Link).status, TaskStatus::Succeeded);
+	assert_eq!(fs::read(target.join("data.bin")).expect("untouched"), b"existing");
+	assert_eq!(fs::read_link(target.join("data.bin.1")).expect("link"), source);
+	backend.shutdown().expect("shutdown");
+}
+
+#[test]
+fn names_with_a_slash_or_dots_are_refused() {
+	let root = TempDir::new().expect("root");
+	let mut backend = start(root.path());
+	for name in ["", ".", "..", "a/b"] {
+		let result = backend.submit(Command::CreateFolder {
+			parent: at(root.path()),
+			name:   NativePath::new(name.as_bytes().to_vec()),
+		});
+		assert!(result.is_err(), "{name:?} must be refused");
+	}
+	backend.shutdown().expect("shutdown");
+}
