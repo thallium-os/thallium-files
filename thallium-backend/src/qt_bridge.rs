@@ -273,6 +273,12 @@ pub mod ffi {
 		#[rust_name = "offer_selected"]
 		fn offerSelected(self: Pin<&mut Self>, cut: bool);
 		#[qinvokable]
+		#[rust_name = "selected_uris"]
+		fn selectedUris(&self) -> QString;
+		#[qinvokable]
+		#[rust_name = "drop_uris"]
+		fn dropUris(self: Pin<&mut Self>, uris: &QString, destination: &QString, action: i32);
+		#[qinvokable]
 		#[rust_name = "paste_files"]
 		fn pasteFiles(self: Pin<&mut Self>);
 		#[qinvokable]
@@ -985,15 +991,52 @@ impl ffi::BackendBridge {
 	/// Put the selection on the system clipboard, for this window or any other
 	/// file manager to paste. Only local files have a URI others can read.
 	pub fn offer_selected(self: Pin<&mut Self>, cut: bool) {
+		let uris = self.selected_uris();
+		if !uris.is_empty() {
+			ffi::clipboard_offer_files(&uris, cut);
+		}
+	}
+
+	/// The selected local files as newline-separated `file://` URIs, which is
+	/// what a drag carries.
+	pub fn selected_uris(&self) -> QString {
 		let uris: Vec<String> = self
 			.selected_locations()
 			.iter()
 			.filter(|location| location.backend == BackendId::LOCAL)
 			.map(|location| uri::file_uri(location.path.as_bytes()))
 			.collect();
-		if !uris.is_empty() {
-			ffi::clipboard_offer_files(&uris.join("\n").as_str().into(), cut);
+		uris.join("\n").as_str().into()
+	}
+
+	/// Drop dragged URIs into `destination`. `action` is Qt's: 1 copy, 2
+	/// move, 4 link. A move between filesystems becomes a copy, as a plain
+	/// drag does in every desktop file manager.
+	pub fn drop_uris(mut self: Pin<&mut Self>, uris: &QString, destination: &QString, action: i32) {
+		let target = PathBuf::from(String::from(destination));
+		let sources: Vec<Location> = String::from(uris)
+			.lines()
+			.filter_map(uri::file_path)
+			.map(|path| Location::local(NativePath::new(path)))
+			.filter(|source| {
+				// Never into itself, and a move to where it already is does nothing.
+				let path = PathBuf::from(OsStr::from_bytes(source.path.as_bytes()));
+				path != target && !(action == 2 && path.parent() == Some(target.as_path()))
+			})
+			.collect();
+		if sources.is_empty() {
+			return;
 		}
+		let destination = Location::local(NativePath::from(target.as_path()));
+		let conflict_policy = ConflictPolicy::Rename;
+		let command = match action {
+			4 => Command::Link { sources, destination },
+			2 if same_device(&sources[0], &target) => {
+				Command::Move { sources, destination, conflict_policy }
+			}
+			_ => Command::Copy { sources, destination, conflict_policy },
+		};
+		self.as_mut().submit(command);
 	}
 
 	/// Copy or move what the clipboard holds into the open folder. A name
@@ -1709,6 +1752,16 @@ impl ffi::BackendBridge {
 			.filter(|entry| selected.contains(&entry.id.to_entry_id()))
 			.map(|entry| entry.location.to_location())
 			.collect()
+	}
+}
+
+/// Whether `source` lives on the same filesystem as `folder`.
+fn same_device(source: &Location, folder: &std::path::Path) -> bool {
+	use std::os::unix::fs::MetadataExt;
+	let source = PathBuf::from(OsStr::from_bytes(source.path.as_bytes()));
+	match (std::fs::symlink_metadata(&source), std::fs::metadata(folder)) {
+		(Ok(from), Ok(to)) => from.dev() == to.dev(),
+		_ => false,
 	}
 }
 

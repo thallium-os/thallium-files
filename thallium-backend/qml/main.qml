@@ -1333,6 +1333,70 @@ ApplicationWindow {
         onActivated: root.beginRename(root.firstSelectedRow())
     }
 
+    // ---- Drag and drop ----
+    // Pressing an entry that is already held and moving drags the held files,
+    // as a system drag, so the same gesture works within the window, between
+    // windows, and into other applications. Pressing anything else sweeps.
+    property bool dragArmed: false
+    property real dragOriginX: 0
+    property real dragOriginY: 0
+
+    function armDrag(row) {
+        root.dragArmed = root.bridge.entrySelected(row)
+        root.dragOriginX = -1
+        return root.dragArmed
+    }
+
+    function followDrag(x, y) {
+        if (root.dragOriginX < 0) {
+            root.dragOriginX = x
+            root.dragOriginY = y
+            return
+        }
+        if (Math.abs(x - root.dragOriginX) < 8 && Math.abs(y - root.dragOriginY) < 8)
+            return
+        root.dragArmed = false
+        const uris = root.bridge.selectedUris()
+        if (uris.length === 0)
+            return
+        fileDrag.uris = uris.split("\n").join("\r\n") + "\r\n"
+        fileDrag.Drag.active = true
+    }
+
+    Item {
+        id: fileDrag
+        property string uris: ""
+        Drag.dragType: Drag.Automatic
+        Drag.supportedActions: Qt.CopyAction | Qt.MoveAction | Qt.LinkAction
+        Drag.proposedAction: Qt.MoveAction
+        Drag.mimeData: ({ "text/uri-list": fileDrag.uris })
+        Drag.onDragFinished: fileDrag.Drag.active = false
+    }
+
+    // Ctrl copies, Ctrl+Shift links, and a plain drop moves within one
+    // filesystem and copies across them. The source is always told it was a
+    // copy, so another application never deletes what was moved here.
+    function dropInto(drop, path) {
+        if (!drop.hasUrls || path.length === 0)
+            return
+        const uris = []
+        for (let i = 0; i < drop.urls.length; i++)
+            uris.push(String(drop.urls[i]))
+        const action = drop.proposedAction === Qt.CopyAction ? 1
+                     : drop.proposedAction === Qt.LinkAction ? 4 : 2
+        root.bridge.dropUris(uris.join("\n"), path, action)
+        drop.accept(Qt.CopyAction)
+    }
+
+    // Double-click or Enter on one entry: folders open here, files open in
+    // their default application.
+    function activateRow(row) {
+        if (root.bridge.entryIsDirectory(row))
+            root.bridge.navigateRow(row)
+        else
+            root.bridge.openEntry(row)
+    }
+
     // ---- Keyboard ----
     // Shortcuts fire unless a text field claims the key first, so arrows and
     // Backspace keep editing inside the search box.
@@ -2105,6 +2169,8 @@ ApplicationWindow {
         property bool active: false
         signal activated
         signal menuRequested
+        // A folder this item names, so files can be dropped on it.
+        property string dropTarget: ""
 
         width: parent ? parent.width : 0
         implicitHeight: 30
@@ -2160,6 +2226,20 @@ ApplicationWindow {
                     navItem.menuRequested()
                 else
                     navItem.activated()
+            }
+        }
+
+        DropArea {
+            anchors.fill: parent
+            enabled: navItem.dropTarget.length > 0
+            onDropped: function (drop) { root.dropInto(drop, navItem.dropTarget) }
+            Rectangle {
+                anchors.fill: parent
+                visible: parent.containsDrag
+                color: "transparent"
+                radius: 7
+                border.width: 1
+                border.color: root.spectral
             }
         }
     }
@@ -2427,6 +2507,8 @@ ApplicationWindow {
                             ? root.trashOpen
                             : (!placeEntry.adds && !root.recentOpen && !root.trashOpen
                                && root.bridge.currentPath === placeEntry.target)
+                    dropTarget: placeEntry.recent || placeEntry.trash || placeEntry.adds || placeEntry.remote
+                                ? "" : placeEntry.target
                     onMenuRequested: {
                         if (!placeEntry.marked)
                             return
@@ -2735,6 +2817,10 @@ ApplicationWindow {
                                 color: tabChip.current ? root.ink : root.inkMuted
                                 font.family: root.sansFamily
                                 font.pixelSize: 12
+                            }
+                            DropArea {
+                                anchors.fill: parent
+                                onDropped: function (drop) { root.dropInto(drop, tabChip.modelData.currentPath) }
                             }
                             MouseArea {
                                 anchors.fill: parent
@@ -3959,6 +4045,16 @@ ApplicationWindow {
                     }
                 }
 
+                // Dropping on the open folder rather than on a folder in it.
+                DropArea {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: selectionBar.bottom
+                    anchors.bottom: parent.bottom
+                    enabled: !root.recentOpen && !root.trashOpen && !root.deepSearch
+                    onDropped: function (drop) { root.dropInto(drop, root.bridge.currentPath) }
+                }
+
                 // ---- List ----
                 ListView {
                     id: listBrowser
@@ -4164,6 +4260,21 @@ ApplicationWindow {
                             }
                         }
 
+                        // A folder takes what is dropped on it.
+                        DropArea {
+                            anchors.fill: parent
+                            enabled: root.bridge.entryIsDirectory(listRow.entry) && !listRow.selected
+                            onDropped: function (drop) { root.dropInto(drop, root.bridge.entryPath(listRow.entry)) }
+                            Rectangle {
+                                anchors.fill: parent
+                                visible: parent.containsDrag
+                                color: "transparent"
+                                radius: 6
+                                border.width: 1
+                                border.color: root.spectral
+                            }
+                        }
+
                         MouseArea {
                             id: rowMouse
                             anchors.fill: parent
@@ -4176,15 +4287,24 @@ ApplicationWindow {
                                 if (mouse.button !== Qt.LeftButton)
                                     return
                                 const at = rowMouse.mapToItem(listBrowser.contentItem, mouse.x, mouse.y)
+                                if (root.armDrag(listRow.entry))
+                                    return
                                 root.sweepBegin(at.x, at.y)
                             }
                             onPositionChanged: function (mouse) {
                                 if (!rowMouse.pressed || !(rowMouse.pressedButtons & Qt.LeftButton))
                                     return
                                 const at = rowMouse.mapToItem(listBrowser.contentItem, mouse.x, mouse.y)
+                                if (root.dragArmed) {
+                                    root.followDrag(at.x, at.y)
+                                    return
+                                }
                                 root.sweepMove(at.x, at.y)
                             }
-                            onReleased: root.sweepRelease()
+                            onReleased: {
+                                root.dragArmed = false
+                                root.sweepRelease()
+                            }
                             onClicked: function (mouse) {
                                 if (mouse.button === Qt.RightButton) {
                                     root.openEntryMenu(listRow.entry)
@@ -4194,7 +4314,7 @@ ApplicationWindow {
                                     return
                                 root.pick(listRow.entry, mouse.modifiers & (Qt.ControlModifier | Qt.ShiftModifier))
                             }
-                            onDoubleClicked: root.bridge.navigateRow(listRow.entry)
+                            onDoubleClicked: root.activateRow(listRow.entry)
                             onCanceled: root.sweepRelease()
                         }
                     }
@@ -4381,6 +4501,21 @@ ApplicationWindow {
                             // A drag that starts on a tile sweeps a band like
                             // any other, so selecting a run of files does not
                             // depend on finding the gutter between them.
+                            // A folder takes what is dropped on it.
+                            DropArea {
+                                anchors.fill: parent
+                                enabled: root.bridge.entryIsDirectory(tileHost.entry) && !tileHost.selected
+                                onDropped: function (drop) { root.dropInto(drop, root.bridge.entryPath(tileHost.entry)) }
+                                Rectangle {
+                                    anchors.fill: parent
+                                    visible: parent.containsDrag
+                                    color: "transparent"
+                                    radius: 6
+                                    border.width: 1
+                                    border.color: root.spectral
+                                }
+                            }
+
                             MouseArea {
                                 id: tileMouse
                                 anchors.fill: parent
@@ -4392,15 +4527,24 @@ ApplicationWindow {
                                     if (mouse.button !== Qt.LeftButton)
                                         return
                                     const at = tileMouse.mapToItem(gridBrowser.contentItem, mouse.x, mouse.y)
+                                    if (root.armDrag(tileHost.entry))
+                                        return
                                     root.sweepBegin(at.x, at.y)
                                 }
                                 onPositionChanged: function (mouse) {
                                     if (!tileMouse.pressed || !(tileMouse.pressedButtons & Qt.LeftButton))
                                         return
                                     const at = tileMouse.mapToItem(gridBrowser.contentItem, mouse.x, mouse.y)
+                                    if (root.dragArmed) {
+                                        root.followDrag(at.x, at.y)
+                                        return
+                                    }
                                     root.sweepMove(at.x, at.y)
                                 }
-                                onReleased: root.sweepRelease()
+                                onReleased: {
+                                root.dragArmed = false
+                                root.sweepRelease()
+                            }
                                 onClicked: function (mouse) {
                                     if (mouse.button === Qt.RightButton) {
                                         root.openEntryMenu(tileHost.entry)
@@ -4410,7 +4554,7 @@ ApplicationWindow {
                                         return
                                     root.pick(tileHost.entry, mouse.modifiers & (Qt.ControlModifier | Qt.ShiftModifier))
                                 }
-                                onDoubleClicked: root.bridge.navigateRow(tileHost.entry)
+                                onDoubleClicked: root.activateRow(tileHost.entry)
                                 onCanceled: root.sweepRelease()
                             }
                         }
