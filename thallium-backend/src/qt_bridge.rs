@@ -33,6 +33,13 @@ pub mod ffi {
 		fn clipboard_clear();
 	}
 
+	#[namespace = "thallium"]
+	unsafe extern "C++" {
+		include!("thallium-backend/filemanager1.h");
+		#[cxx_name = "serveFileManager"]
+		fn serve_file_manager(bridge: Pin<&mut BackendBridge>) -> bool;
+	}
+
 	extern "RustQt" {
 		#[qobject]
 		#[qml_element]
@@ -43,6 +50,16 @@ pub mod ffi {
 		#[qproperty(bool, loading, cxx_name = "loading")]
 		#[qproperty(bool, searching, cxx_name = "searching")]
 		type BackendBridge = super::BackendBridgeRust;
+
+		/// Another application asked, over FileManager1, to show `target`:
+		/// mode is "folder", "item" or "properties".
+		#[qsignal]
+		#[cxx_name = "externalRequest"]
+		fn external_request(self: Pin<&mut BackendBridge>, target: QString, mode: QString);
+
+		#[qinvokable]
+		#[rust_name = "serve_desktop"]
+		fn serveDesktop(self: Pin<&mut BackendBridge>) -> bool;
 
 		#[qinvokable]
 		fn poll(self: Pin<&mut Self>);
@@ -715,6 +732,9 @@ impl ffi::BackendBridge {
 			.map(|location| PathBuf::from(OsStr::from_bytes(location.path.as_bytes())))
 			.collect()
 	}
+
+	/// Offer this window as the desktop's file manager over D-Bus.
+	pub fn serve_desktop(self: Pin<&mut Self>) -> bool { ffi::serve_file_manager(self) }
 
 	pub fn drive_count(&self) -> i32 { count(self.rust().drives.len()) }
 

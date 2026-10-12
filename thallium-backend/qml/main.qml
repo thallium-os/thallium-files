@@ -532,6 +532,14 @@ ApplicationWindow {
         onActivated: root.showHidden = !root.showHidden
     }
 
+    // A FileManager1 properties request: show the item, then describe it once
+    // its folder has listed it and selected it.
+    Timer {
+        id: inspectRevealed
+        interval: 700
+        onTriggered: root.showProperties(root.firstSelectedRow())
+    }
+
     // ---- Tabs ----
     // Each tab is a bridge of its own: its own folder, history, selection and
     // watcher. Everything on screen talks to the current one through
@@ -593,8 +601,18 @@ ApplicationWindow {
 
     BackendBridge {
         id: firstBridge
+        // Other applications' "Show in folder" lands here, in a tab of its own.
+        onExternalRequest: function (target, mode) {
+            root.newTab("")
+            root.openTarget(target)
+            if (mode === "properties")
+                inspectRevealed.restart()
+            root.raise()
+            root.requestActivate()
+        }
         // `thallium-file-manager PATH` opens PATH, or the folder holding it.
         Component.onCompleted: {
+            firstBridge.serveDesktop()
             const args = Qt.application.arguments
             if (args.length > 1)
                 root.openTarget(args[args.length - 1])

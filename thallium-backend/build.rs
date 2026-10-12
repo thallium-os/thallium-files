@@ -8,6 +8,9 @@ fn main() {
 	)
 	.files(["src/qt_bridge.rs"])
 	.include_dir("cpp")
+	.qt_module("DBus")
 	.cpp_file("cpp/clipboard.cpp")
+	.cpp_file("cpp/filemanager1.h")
+	.cpp_file("cpp/filemanager1.cpp")
 	.build();
 }
