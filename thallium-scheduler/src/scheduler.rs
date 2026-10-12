@@ -569,8 +569,9 @@ async fn execute_move<V: FileSystem>(
 					progress,
 				)
 				.await?;
-				// Publication is complete and valid. Finish the move even if cancellation
-				// arrives here, avoiding a misleading half-move with duplicate files.
+				// Publication is complete and valid. Finish the move even if
+				// cancellation arrives here, avoiding a misleading half-move
+				// with duplicate files.
 				vfs.delete(&item.location, DeleteOptions { recursive: false }).await?;
 				progress.item_completed(0).await?;
 			}
