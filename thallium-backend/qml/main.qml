@@ -169,6 +169,10 @@ ApplicationWindow {
         }
         out.push({ label: "Filesystem", folder: "/" })
         out.push({ label: "Trash", folder: null, trash: true })
+        // Drives that can be mounted, mounted or not.
+        void root.revision
+        for (let d = 0; d < root.bridge.driveCount(); ++d)
+            out.push({ label: root.bridge.driveLabel(d), folder: null, target: root.bridge.driveMount(d), drive: d })
         // The GTK bookmarks, less any that name a place already listed.
         void root.revision
         const listed = out.map(function (place) { return root.placePath(place.folder) })
@@ -1053,6 +1057,27 @@ ApplicationWindow {
                 text: "Close"
                 onClicked: propertiesSheet.close()
             }
+        }
+    }
+
+    // ---- Drives ----
+    MenuSurface {
+        id: driveMenu
+        property int index: -1
+        readonly property bool mounted: {
+            void root.revision
+            return root.bridge.driveMount(driveMenu.index).length > 0
+        }
+        MenuLine { text: "Open"; onTriggered: root.bridge.openDrive(driveMenu.index) }
+        MenuLine {
+            text: "Unmount"
+            enabled: driveMenu.mounted && !root.bridge.driveBusy()
+            onTriggered: root.bridge.unmountDrive(driveMenu.index)
+        }
+        MenuLine {
+            text: "Eject"
+            enabled: root.bridge.driveEjectable(driveMenu.index) && !root.bridge.driveBusy()
+            onTriggered: root.bridge.ejectDrive(driveMenu.index)
         }
     }
 
@@ -2481,7 +2506,8 @@ ApplicationWindow {
                     readonly property bool recent: placeEntry.modelData.recent === true
                     readonly property bool trash: placeEntry.modelData.trash === true
                     readonly property bool marked: placeEntry.modelData.bookmark !== undefined
-                    readonly property string target: placeEntry.remote || placeEntry.marked
+                    readonly property bool drive: placeEntry.modelData.drive !== undefined
+                    readonly property string target: placeEntry.remote || placeEntry.marked || placeEntry.drive
                                                      ? placeEntry.modelData.target
                                                      : root.placePath(placeEntry.modelData.folder)
                     width: placesView.width
@@ -2493,14 +2519,14 @@ ApplicationWindow {
                               ? "⌫"
                               : placeEntry.marked
                               ? "★"
+                              : placeEntry.drive
+                              ? (root.bridge.driveEjectable(placeEntry.modelData.drive) ? "⏏" : "◫")
                               : placeEntry.remote
                               ? "◈"
                               : (placeEntry.modelData.folder === "/"
                                  ? "◆"
                                  : (placeEntry.modelData.folder.length === 0 ? "⌂" : "▸")))
                     label: placeEntry.modelData.label
-                    // A remote is named, not pathed; say what it is.
-                    trailing: placeEntry.remote ? "remote" : ""
                     active: placeEntry.recent
                             ? root.recentOpen
                             : placeEntry.trash
@@ -2509,7 +2535,14 @@ ApplicationWindow {
                                && root.bridge.currentPath === placeEntry.target)
                     dropTarget: placeEntry.recent || placeEntry.trash || placeEntry.adds || placeEntry.remote
                                 ? "" : placeEntry.target
+                    trailing: placeEntry.remote ? "remote"
+                              : placeEntry.drive && placeEntry.target.length === 0 ? "not mounted" : ""
                     onMenuRequested: {
+                        if (placeEntry.drive) {
+                            driveMenu.index = placeEntry.modelData.drive
+                            driveMenu.popup()
+                            return
+                        }
                         if (!placeEntry.marked)
                             return
                         bookmarkMenu.index = placeEntry.modelData.bookmark
@@ -2520,6 +2553,10 @@ ApplicationWindow {
                             root.showRecent()
                         } else if (placeEntry.trash) {
                             root.showTrash()
+                        } else if (placeEntry.drive) {
+                            root.recentOpen = false
+                            root.trashOpen = false
+                            root.bridge.openDrive(placeEntry.modelData.drive)
                         } else if (placeEntry.adds) {
                             root.remoteDraftName = ""
                             root.providerQuery = ""

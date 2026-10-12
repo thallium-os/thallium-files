@@ -11,7 +11,7 @@ use thallium_icons::{IconService, Thumbnail};
 use thallium_protocol::{BrowserStateSnapshot, DirectoryEntryRow, PathBytes, TaskInfo, TaskStatus};
 use thallium_rclone::{Remotes, authorize, config::{Provider, Session, Step}};
 
-use crate::{Backend, BackendConfig, BackendResult, apps, bookmarks, properties, recents::Recent, search::Search, storage::Measure, trash_bin, uri};
+use crate::{Backend, BackendConfig, BackendResult, apps, bookmarks, drives, properties, recents::Recent, search::Search, storage::Measure, trash_bin, uri};
 
 #[cxx_qt::bridge]
 pub mod ffi {
@@ -213,6 +213,30 @@ pub mod ffi {
 		#[qinvokable]
 		#[rust_name = "open_terminal_here"]
 		fn openTerminalHere(self: Pin<&mut Self>);
+		#[qinvokable]
+		#[rust_name = "drive_count"]
+		fn driveCount(&self) -> i32;
+		#[qinvokable]
+		#[rust_name = "drive_label"]
+		fn driveLabel(&self, index: i32) -> QString;
+		#[qinvokable]
+		#[rust_name = "drive_mount"]
+		fn driveMount(&self, index: i32) -> QString;
+		#[qinvokable]
+		#[rust_name = "drive_ejectable"]
+		fn driveEjectable(&self, index: i32) -> bool;
+		#[qinvokable]
+		#[rust_name = "open_drive"]
+		fn openDrive(self: Pin<&mut Self>, index: i32);
+		#[qinvokable]
+		#[rust_name = "unmount_drive"]
+		fn unmountDrive(self: Pin<&mut Self>, index: i32);
+		#[qinvokable]
+		#[rust_name = "eject_drive"]
+		fn ejectDrive(self: Pin<&mut Self>, index: i32);
+		#[qinvokable]
+		#[rust_name = "drive_busy"]
+		fn driveBusy(&self) -> bool;
 		#[qinvokable]
 		#[rust_name = "bookmark_count"]
 		fn bookmarkCount(&self) -> i32;
@@ -437,6 +461,10 @@ pub struct BackendBridgeRust {
 	trash:          Vec<trash::TrashItem>,
 	/// A purge still running, collected on a later poll.
 	purge:          Option<trash_bin::Purge>,
+	/// Mountable drives as last listed, and a mount, unmount or eject still
+	/// running (with whether to open the drive once it is mounted).
+	drives:         Vec<drives::Drive>,
+	drive_action:   Option<(drives::Pending, bool)>,
 	/// The entry the Properties sheet describes, its type, and the count of
 	/// what it holds when it is a folder.
 	inspected:      Option<properties::Properties>,
@@ -496,6 +524,8 @@ impl Default for BackendBridgeRust {
 					purge: None,
 					offered: Vec::new(),
 					inspected: None,
+					drives: drives::list(),
+					drive_action: None,
 					inspected_type: String::new(),
 					inspect_size: Measure::new(),
 					offered_type: String::new(),
@@ -525,6 +555,8 @@ impl Default for BackendBridgeRust {
 				purge:          None,
 				offered:        Vec::new(),
 				inspected:      None,
+				drives:         Vec::new(),
+				drive_action:   None,
 				inspected_type: String::new(),
 				inspect_size:   Measure::new(),
 				offered_type:   String::new(),
@@ -570,6 +602,10 @@ impl ffi::BackendBridge {
 		let ticks = self.rust().idle_ticks.saturating_add(1);
 		let reconcile = ticks >= RECONCILE_TICKS;
 		self.as_mut().rust_mut().idle_ticks = if reconcile { 0 } else { ticks };
+		if reconcile {
+			self.as_mut().refresh_drives();
+		}
+		self.as_mut().collect_drive_action();
 		if moved || settled || reconcile {
 			self.as_mut().reload();
 		}
@@ -600,6 +636,95 @@ impl ffi::BackendBridge {
 		self.as_mut().rust_mut().revealing = Some(name.as_bytes().to_vec());
 		let parent = Location::local(NativePath::from(parent));
 		self.submit_detached(Command::Navigate(parent));
+	}
+
+	pub fn drive_count(&self) -> i32 { count(self.rust().drives.len()) }
+
+	pub fn drive_label(&self, index: i32) -> QString {
+		self.drive(index).map_or_else(QString::default, |drive| drive.label.as_str().into())
+	}
+
+	/// Where the drive is mounted, or an empty string.
+	pub fn drive_mount(&self, index: i32) -> QString {
+		self
+			.drive(index)
+			.and_then(|drive| drive.mount.as_ref())
+			.map_or_else(QString::default, |mount| mount.to_string_lossy().as_ref().into())
+	}
+
+	pub fn drive_ejectable(&self, index: i32) -> bool {
+		self.drive(index).is_some_and(|drive| drive.ejectable)
+	}
+
+	/// Open a drive, mounting it first when it is not mounted yet.
+	pub fn open_drive(mut self: Pin<&mut Self>, index: i32) {
+		let Some(drive) = self.drive(index).cloned() else { return };
+		if let Some(mount) = drive.mount {
+			self.navigate(&mount.to_string_lossy().as_ref().into());
+			return;
+		}
+		if self.rust().drive_action.is_none() {
+			self.as_mut().rust_mut().drive_action = Some((drives::mount(&drive), true));
+		}
+	}
+
+	pub fn unmount_drive(mut self: Pin<&mut Self>, index: i32) {
+		let Some(drive) = self.drive(index).cloned() else { return };
+		if self.rust().drive_action.is_none() {
+			self.as_mut().leave_drive(&drive);
+			self.as_mut().rust_mut().drive_action = Some((drives::unmount(&drive), false));
+		}
+	}
+
+	pub fn eject_drive(mut self: Pin<&mut Self>, index: i32) {
+		let Some(drive) = self.drive(index).cloned() else { return };
+		if self.rust().drive_action.is_none() {
+			self.as_mut().leave_drive(&drive);
+			self.as_mut().rust_mut().drive_action = Some((drives::eject(&drive), false));
+		}
+	}
+
+	pub fn drive_busy(&self) -> bool { self.rust().drive_action.is_some() }
+
+	fn drive(&self, index: i32) -> Option<&drives::Drive> {
+		usize::try_from(index).ok().and_then(|index| self.rust().drives.get(index))
+	}
+
+	/// Step out of a drive about to be unmounted, so this window is not what
+	/// keeps it busy.
+	fn leave_drive(self: Pin<&mut Self>, drive: &drives::Drive) {
+		let Some(mount) = drive.mount.as_ref() else { return };
+		let inside = self.current().is_some_and(|here| {
+			PathBuf::from(OsStr::from_bytes(here.path.as_bytes())).starts_with(mount)
+		});
+		if inside {
+			let home = self.home_path().clone();
+			self.navigate(&home);
+		}
+	}
+
+	fn refresh_drives(mut self: Pin<&mut Self>) {
+		let listed = drives::list();
+		if listed != self.rust().drives {
+			self.as_mut().rust_mut().drives = listed;
+			let revision = self.model_revision().saturating_add(1);
+			self.set_model_revision(revision);
+		}
+	}
+
+	fn collect_drive_action(mut self: Pin<&mut Self>) {
+		let Some(outcome) = self.rust().drive_action.as_ref().and_then(|(pending, _)| pending.take())
+		else {
+			return;
+		};
+		let open = self.rust().drive_action.as_ref().is_some_and(|(_, open)| *open);
+		self.as_mut().rust_mut().drive_action = None;
+		match outcome {
+			Ok(Some(mount)) if open => self.as_mut().navigate(&mount.to_string_lossy().as_ref().into()),
+			Ok(_) => {}
+			Err(error) => self.as_mut().set_last_error(error.into()),
+		}
+		self.refresh_drives();
 	}
 
 	pub fn bookmark_count(&self) -> i32 { count(bookmarks::read().len()) }

@@ -15,6 +15,8 @@ mod apps;
 #[cfg_attr(not(feature = "qt"), allow(dead_code))]
 mod bookmarks;
 #[cfg_attr(not(feature = "qt"), allow(dead_code))]
+mod drives;
+#[cfg_attr(not(feature = "qt"), allow(dead_code))]
 mod properties;
 #[cfg_attr(not(feature = "qt"), allow(dead_code))]
 mod recents;
