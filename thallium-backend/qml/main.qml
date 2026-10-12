@@ -841,11 +841,20 @@ ApplicationWindow {
     MenuSurface {
         id: groundMenu
         property bool pasteable: false
-        onAboutToShow: pasteable = root.bridge.canPaste()
+        property bool undoable: false
+        onAboutToShow: {
+            pasteable = root.bridge.canPaste()
+            undoable = root.bridge.canUndo()
+        }
         MenuLine {
             text: "Paste"
             enabled: groundMenu.pasteable
             onTriggered: root.bridge.pasteFiles()
+        }
+        MenuLine {
+            text: "Undo"
+            enabled: groundMenu.undoable
+            onTriggered: root.bridge.undo()
         }
         MenuSeparator {
             contentItem: Rectangle { implicitHeight: 1; color: root.line }
@@ -1645,6 +1654,7 @@ ApplicationWindow {
             }
         }
     }
+    Shortcut { sequences: [StandardKey.Undo]; enabled: !root.typing; onActivated: root.bridge.undo() }
     Shortcut { sequences: ["Ctrl+1"]; onActivated: root.view = "list" }
     Shortcut { sequences: ["Ctrl+2"]; onActivated: root.view = "grid" }
 

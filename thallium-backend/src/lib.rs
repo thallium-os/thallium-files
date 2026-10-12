@@ -32,6 +32,8 @@ mod trash_bin;
 #[cfg_attr(not(feature = "qt"), allow(dead_code))]
 mod uca;
 #[cfg_attr(not(feature = "qt"), allow(dead_code))]
+mod undo;
+#[cfg_attr(not(feature = "qt"), allow(dead_code))]
 mod uri;
 
 #[cfg(feature = "qt")]

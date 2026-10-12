@@ -11,7 +11,7 @@ use thallium_icons::{IconService, Thumbnail};
 use thallium_protocol::{BrowserStateSnapshot, DirectoryEntryRow, PathBytes, TaskInfo, TaskStatus};
 use thallium_rclone::{Remotes, authorize, config::{Provider, Session, Step}};
 
-use crate::{Backend, BackendConfig, BackendResult, apps, archive, bookmarks, drives, properties, recents::Recent, search::Search, storage::Measure, trash_bin, uca, uri};
+use crate::{Backend, BackendConfig, BackendResult, apps, archive, bookmarks, drives, properties, recents::Recent, search::Search, storage::Measure, trash_bin, uca, undo, uri};
 
 #[cxx_qt::bridge]
 pub mod ffi {
@@ -230,6 +230,11 @@ pub mod ffi {
 		#[qinvokable]
 		#[rust_name = "open_terminal_here"]
 		fn openTerminalHere(self: Pin<&mut Self>);
+		#[qinvokable]
+		fn undo(self: Pin<&mut Self>);
+		#[qinvokable]
+		#[rust_name = "can_undo"]
+		fn canUndo(&self) -> bool;
 		#[qinvokable]
 		#[rust_name = "offer_actions"]
 		fn offerActions(self: Pin<&mut Self>);
@@ -505,6 +510,8 @@ pub struct BackendBridgeRust {
 	trash:          Vec<trash::TrashItem>,
 	/// A purge still running, collected on a later poll.
 	purge:          Option<trash_bin::Purge>,
+	/// What Ctrl+Z can take back, newest last.
+	history:        undo::History,
 	/// Custom actions that apply to the selection, read when its menu opens.
 	actions:        Vec<uca::Action>,
 	/// Extractions and compressions still running.
@@ -575,6 +582,7 @@ impl Default for BackendBridgeRust {
 					drives: drives::list(),
 					archive_jobs: Vec::new(),
 					actions: Vec::new(),
+					history: undo::History::default(),
 					drive_action: None,
 					inspected_type: String::new(),
 					inspect_size: Measure::new(),
@@ -608,6 +616,7 @@ impl Default for BackendBridgeRust {
 				drives:         Vec::new(),
 				archive_jobs:   Vec::new(),
 				actions:        Vec::new(),
+				history:        undo::History::default(),
 				drive_action:   None,
 				inspected_type: String::new(),
 				inspect_size:   Measure::new(),
@@ -690,6 +699,30 @@ impl ffi::BackendBridge {
 		let parent = Location::local(NativePath::from(parent));
 		self.submit_detached(Command::Navigate(parent));
 	}
+
+	/// Take back the last recorded operation.
+	pub fn undo(mut self: Pin<&mut Self>) {
+		let Some(step) = self.as_mut().rust_mut().history.pop() else { return };
+		match undo::undo(step) {
+			undo::Undo::Run(commands) => {
+				for command in commands {
+					self.as_mut().submit_recorded(command, false);
+				}
+			}
+			undo::Undo::Restore { originals, since } => {
+				let items: Vec<trash::TrashItem> = trash_bin::list()
+					.unwrap_or_default()
+					.into_iter()
+					.filter(|item| item.time_deleted >= since && originals.contains(&item.original_path()))
+					.collect();
+				if let Err(error) = trash_bin::restore(items) {
+					self.as_mut().set_last_error(error.into());
+				}
+			}
+		}
+	}
+
+	pub fn can_undo(&self) -> bool { !self.rust().history.is_empty() }
 
 	/// Collect the custom actions that apply to every selected entry.
 	pub fn offer_actions(mut self: Pin<&mut Self>) {
@@ -779,14 +812,21 @@ impl ffi::BackendBridge {
 			return;
 		}
 		let mut errors = Vec::new();
+		let mut made = Vec::new();
 		self.as_mut().rust_mut().archive_jobs.retain(|job| match job.take() {
 			None => true,
-			Some(Ok(_)) => false,
+			Some(Ok(path)) => {
+				made.push(path);
+				false
+			}
 			Some(Err(error)) => {
 				errors.push(error);
 				false
 			}
 		});
+		if !made.is_empty() {
+			self.as_mut().rust_mut().history.record(undo::Step::Made(made));
+		}
 		if let Some(error) = errors.pop() {
 			self.as_mut().set_last_error(error.into());
 		}
@@ -1906,7 +1946,12 @@ impl ffi::BackendBridge {
 		}
 	}
 
-	fn submit(mut self: Pin<&mut Self>, command: Command) {
+	fn submit(self: Pin<&mut Self>, command: Command) { self.submit_recorded(command, true); }
+
+	/// Submit `command`, remembering how to undo it unless it is itself an
+	/// undo.
+	fn submit_recorded(mut self: Pin<&mut Self>, command: Command, record: bool) {
+		let step = if record { undo::step_for(&command) } else { None };
 		let result = self
 			.as_mut()
 			.rust_mut()
@@ -1914,7 +1959,12 @@ impl ffi::BackendBridge {
 			.as_mut()
 			.map_or_else(|| Err(crate::BackendError::NotStarted), |backend| backend.submit(command));
 		match result {
-			Ok(()) => self.as_mut().set_last_error(QString::default()),
+			Ok(()) => {
+				if let Some(step) = step {
+					self.as_mut().rust_mut().history.record(step);
+				}
+				self.as_mut().set_last_error(QString::default());
+			}
 			Err(error) => self.as_mut().set_last_error(error.to_string().into()),
 		}
 		self.reload();
