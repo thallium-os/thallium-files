@@ -31,7 +31,7 @@ shutdown all round-trip through coordinator, scheduler and VFS.
 
 Known gaps, each pinned by a test rather than left silent:
 
-- Copy handles regular files only. Delete recurses; copy does not.
+- Copy and move recurse into folders; links inside a copied tree are recreated, not followed.
 - Remote services need `rclone` installed; remotes themselves are added from
   the sidebar. Without rclone the browser is local-only. Remotes have no trash,
   links or mode bits.

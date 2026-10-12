@@ -4,7 +4,7 @@ use std::{collections::{HashSet, VecDeque}, sync::{Arc, atomic::{AtomicBool, Ato
 
 use thallium_fs_core::{ConflictPolicy, FileAttrs, FileKind, FsError, FsErrorCode, Location, NativePath};
 use thallium_protocol::{TaskId, TaskInfo, TaskKind};
-use thallium_vfs::{DeleteOptions, FileSystem, OpenWriteOptions, StatOptions};
+use thallium_vfs::{CreateDirOptions, DeleteOptions, FileSystem, OpenWriteOptions, StatOptions};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::{mpsc, oneshot}};
 use tokio_util::sync::CancellationToken;
 
@@ -480,18 +480,17 @@ async fn prepare<V: FileSystem>(vfs: &V, input: &TaskInput) -> Result<Vec<Prepar
 	for location in locations {
 		let follow_symlinks = matches!(input, TaskInput::Copy(_));
 		let entry = vfs.stat(location, StatOptions { follow_symlinks }).await?;
-		if matches!(input, TaskInput::Copy(_)) && entry.metadata.kind == FileKind::Directory {
-			return Err(FsError::new(
-				FsErrorCode::IsDirectory,
-				"MVP copy supports regular files, not directory trees",
-				Some(location.clone()),
-			));
-		}
+		let size = if matches!(input, TaskInput::Copy(_)) && entry.metadata.kind == FileKind::Directory
+		{
+			tree_size(vfs, location).await?
+		} else {
+			entry.metadata.size
+		};
 		prepared.push(PreparedItem {
 			location: location.clone(),
-			size:     entry.metadata.size,
-			attrs:    FileAttrs::from_metadata(&entry.metadata),
-			kind:     entry.metadata.kind,
+			size,
+			attrs: FileAttrs::from_metadata(&entry.metadata),
+			kind: entry.metadata.kind,
 		});
 	}
 	Ok(prepared)
@@ -509,6 +508,26 @@ async fn execute_copy<V: FileSystem>(
 		progress.item_started(item.location.clone()).await?;
 		let name = file_name(&item.location)?;
 		let requested = task.destination.join(name);
+		if item.kind == FileKind::Directory {
+			if is_within(&requested, &item.location) {
+				return Err(FsError::new(
+					FsErrorCode::InvalidInput,
+					"cannot copy a folder into itself",
+					Some(item.location),
+				));
+			}
+			let copied = copy_tree(
+				vfs,
+				&item.location,
+				&requested,
+				task.options.conflict_policy,
+				cancellation,
+				progress,
+			)
+			.await?;
+			progress.item_completed(if copied { 0 } else { item.size }).await?;
+			continue;
+		}
 		let outcome = copy_file(
 			vfs,
 			&item.location,
@@ -553,11 +572,18 @@ async fn execute_move<V: FileSystem>(
 			Ok(()) => progress.item_completed(item.size).await?,
 			Err(error) if error.code == FsErrorCode::CrossDevice => {
 				if item.kind == FileKind::Directory {
-					return Err(FsError::new(
-						FsErrorCode::Unsupported,
-						"cross-filesystem directory moves are not supported in the MVP",
-						Some(item.location),
-					));
+					copy_tree(
+						vfs,
+						&item.location,
+						&destination,
+						ConflictPolicy::Overwrite,
+						cancellation,
+						progress,
+					)
+					.await?;
+					vfs.delete(&item.location, DeleteOptions { recursive: true }).await?;
+					progress.item_completed(0).await?;
+					continue;
 				}
 				copy_file(
 					vfs,
@@ -695,6 +721,103 @@ async fn copy_into_temp<V: FileSystem>(
 	drop(writer);
 	progress.flush().await?;
 	vfs.set_attrs(temporary, attrs).await
+}
+
+/// Total bytes of the regular files under `root`, without following links.
+async fn tree_size<V: FileSystem>(vfs: &V, root: &Location) -> Result<u64, FsError> {
+	let mut total = 0_u64;
+	let mut pending = vec![root.clone()];
+	while let Some(directory) = pending.pop() {
+		for entry in vfs.scan(&directory).await? {
+			match entry.metadata.kind {
+				FileKind::Directory => pending.push(entry.location),
+				FileKind::File => total = total.saturating_add(entry.metadata.size),
+				_ => {}
+			}
+		}
+	}
+	Ok(total)
+}
+
+/// Whether `location` is `ancestor` or lies beneath it.
+fn is_within(location: &Location, ancestor: &Location) -> bool {
+	if location.backend != ancestor.backend {
+		return false;
+	}
+	let (path, root) = (location.path.normalize(), ancestor.path.normalize());
+	let (path, root) = (path.as_bytes(), root.as_bytes());
+	path.starts_with(root) && (path.len() == root.len() || root == b"/" || path[root.len()] == b'/')
+}
+
+/// Copy the directory tree at `source` to `requested`. An existing destination
+/// folder is merged into under [`ConflictPolicy::Overwrite`]. Returns `false`
+/// when the conflict policy skipped the whole tree.
+async fn copy_tree<V: FileSystem>(
+	vfs: &V,
+	source: &Location,
+	requested: &Location,
+	policy: ConflictPolicy,
+	cancellation: &CancellationToken,
+	progress: &mut ProgressReporter<'_>,
+) -> Result<bool, FsError> {
+	let Some(root) = resolve_destination(vfs, requested, policy).await? else {
+		return Ok(false);
+	};
+	let mut pending = vec![(source.clone(), root)];
+	// Applied last, deepest first, so writing children does not disturb the
+	// copied folder times.
+	let mut folder_attrs = Vec::new();
+	while let Some((from, to)) = pending.pop() {
+		check_cancelled(cancellation, Some(from.clone()))?;
+		let entry = vfs.stat(&from, StatOptions { follow_symlinks: true }).await?;
+		match vfs.create_dir(&to, CreateDirOptions { recursive: false, attributes: None }).await {
+			Err(error) if error.code == FsErrorCode::AlreadyExists => {
+				let existing = vfs.stat(&to, StatOptions { follow_symlinks: true }).await?;
+				if existing.metadata.kind != FileKind::Directory {
+					return Err(error);
+				}
+			}
+			result => result?,
+		}
+		folder_attrs.push((to.clone(), FileAttrs::from_metadata(&entry.metadata)));
+		for child in vfs.scan(&from).await? {
+			check_cancelled(cancellation, Some(child.location.clone()))?;
+			let target = to.join(&child.name);
+			match child.metadata.kind {
+				FileKind::Directory => pending.push((child.location, target)),
+				FileKind::File => {
+					copy_file(
+						vfs,
+						&child.location,
+						&target,
+						ConflictPolicy::Overwrite,
+						&FileAttrs::from_metadata(&child.metadata),
+						cancellation,
+						progress,
+					)
+					.await?;
+				}
+				FileKind::Symlink => {
+					let link = match &child.symlink {
+						Some(info) => info.target.clone(),
+						None => vfs.read_link(&child.location).await?,
+					};
+					if let Ok(existing) = vfs.stat(&target, StatOptions { follow_symlinks: false }).await
+						&& existing.metadata.kind != FileKind::Directory
+					{
+						vfs.delete(&target, DeleteOptions { recursive: false }).await?;
+					}
+					vfs.symlink(&link, &target).await?;
+				}
+				// Devices, sockets and pipes have no content to copy.
+				_ => {}
+			}
+		}
+	}
+	for (folder, attrs) in folder_attrs.iter().rev() {
+		vfs.set_attrs(folder, attrs).await?;
+	}
+	Ok(true)
 }
 
 async fn clean_after_error<V: FileSystem>(
@@ -889,6 +1012,49 @@ mod tests {
 			7;
 			256 * 1024
 		]);
+		scheduler.shutdown().await.expect("shutdown");
+	}
+
+	#[tokio::test]
+	async fn copy_reproduces_a_folder_tree() {
+		let source_dir = TestDirectory::new("tree-source");
+		let destination = TestDirectory::new("tree-destination");
+		let root = source_dir.0.join("project");
+		fs::create_dir_all(root.join("src/deep")).expect("make tree");
+		fs::create_dir(root.join("empty")).expect("make empty folder");
+		fs::write(root.join("README"), b"top").expect("write top file");
+		fs::write(root.join("src/deep/main.rs"), vec![3; 64 * 1024]).expect("write deep file");
+		std::os::unix::fs::symlink("src/deep/main.rs", root.join("link")).expect("make link");
+		let scheduler = Scheduler::new(Arc::new(LocalBackend::new()), config());
+		let mut handle = scheduler.add(copy_input(&root, &destination)).await.expect("submit copy");
+
+		let terminal =
+			tokio::time::timeout(Duration::from_secs(5), handle.wait()).await.expect("task timeout");
+		assert_eq!(terminal.status, TaskStatus::Succeeded);
+		assert_eq!(terminal.progress.basis_points(), 10_000);
+		let copy = destination.0.join("project");
+		assert_eq!(fs::read(copy.join("README")).expect("read top"), b"top");
+		assert_eq!(fs::read(copy.join("src/deep/main.rs")).expect("read deep"), vec![3; 64 * 1024]);
+		assert!(copy.join("empty").is_dir());
+		assert_eq!(fs::read_link(copy.join("link")).expect("read link"), Path::new("src/deep/main.rs"));
+		scheduler.shutdown().await.expect("shutdown");
+	}
+
+	#[tokio::test]
+	async fn copying_a_folder_into_itself_is_refused() {
+		let source_dir = TestDirectory::new("self-source");
+		let root = source_dir.0.join("outer");
+		fs::create_dir_all(root.join("inner")).expect("make tree");
+		let inside = TestDirectory(root.join("inner"));
+		let scheduler = Scheduler::new(Arc::new(LocalBackend::new()), config());
+		let mut handle = scheduler.add(copy_input(&root, &inside)).await.expect("submit copy");
+
+		let terminal =
+			tokio::time::timeout(Duration::from_secs(5), handle.wait()).await.expect("task timeout");
+		assert_eq!(terminal.status, TaskStatus::Failed);
+		assert_eq!(terminal.issue.expect("failure detail").code, FsErrorCode::InvalidInput);
+		assert!(!root.join("inner/outer").exists());
+		std::mem::forget(inside);
 		scheduler.shutdown().await.expect("shutdown");
 	}
 

@@ -10,7 +10,7 @@ use std::{fs, path::Path, thread, time::{Duration, Instant}};
 use tempfile::TempDir;
 use thallium_actions::Command;
 use thallium_backend::{Backend, BackendConfig};
-use thallium_fs_core::{ConflictPolicy, FsErrorCode, Location, NativePath};
+use thallium_fs_core::{ConflictPolicy, Location, NativePath};
 use thallium_protocol::{TaskInfo, TaskKind, TaskStatus};
 
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -91,10 +91,7 @@ fn copy_lands_the_file_and_leaves_the_source() {
 }
 
 #[test]
-fn copy_rejects_a_directory_tree_because_the_mvp_copies_only_regular_files() {
-	// Recursive copy is not implemented, while recursive delete is. This test
-	// pins the current, asymmetric contract so the gap is visible rather than
-	// silent; it should be rewritten to assert success when recursion lands.
+fn copy_reproduces_a_directory_tree() {
 	let root = TempDir::new().expect("root");
 	let tree = root.path().join("tree");
 	let target = root.path().join("target");
@@ -112,10 +109,9 @@ fn copy_rejects_a_directory_tree_because_the_mvp_copies_only_regular_files() {
 		.expect("submit copy");
 
 	let task = settle_task(&mut backend, TaskKind::Copy);
-	assert_eq!(task.status, TaskStatus::Failed);
-	let issue = task.issue.expect("a refused copy must explain itself");
-	assert_eq!(issue.code, FsErrorCode::IsDirectory);
-	assert!(!target.join("tree").exists(), "a refused copy must not leave a partial tree");
+	assert_eq!(task.status, TaskStatus::Succeeded);
+	assert_eq!(fs::read(target.join("tree/nested/leaf.txt")).expect("copied leaf"), b"leaf");
+	assert!(tree.join("nested/leaf.txt").exists(), "copy must not consume the source");
 	backend.shutdown().expect("shutdown");
 }
 
