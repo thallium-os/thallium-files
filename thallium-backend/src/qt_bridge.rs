@@ -11,7 +11,7 @@ use thallium_icons::{IconService, Thumbnail};
 use thallium_protocol::{BrowserStateSnapshot, DirectoryEntryRow, PathBytes, TaskInfo, TaskStatus};
 use thallium_rclone::{Remotes, authorize, config::{Provider, Session, Step}};
 
-use crate::{Backend, BackendConfig, BackendResult, apps, archive, bookmarks, drives, properties, recents::Recent, search::Search, storage::Measure, trash_bin, uca, undo, uri};
+use crate::{Backend, BackendConfig, BackendResult, apps, archive, bookmarks, bulk_rename, drives, properties, recents::Recent, search::Search, storage::Measure, trash_bin, uca, undo, uri};
 
 #[cxx_qt::bridge]
 pub mod ffi {
@@ -230,6 +230,31 @@ pub mod ffi {
 		#[qinvokable]
 		#[rust_name = "open_terminal_here"]
 		fn openTerminalHere(self: Pin<&mut Self>);
+		#[qinvokable]
+		#[rust_name = "bulk_rule"]
+		fn bulkRule(
+			self: Pin<&mut Self>,
+			mode: &QString,
+			first: &QString,
+			second: &QString,
+			number: i32,
+			flag: bool,
+		);
+		#[qinvokable]
+		#[rust_name = "bulk_count"]
+		fn bulkCount(&self) -> i32;
+		#[qinvokable]
+		#[rust_name = "bulk_old"]
+		fn bulkOld(&self, index: i32) -> QString;
+		#[qinvokable]
+		#[rust_name = "bulk_new"]
+		fn bulkNew(&self, index: i32) -> QString;
+		#[qinvokable]
+		#[rust_name = "bulk_error"]
+		fn bulkError(&self) -> QString;
+		#[qinvokable]
+		#[rust_name = "bulk_apply"]
+		fn bulkApply(self: Pin<&mut Self>);
 		#[qinvokable]
 		fn undo(self: Pin<&mut Self>);
 		#[qinvokable]
@@ -510,6 +535,8 @@ pub struct BackendBridgeRust {
 	trash:          Vec<trash::TrashItem>,
 	/// A purge still running, collected on a later poll.
 	purge:          Option<trash_bin::Purge>,
+	/// The bulk rename being prepared: old names, new names (or why not).
+	bulk:           (Vec<String>, Result<Vec<String>, String>),
 	/// What Ctrl+Z can take back, newest last.
 	history:        undo::History,
 	/// Custom actions that apply to the selection, read when its menu opens.
@@ -583,6 +610,7 @@ impl Default for BackendBridgeRust {
 					archive_jobs: Vec::new(),
 					actions: Vec::new(),
 					history: undo::History::default(),
+					bulk: (Vec::new(), Ok(Vec::new())),
 					drive_action: None,
 					inspected_type: String::new(),
 					inspect_size: Measure::new(),
@@ -617,6 +645,7 @@ impl Default for BackendBridgeRust {
 				archive_jobs:   Vec::new(),
 				actions:        Vec::new(),
 				history:        undo::History::default(),
+				bulk:           (Vec::new(), Ok(Vec::new())),
 				drive_action:   None,
 				inspected_type: String::new(),
 				inspect_size:   Measure::new(),
@@ -700,6 +729,88 @@ impl ffi::BackendBridge {
 		self.submit_detached(Command::Navigate(parent));
 	}
 
+	/// Set the bulk rename rule and work out the new names for the selection.
+	/// `mode` is replace, number, affix, lower, upper or title; `first` and
+	/// `second` are its texts (find and replace, pattern, prefix and suffix),
+	/// `number` the first number and `flag` whether to ignore case.
+	pub fn bulk_rule(
+		mut self: Pin<&mut Self>,
+		mode: &QString,
+		first: &QString,
+		second: &QString,
+		number: i32,
+		flag: bool,
+	) {
+		let (first, second) = (String::from(first), String::from(second));
+		let rule = match String::from(mode).as_str() {
+			"replace" => {
+				bulk_rename::Rule::Replace { find: first, with: second, ignore_case: flag }
+			}
+			"number" => {
+				bulk_rename::Rule::Number { pattern: first, start: u32::try_from(number).unwrap_or(1) }
+			}
+			"affix" => bulk_rename::Rule::Affix { prefix: first, suffix: second },
+			"upper" => bulk_rename::Rule::Case(bulk_rename::Case::Upper),
+			"title" => bulk_rename::Rule::Case(bulk_rename::Case::Title),
+			_ => bulk_rename::Rule::Case(bulk_rename::Case::Lower),
+		};
+		let names: Vec<String> = self
+			.selected_paths()
+			.iter()
+			.filter_map(|path| Some(path.file_name()?.to_string_lossy().into_owned()))
+			.collect();
+		let taken = self
+			.rust()
+			.snapshot
+			.directory
+			.entries
+			.iter()
+			.map(|entry| String::from_utf8_lossy(&entry.name.bytes).into_owned())
+			.collect();
+		let renamed = bulk_rename::preview(&names, &rule, &taken);
+		self.as_mut().rust_mut().bulk = (names, renamed);
+	}
+
+	pub fn bulk_count(&self) -> i32 { count(self.rust().bulk.0.len()) }
+
+	pub fn bulk_old(&self, index: i32) -> QString {
+		usize::try_from(index)
+			.ok()
+			.and_then(|index| self.rust().bulk.0.get(index))
+			.map_or_else(QString::default, |name| name.as_str().into())
+	}
+
+	pub fn bulk_new(&self, index: i32) -> QString {
+		let Ok(renamed) = &self.rust().bulk.1 else { return QString::default() };
+		usize::try_from(index)
+			.ok()
+			.and_then(|index| renamed.get(index))
+			.map_or_else(QString::default, |name| name.as_str().into())
+	}
+
+	pub fn bulk_error(&self) -> QString {
+		self.rust().bulk.1.as_ref().err().map_or_else(QString::default, |error| error.as_str().into())
+	}
+
+	/// Rename the selection to the previewed names.
+	pub fn bulk_apply(mut self: Pin<&mut Self>) {
+		let (names, Ok(renamed)) = self.rust().bulk.clone() else { return };
+		let Some(folder) =
+			self.selected_paths().first().and_then(|first| first.parent()).map(PathBuf::from)
+		else {
+			return;
+		};
+		let pairs: Vec<(String, String)> = names.into_iter().zip(renamed).collect();
+		match bulk_rename::apply_all(&folder, &pairs) {
+			Ok(done) if !done.is_empty() => {
+				self.as_mut().rust_mut().history.record(undo::Step::RenamedMany(done))
+			}
+			Ok(_) => {}
+			Err(error) => self.as_mut().set_last_error(error.into()),
+		}
+		self.refresh();
+	}
+
 	/// Take back the last recorded operation.
 	pub fn undo(mut self: Pin<&mut Self>) {
 		let Some(step) = self.as_mut().rust_mut().history.pop() else { return };
@@ -707,6 +818,24 @@ impl ffi::BackendBridge {
 			undo::Undo::Run(commands) => {
 				for command in commands {
 					self.as_mut().submit_recorded(command, false);
+				}
+			}
+			undo::Undo::RenameBack(pairs) => {
+				let Some(folder) = pairs.first().and_then(|(from, _)| from.parent()).map(PathBuf::from)
+				else {
+					return;
+				};
+				let back: Vec<(String, String)> = pairs
+					.iter()
+					.filter_map(|(from, to)| {
+						Some((
+							to.file_name()?.to_string_lossy().into_owned(),
+							from.file_name()?.to_string_lossy().into_owned(),
+						))
+					})
+					.collect();
+				if let Err(error) = bulk_rename::apply_all(&folder, &back) {
+					self.as_mut().set_last_error(error.into());
 				}
 			}
 			undo::Undo::Restore { originals, since } => {

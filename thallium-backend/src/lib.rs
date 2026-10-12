@@ -17,6 +17,8 @@ mod archive;
 #[cfg_attr(not(feature = "qt"), allow(dead_code))]
 mod bookmarks;
 #[cfg_attr(not(feature = "qt"), allow(dead_code))]
+mod bulk_rename;
+#[cfg_attr(not(feature = "qt"), allow(dead_code))]
 mod drives;
 #[cfg_attr(not(feature = "qt"), allow(dead_code))]
 mod properties;

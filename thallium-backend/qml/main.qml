@@ -777,9 +777,8 @@ ApplicationWindow {
             contentItem: Rectangle { implicitHeight: 1; color: root.line }
         }
         MenuLine {
-            text: "Rename…"
-            enabled: entryMenu.held <= 1
-            onTriggered: root.beginRename(entryMenu.row)
+            text: entryMenu.held > 1 ? "Rename " + entryMenu.held + " items…" : "Rename…"
+            onTriggered: entryMenu.held > 1 ? root.beginBulkRename() : root.beginRename(entryMenu.row)
         }
         MenuLine {
             text: entryMenu.held > 1 ? "Make " + entryMenu.held + " links" : "Make link"
@@ -1168,6 +1167,202 @@ ApplicationWindow {
         onActivated: root.bridge.addBookmark(root.bridge.currentPath)
     }
 
+    // ---- Bulk rename ----
+    property int bulkTick: 0
+
+    function beginBulkRename() {
+        bulkMode.currentIndex = 0
+        bulkFirst.text = ""
+        bulkSecond.text = ""
+        bulkSheet.update()
+        bulkSheet.open()
+    }
+
+    Popup {
+        id: bulkSheet
+        anchors.centerIn: Overlay.overlay
+        width: 560
+        height: 520
+        modal: true
+        focus: true
+        padding: 16
+        onOpened: bulkFirst.forceActiveFocus()
+        onClosed: root.release()
+        background: Rectangle {
+            color: root.raisedHigh
+            radius: 9
+            border.width: 1
+            border.color: root.line
+        }
+        readonly property var modes: [
+            { key: "replace", label: "Replace text", first: "Find", second: "Replace with" },
+            { key: "number", label: "Number", first: "Name pattern (### is the number)", second: "" },
+            { key: "affix", label: "Add text", first: "Before the name", second: "After the name" },
+            { key: "lower", label: "lowercase", first: "", second: "" },
+            { key: "upper", label: "UPPERCASE", first: "", second: "" },
+            { key: "title", label: "Title Case", first: "", second: "" }
+        ]
+        readonly property var mode: modes[Math.max(0, bulkMode.currentIndex)]
+        readonly property string error: {
+            void root.bulkTick
+            return root.bridge.bulkError()
+        }
+        function update() {
+            root.bridge.bulkRule(mode.key, bulkFirst.text, bulkSecond.text, bulkStart.value, bulkCase.checked)
+            root.bulkTick++
+        }
+
+        Column {
+            anchors.fill: parent
+            spacing: 10
+            Text {
+                text: "Rename " + root.selectedCount + " items"
+                color: root.ink
+                font.family: root.sansFamily
+                font.pixelSize: 14
+            }
+            ComboBox {
+                id: bulkMode
+                width: 220
+                model: bulkSheet.modes.map(function (mode) { return mode.label })
+                onCurrentIndexChanged: bulkSheet.update()
+            }
+            Row {
+                spacing: 8
+                visible: bulkSheet.mode.first.length > 0
+                Rectangle {
+                    width: bulkSheet.mode.second.length > 0 ? 256 : 380
+                    height: 32
+                    radius: 6
+                    color: root.raised
+                    border.width: 1
+                    border.color: bulkFirst.activeFocus ? root.lineStrong : root.line
+                    TextInput {
+                        id: bulkFirst
+                        anchors.fill: parent
+                        anchors.leftMargin: 8
+                        anchors.rightMargin: 8
+                        verticalAlignment: TextInput.AlignVCenter
+                        clip: true
+                        color: root.ink
+                        font.family: root.sansFamily
+                        font.pixelSize: 13
+                        onTextChanged: bulkSheet.update()
+                        Keys.onEscapePressed: bulkSheet.close()
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: parent.text.length === 0
+                            text: bulkSheet.mode.first
+                            color: root.inkGhost
+                            font: parent.font
+                        }
+                    }
+                }
+                Rectangle {
+                    visible: bulkSheet.mode.second.length > 0
+                    width: 256
+                    height: 32
+                    radius: 6
+                    color: root.raised
+                    border.width: 1
+                    border.color: bulkSecond.activeFocus ? root.lineStrong : root.line
+                    TextInput {
+                        id: bulkSecond
+                        anchors.fill: parent
+                        anchors.leftMargin: 8
+                        anchors.rightMargin: 8
+                        verticalAlignment: TextInput.AlignVCenter
+                        clip: true
+                        color: root.ink
+                        font.family: root.sansFamily
+                        font.pixelSize: 13
+                        onTextChanged: bulkSheet.update()
+                        Keys.onEscapePressed: bulkSheet.close()
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: parent.text.length === 0
+                            text: bulkSheet.mode.second
+                            color: root.inkGhost
+                            font: parent.font
+                        }
+                    }
+                }
+                SpinBox {
+                    id: bulkStart
+                    visible: bulkSheet.mode.key === "number"
+                    from: 0
+                    to: 999999
+                    value: 1
+                    onValueChanged: bulkSheet.update()
+                }
+            }
+            CheckBox {
+                id: bulkCase
+                visible: bulkSheet.mode.key === "replace"
+                text: "Ignore case"
+                onCheckedChanged: bulkSheet.update()
+            }
+            ListView {
+                width: parent.width
+                height: parent.height - 220
+                clip: true
+                model: {
+                    void root.bulkTick
+                    return root.bridge.bulkCount()
+                }
+                delegate: Row {
+                    required property int index
+                    spacing: 10
+                    Text {
+                        width: 250
+                        elide: Text.ElideMiddle
+                        text: {
+                            void root.bulkTick
+                            return root.bridge.bulkOld(index)
+                        }
+                        color: root.inkMuted
+                        font.family: root.monoFamily
+                        font.pixelSize: 12
+                    }
+                    Text { text: "→"; color: root.inkGhost; font.pixelSize: 12 }
+                    Text {
+                        width: 250
+                        elide: Text.ElideMiddle
+                        text: {
+                            void root.bulkTick
+                            return root.bridge.bulkNew(index)
+                        }
+                        color: root.ink
+                        font.family: root.monoFamily
+                        font.pixelSize: 12
+                    }
+                }
+            }
+            Text {
+                width: parent.width
+                visible: bulkSheet.error.length > 0
+                text: bulkSheet.error
+                wrapMode: Text.Wrap
+                color: root.destructive
+                font.family: root.sansFamily
+                font.pixelSize: 12
+            }
+            Row {
+                anchors.right: parent.right
+                spacing: 8
+                Button { text: "Cancel"; onClicked: bulkSheet.close() }
+                Button {
+                    text: "Rename"
+                    enabled: bulkSheet.error.length === 0
+                    onClicked: {
+                        root.bridge.bulkApply()
+                        bulkSheet.close()
+                    }
+                }
+            }
+        }
+    }
+
     // Bumped whenever the offered application list is re-read.
     property int offerTick: 0
 
@@ -1432,7 +1627,7 @@ ApplicationWindow {
     Shortcut {
         sequence: "F2"
         enabled: !namePrompt.opened
-        onActivated: root.beginRename(root.firstSelectedRow())
+        onActivated: root.selectedCount > 1 ? root.beginBulkRename() : root.beginRename(root.firstSelectedRow())
     }
 
     // ---- Drag and drop ----
@@ -1603,6 +1798,7 @@ ApplicationWindow {
 
     readonly property bool typing: namePrompt.opened || pathEditor.visible || deleteConfirm.opened
                                    || emptyConfirm.opened || appPicker.opened || propertiesSheet.opened
+                                   || bulkSheet.opened
 
     Shortcut { sequences: ["Down"]; enabled: !root.typing; onActivated: root.moveFocus(root.columns(), false) }
     Shortcut { sequences: ["Up"]; enabled: !root.typing; onActivated: root.moveFocus(-root.columns(), false) }

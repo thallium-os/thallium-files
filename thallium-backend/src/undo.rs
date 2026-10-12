@@ -23,12 +23,19 @@ pub enum Step {
 	Moved(Vec<(PathBuf, PathBuf)>),
 	/// These went to the trash at or after `since` (seconds).
 	Trashed { originals: Vec<PathBuf>, since: i64 },
+	/// A bulk rename within one folder: each entry was the first path.
+	RenamedMany(Vec<(PathBuf, PathBuf)>),
 }
 
 /// What undoing a step takes.
 pub enum Undo {
 	Run(Vec<Command>),
-	Restore { originals: Vec<PathBuf>, since: i64 },
+	Restore {
+		originals: Vec<PathBuf>,
+		since:     i64,
+	},
+	/// Rename each second path back to the first, all at once.
+	RenameBack(Vec<(PathBuf, PathBuf)>),
 }
 
 #[derive(Default)]
@@ -127,6 +134,7 @@ pub fn undo(step: Step) -> Undo {
 			)
 		}
 		Step::Trashed { originals, since } => Undo::Restore { originals, since },
+		Step::RenamedMany(pairs) => Undo::RenameBack(pairs),
 	}
 }
 
