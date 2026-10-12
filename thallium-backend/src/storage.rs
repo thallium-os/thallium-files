@@ -5,7 +5,7 @@
 //! and counting means a stat per file, so it runs on workers and reports as it
 //! goes rather than making the window wait for a total.
 
-use std::{collections::{HashMap, VecDeque}, ffi::CString, fs, os::unix::ffi::OsStrExt, path::{Path, PathBuf}, sync::{Arc, Condvar, Mutex, atomic::{AtomicU64, AtomicUsize, Ordering}}, thread, time::{Duration, Instant}};
+use std::{collections::{HashMap, VecDeque}, ffi::CString, fs, os::unix::ffi::OsStrExt, path::{Path, PathBuf}, sync::{Arc, Condvar, Mutex, atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering}}, thread, time::{Duration, Instant}};
 
 /// How long a finished count stands before the tree is walked again.
 ///
@@ -65,15 +65,18 @@ struct Queue {
 	busy:    usize,
 }
 
+/// One count's state. Every count gets a fresh one, so workers still
+/// finishing an abandoned count only ever touch their own: sharing one let
+/// a stale worker decrement the next count's queue below zero.
+#[derive(Default)]
 struct Counting {
-	queue:      Mutex<Queue>,
-	wake:       Condvar,
-	bytes:      AtomicU64,
-	files:      AtomicU64,
-	walking:    AtomicUsize,
-	/// Bumped by every new measurement; a worker whose generation is stale
-	/// stops, so navigating away abandons the count rather than finishing it.
-	generation: AtomicU64,
+	queue:     Mutex<Queue>,
+	wake:      Condvar,
+	bytes:     AtomicU64,
+	files:     AtomicU64,
+	walking:   AtomicUsize,
+	/// Set when the count is abandoned; its workers stop at the next folder.
+	cancelled: AtomicBool,
 }
 
 /// What a finished count found.
@@ -86,7 +89,8 @@ struct Counted {
 
 /// A running count of what one directory holds.
 pub struct Measure {
-	shared:  Arc<Counting>,
+	/// The count on screen; replaced, never reset, by each new one.
+	current: Mutex<Arc<Counting>>,
 	/// Directories already counted, so returning to one is free.
 	known:   Arc<Mutex<HashMap<PathBuf, Counted>>>,
 	workers: usize,
@@ -97,14 +101,7 @@ impl Measure {
 	pub fn new() -> Self {
 		let workers = thread::available_parallelism().map_or(4, std::num::NonZero::get);
 		Self {
-			shared:  Arc::new(Counting {
-				queue:      Mutex::new(Queue::default()),
-				wake:       Condvar::new(),
-				bytes:      AtomicU64::new(0),
-				files:      AtomicU64::new(0),
-				walking:    AtomicUsize::new(0),
-				generation: AtomicU64::new(0),
-			}),
+			current: Mutex::new(Arc::default()),
 			known:   Arc::default(),
 			workers: workers.clamp(1, 8),
 		}
@@ -116,34 +113,31 @@ impl Measure {
 	/// started at all; otherwise the walk runs and its total is remembered.
 	pub fn start(&self, root: PathBuf) {
 		self.cancel();
-		let generation = self.shared.generation.fetch_add(1, Ordering::SeqCst) + 1;
-
+		let shared = Arc::new(Counting::default());
 		if let Some(known) = self.remembered(&root) {
-			self.shared.bytes.store(known.bytes, Ordering::Relaxed);
-			self.shared.files.store(known.files, Ordering::Relaxed);
+			shared.bytes.store(known.bytes, Ordering::Relaxed);
+			shared.files.store(known.files, Ordering::Relaxed);
+			self.replace(shared);
 			return;
 		}
 
-		self.shared.bytes.store(0, Ordering::Relaxed);
-		self.shared.files.store(0, Ordering::Relaxed);
-		if let Ok(mut queue) = self.shared.queue.lock() {
-			queue.pending.clear();
+		if let Ok(mut queue) = shared.queue.lock() {
 			queue.pending.push_back(root.clone());
-			queue.busy = 0;
 		}
-		self.shared.walking.store(self.workers, Ordering::SeqCst);
+		shared.walking.store(self.workers, Ordering::SeqCst);
+		self.replace(Arc::clone(&shared));
 		for _ in 0..self.workers {
-			let shared = Arc::clone(&self.shared);
+			let shared = Arc::clone(&shared);
 			let known = Arc::clone(&self.known);
 			let root = root.clone();
 			thread::spawn(move || {
-				count(&shared, generation);
+				count(&shared);
 				// The worker that turns the last light out records the total,
-				// and only if this count was never superseded: a partial sum
+				// and only if this count was never abandoned: a partial sum
 				// remembered as final would be wrong for as long as it stood.
 				let remaining = shared.walking.fetch_sub(1, Ordering::SeqCst);
 				if remaining == 1
-					&& shared.generation.load(Ordering::SeqCst) == generation
+					&& !shared.cancelled.load(Ordering::SeqCst)
 					&& let Ok(mut known) = known.lock()
 				{
 					known.insert(root, Counted {
@@ -169,34 +163,45 @@ impl Measure {
 	}
 
 	pub fn cancel(&self) {
-		self.shared.generation.fetch_add(1, Ordering::SeqCst);
-		if let Ok(mut queue) = self.shared.queue.lock() {
+		let shared = self.current();
+		shared.cancelled.store(true, Ordering::SeqCst);
+		if let Ok(mut queue) = shared.queue.lock() {
 			queue.pending.clear();
 		}
-		self.shared.wake.notify_all();
+		shared.wake.notify_all();
 	}
 
 	#[must_use]
-	pub fn walking(&self) -> bool { self.shared.walking.load(Ordering::SeqCst) > 0 }
+	pub fn walking(&self) -> bool { self.current().walking.load(Ordering::SeqCst) > 0 }
 
 	/// Bytes counted so far, which is the total once the walk has finished.
 	#[must_use]
-	pub fn bytes(&self) -> u64 { self.shared.bytes.load(Ordering::Relaxed) }
+	pub fn bytes(&self) -> u64 { self.current().bytes.load(Ordering::Relaxed) }
 
 	#[must_use]
-	pub fn files(&self) -> u64 { self.shared.files.load(Ordering::Relaxed) }
+	pub fn files(&self) -> u64 { self.current().files.load(Ordering::Relaxed) }
+
+	fn current(&self) -> Arc<Counting> {
+		self.current.lock().map(|current| Arc::clone(&current)).unwrap_or_default()
+	}
+
+	fn replace(&self, shared: Arc<Counting>) {
+		if let Ok(mut current) = self.current.lock() {
+			*current = shared;
+		}
+	}
 }
 
 impl Default for Measure {
 	fn default() -> Self { Self::new() }
 }
 
-fn count(shared: &Arc<Counting>, generation: u64) {
+fn count(shared: &Arc<Counting>) {
 	loop {
 		let directory = {
 			let Ok(mut queue) = shared.queue.lock() else { return };
 			loop {
-				if shared.generation.load(Ordering::SeqCst) != generation {
+				if shared.cancelled.load(Ordering::SeqCst) {
 					return;
 				}
 				if let Some(next) = queue.pending.pop_front() {
@@ -246,6 +251,33 @@ mod tests {
 	use std::{fs, path::Path, thread, time::Duration};
 
 	use super::{Measure, Usage, of};
+
+	#[test]
+	fn restarting_mid_count_neither_panics_nor_mixes_totals() {
+		let root = std::env::temp_dir().join(format!("thallium-restart-{}", std::process::id()));
+		for folder in 0..40 {
+			let inner = root.join(format!("big/{folder}/a/b"));
+			fs::create_dir_all(&inner).expect("tree");
+			fs::write(inner.join("f"), vec![0u8; 10]).expect("file");
+		}
+		fs::create_dir_all(root.join("small")).expect("small");
+		fs::write(root.join("small/one"), vec![0u8; 7]).expect("file");
+
+		let measure = Measure::new();
+		for _ in 0..50 {
+			measure.start(root.join("big"));
+			measure.start(root.join("small"));
+		}
+		for _ in 0..400 {
+			if !measure.walking() {
+				break;
+			}
+			thread::sleep(Duration::from_millis(5));
+		}
+		assert!(!measure.walking(), "the last count finishes");
+		assert_eq!((measure.bytes(), measure.files()), (7, 1), "abandoned counts add nothing");
+		let _ = fs::remove_dir_all(root);
+	}
 
 	#[test]
 	fn a_folder_is_counted_through_its_subdirectories() {
