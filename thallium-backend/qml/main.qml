@@ -496,7 +496,15 @@ ApplicationWindow {
         onActivated: root.showHidden = !root.showHidden
     }
 
-    BackendBridge { id: backendObject }
+    BackendBridge {
+        id: backendObject
+        // `thallium-file-manager PATH` opens PATH, or the folder holding it.
+        Component.onCompleted: {
+            const args = Qt.application.arguments
+            if (args.length > 1)
+                backendObject.reveal(args[args.length - 1])
+        }
+    }
 
     // Filtering the open folder is instant and happens as you type. Walking the
     // tree beneath it is not, so it waits for a pause and is abandoned the
@@ -610,6 +618,11 @@ ApplicationWindow {
         MenuSeparator {
             contentItem: Rectangle { implicitHeight: 1; color: root.line }
         }
+        MenuLine { text: "Cut"; onTriggered: backendObject.offerSelected(true) }
+        MenuLine { text: "Copy"; onTriggered: backendObject.offerSelected(false) }
+        MenuSeparator {
+            contentItem: Rectangle { implicitHeight: 1; color: root.line }
+        }
         MenuLine {
             text: "Rename…"
             enabled: entryMenu.held <= 1
@@ -628,13 +641,23 @@ ApplicationWindow {
         }
         MenuLine {
             text: entryMenu.held > 1 ? "Delete " + entryMenu.held + " permanently" : "Delete permanently"
-            onTriggered: backendObject.deleteSelected()
+            onTriggered: deleteConfirm.open()
         }
     }
 
     // Right-click on empty ground: about the folder, not about an entry.
     MenuSurface {
         id: groundMenu
+        property bool pasteable: false
+        onAboutToShow: pasteable = backendObject.canPaste()
+        MenuLine {
+            text: "Paste"
+            enabled: groundMenu.pasteable
+            onTriggered: backendObject.pasteFiles()
+        }
+        MenuSeparator {
+            contentItem: Rectangle { implicitHeight: 1; color: root.line }
+        }
         MenuLine { text: "New folder…"; onTriggered: root.beginCreate("folder", "") }
         MenuLine { text: "New empty file…"; onTriggered: root.beginCreate("file", "") }
         MenuSurface {
@@ -695,6 +718,13 @@ ApplicationWindow {
         promptField.select(0, kind === "folder" || dot <= 0 ? promptField.text.length : dot)
     }
 
+    function editPath() {
+        pathEditor.text = backendObject.currentPath
+        pathEditor.visible = true
+        pathEditor.forceActiveFocus()
+        pathEditor.selectAll()
+    }
+
     function firstSelectedRow() {
         for (let row = 0; row < backendObject.entryCount(); row++)
             if (backendObject.entrySelected(row))
@@ -713,6 +743,7 @@ ApplicationWindow {
         focus: true
         padding: 16
         onOpened: promptField.forceActiveFocus()
+        onClosed: root.release()
         background: Rectangle {
             color: root.raisedHigh
             radius: 9
@@ -781,6 +812,226 @@ ApplicationWindow {
         sequence: "F2"
         enabled: !namePrompt.opened
         onActivated: root.beginRename(root.firstSelectedRow())
+    }
+
+    // ---- Keyboard ----
+    // Shortcuts fire unless a text field claims the key first, so arrows and
+    // Backspace keep editing inside the search box.
+    property int anchorRow: -1
+
+    function displayIndex(row) { return root.rows.indexOf(row) }
+
+    function columns() {
+        return root.view === "grid"
+            ? Math.max(1, Math.floor(gridBrowser.width / gridBrowser.cellWidth)) : 1
+    }
+
+    // Move the focus `delta` places in display order. With `extend` the
+    // selection runs from the anchor to the new focus, as Shift does.
+    function moveFocus(delta, extend) {
+        const count = root.rows.length
+        if (count === 0)
+            return
+        const at = root.displayIndex(root.focusRow)
+        const next = at < 0 ? (delta > 0 ? 0 : count - 1) : Math.max(0, Math.min(count - 1, at + delta))
+        root.focusOn(next, extend)
+    }
+
+    function focusOn(index, extend) {
+        const row = root.rows[index]
+        if (!extend || root.anchorRow < 0)
+            root.anchorRow = row
+        root.focusRow = row
+        if (extend) {
+            const from = root.displayIndex(root.anchorRow)
+            const lo = Math.min(from, index), hi = Math.max(from, index)
+            backendObject.selectRows(root.rows.slice(lo, hi + 1))
+        } else {
+            backendObject.selectRows([row])
+        }
+        if (root.view === "grid")
+            gridBrowser.positionViewAtIndex(index, GridView.Contain)
+        else
+            listBrowser.positionViewAtIndex(index, ListView.Contain)
+    }
+
+    function pageSize() {
+        const view = root.view === "grid" ? gridBrowser : listBrowser
+        const pitch = root.view === "grid" ? gridBrowser.cellHeight : root.rowHeight
+        return Math.max(1, Math.floor(view.height / pitch)) * root.columns()
+    }
+
+    // Enter opens what is selected: a single folder is entered, files open
+    // in their default applications.
+    function activateSelection() {
+        const row = root.selectedCount === 1 ? root.firstSelectedRow() : root.focusRow
+        if (root.selectedCount <= 1) {
+            if (row < 0)
+                return
+            if (backendObject.entryIsDirectory(row))
+                backendObject.navigateRow(row)
+            else
+                backendObject.openEntry(row)
+            return
+        }
+        for (let i = 0; i < root.rows.length; i++) {
+            const each = root.rows[i]
+            if (backendObject.entrySelected(each) && !backendObject.entryIsDirectory(each))
+                backendObject.openEntry(each)
+        }
+    }
+
+    // Typing a name jumps to the first entry that starts with it; a pause
+    // starts the next search afresh.
+    property string typed: ""
+    Timer {
+        id: typeAhead
+        interval: 900
+        onTriggered: root.typed = ""
+    }
+
+    function findTyped(text) {
+        root.typed += text.toLowerCase()
+        typeAhead.restart()
+        for (let i = 0; i < root.rows.length; i++)
+            if (backendObject.entryName(root.rows[i]).toLowerCase().startsWith(root.typed)) {
+                root.focusOn(i, false)
+                return
+            }
+    }
+
+    // Holds the keyboard whenever no text field does, so typing reaches
+    // the type-ahead.
+    Item {
+        id: keyCatcher
+        focus: true
+        Keys.onPressed: function (event) {
+            const plain = (event.modifiers & ~Qt.ShiftModifier) === 0
+            if (plain && event.text.length === 1 && event.text >= " " && event.text !== "\u007f") {
+                root.findTyped(event.text)
+                event.accepted = true
+            }
+        }
+    }
+
+    function release() { keyCatcher.forceActiveFocus() }
+
+    readonly property bool typing: namePrompt.opened || pathEditor.visible || deleteConfirm.opened
+
+    Shortcut { sequences: ["Down"]; enabled: !root.typing; onActivated: root.moveFocus(root.columns(), false) }
+    Shortcut { sequences: ["Up"]; enabled: !root.typing; onActivated: root.moveFocus(-root.columns(), false) }
+    Shortcut { sequences: ["Shift+Down"]; enabled: !root.typing; onActivated: root.moveFocus(root.columns(), true) }
+    Shortcut { sequences: ["Shift+Up"]; enabled: !root.typing; onActivated: root.moveFocus(-root.columns(), true) }
+    Shortcut { sequences: ["Right"]; enabled: !root.typing && root.view === "grid"; onActivated: root.moveFocus(1, false) }
+    Shortcut { sequences: ["Left"]; enabled: !root.typing && root.view === "grid"; onActivated: root.moveFocus(-1, false) }
+    Shortcut { sequences: ["Shift+Right"]; enabled: !root.typing && root.view === "grid"; onActivated: root.moveFocus(1, true) }
+    Shortcut { sequences: ["Shift+Left"]; enabled: !root.typing && root.view === "grid"; onActivated: root.moveFocus(-1, true) }
+    Shortcut { sequences: ["Home"]; enabled: !root.typing; onActivated: if (root.rows.length > 0) root.focusOn(0, false) }
+    Shortcut { sequences: ["End"]; enabled: !root.typing; onActivated: if (root.rows.length > 0) root.focusOn(root.rows.length - 1, false) }
+    Shortcut { sequences: ["Shift+Home"]; enabled: !root.typing; onActivated: if (root.rows.length > 0) root.focusOn(0, true) }
+    Shortcut { sequences: ["Shift+End"]; enabled: !root.typing; onActivated: if (root.rows.length > 0) root.focusOn(root.rows.length - 1, true) }
+    Shortcut { sequences: ["PgDown"]; enabled: !root.typing; onActivated: root.moveFocus(root.pageSize(), false) }
+    Shortcut { sequences: ["PgUp"]; enabled: !root.typing; onActivated: root.moveFocus(-root.pageSize(), false) }
+    Shortcut { sequences: ["Return", "Enter"]; enabled: !root.typing && root.query.length === 0; onActivated: root.activateSelection() }
+    Shortcut { sequences: ["Backspace", "Alt+Up"]; enabled: !root.typing; onActivated: backendObject.up() }
+    Shortcut { sequences: ["Alt+Left", "Back"]; enabled: !root.typing; onActivated: backendObject.back() }
+    Shortcut { sequences: ["Alt+Right", "Forward"]; enabled: !root.typing; onActivated: backendObject.forward() }
+    Shortcut { sequences: ["F5", "Ctrl+R"]; enabled: !root.typing; onActivated: backendObject.refresh() }
+    Shortcut { sequences: [StandardKey.SelectAll]; enabled: !root.typing; onActivated: root.selectAll() }
+    Shortcut { sequences: ["Ctrl+Space"]; enabled: !root.typing && root.focusRow >= 0; onActivated: backendObject.toggleSelection(root.focusRow) }
+    Shortcut {
+        sequences: ["Escape"]
+        enabled: !root.typing
+        onActivated: {
+            backendObject.clearSelection()
+            root.typed = ""
+            root.release()
+        }
+    }
+    Shortcut { sequences: ["Delete"]; enabled: !root.typing && root.selectedCount > 0; onActivated: backendObject.trashSelected() }
+    Shortcut { sequences: ["Shift+Delete"]; enabled: !root.typing && root.selectedCount > 0; onActivated: deleteConfirm.open() }
+    Shortcut { sequences: ["Ctrl+L", "F6"]; enabled: !root.typing; onActivated: root.editPath() }
+    Shortcut { sequences: [StandardKey.Find]; enabled: !root.typing; onActivated: searchInput.forceActiveFocus() }
+    Shortcut { sequences: ["Ctrl+1"]; onActivated: root.view = "list" }
+    Shortcut { sequences: ["Ctrl+2"]; onActivated: root.view = "grid" }
+
+    // Permanent deletion cannot be undone, so it always asks.
+    Popup {
+        id: deleteConfirm
+        anchors.centerIn: Overlay.overlay
+        width: 380
+        modal: true
+        focus: true
+        padding: 16
+        onOpened: deleteYes.forceActiveFocus()
+        onClosed: root.release()
+        background: Rectangle {
+            color: root.raisedHigh
+            radius: 9
+            border.width: 1
+            border.color: root.line
+        }
+        Column {
+            width: parent.width
+            spacing: 12
+            Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: root.selectedCount === 1
+                    ? "Permanently delete “" + backendObject.entryName(root.firstSelectedRow()) + "”?"
+                    : "Permanently delete " + root.selectedCount + " items?"
+                color: root.ink
+                font.family: root.sansFamily
+                font.pixelSize: 14
+            }
+            Text {
+                text: "This cannot be undone."
+                color: root.inkMuted
+                font.family: root.sansFamily
+                font.pixelSize: 12
+            }
+            Row {
+                anchors.right: parent.right
+                spacing: 8
+                Button {
+                    text: "Cancel"
+                    onClicked: deleteConfirm.close()
+                    Keys.onEscapePressed: deleteConfirm.close()
+                }
+                Button {
+                    id: deleteYes
+                    text: "Delete"
+                    onClicked: {
+                        backendObject.deleteSelected()
+                        deleteConfirm.close()
+                    }
+                    Keys.onReturnPressed: clicked()
+                    Keys.onEnterPressed: clicked()
+                    Keys.onEscapePressed: deleteConfirm.close()
+                }
+            }
+        }
+    }
+
+    // Text fields claim these keys first, so copying from the search box
+    // still copies text. The keys are spelled out because StandardKey.Cut
+    // also holds Shift+Delete, which here deletes.
+    Shortcut {
+        sequences: ["Ctrl+X"]
+        enabled: !root.typing
+        onActivated: backendObject.offerSelected(true)
+    }
+
+    Shortcut {
+        sequences: ["Ctrl+C", "Ctrl+Insert"]
+        enabled: !root.typing
+        onActivated: backendObject.offerSelected(false)
+    }
+
+    Shortcut {
+        sequences: ["Ctrl+V", "Shift+Insert"]
+        enabled: !root.typing
+        onActivated: backendObject.pasteFiles()
     }
 
     Shortcut {
@@ -1949,7 +2200,41 @@ ApplicationWindow {
                     border.width: 1
                     border.color: root.line
 
+                    // Ctrl+L swaps the crumbs for a field that takes a typed
+                    // path; Enter goes there, Escape puts the crumbs back.
+                    TextInput {
+                        id: pathEditor
+                        visible: false
+                        anchors.fill: parent
+                        anchors.leftMargin: 12
+                        anchors.rightMargin: 12
+                        verticalAlignment: TextInput.AlignVCenter
+                        clip: true
+                        color: root.ink
+                        selectionColor: root.spectralDim
+                        selectedTextColor: root.ink
+                        font.family: root.monoFamily
+                        font.pixelSize: 12
+                        function finish() {
+                            visible = false
+                            root.release()
+                        }
+                        function go() {
+                            let target = text.trim()
+                            if (target === "~" || target.startsWith("~/"))
+                                target = backendObject.homePath + target.substring(1)
+                            if (target.length > 0)
+                                backendObject.reveal(target)
+                            finish()
+                        }
+                        Keys.onReturnPressed: go()
+                        Keys.onEnterPressed: go()
+                        Keys.onEscapePressed: finish()
+                        onActiveFocusChanged: if (!activeFocus && visible) finish()
+                    }
+
                     Flickable {
+                        visible: !pathEditor.visible
                         anchors.left: parent.left
                         anchors.right: parent.right
                         anchors.leftMargin: 12
@@ -2499,7 +2784,7 @@ ApplicationWindow {
                             label: "Delete"
                             danger: true
                             anchors.verticalCenter: parent.verticalCenter
-                            onActivated: backendObject.deleteSelected()
+                            onActivated: deleteConfirm.open()
                         }
                     }
                 }

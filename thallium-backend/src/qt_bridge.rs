@@ -6,12 +6,12 @@ use std::{collections::BTreeSet, ffi::OsStr, os::unix::ffi::OsStrExt, path::Path
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::QString;
 use thallium_actions::Command;
-use thallium_fs_core::{ConflictPolicy, EntryId, Location, NativePath};
+use thallium_fs_core::{BackendId, ConflictPolicy, EntryId, Location, NativePath};
 use thallium_icons::{IconService, Thumbnail};
 use thallium_protocol::{BrowserStateSnapshot, DirectoryEntryRow, PathBytes, TaskInfo, TaskStatus};
 use thallium_rclone::{Remotes, authorize, config::{Provider, Session, Step}};
 
-use crate::{Backend, BackendConfig, BackendResult, recents::Recent, search::Search, storage::Measure};
+use crate::{Backend, BackendConfig, BackendResult, recents::Recent, search::Search, storage::Measure, uri};
 
 #[cxx_qt::bridge]
 pub mod ffi {
@@ -20,6 +20,17 @@ pub mod ffi {
 		type QString = cxx_qt_lib::QString;
 		include!("cxx-qt-lib/qlist.h");
 		type QList_i32 = cxx_qt_lib::QList<i32>;
+	}
+
+	#[namespace = "thallium"]
+	unsafe extern "C++" {
+		include!("clipboard.h");
+		#[cxx_name = "clipboardOfferFiles"]
+		fn clipboard_offer_files(uris: &QString, cut: bool);
+		#[cxx_name = "clipboardFiles"]
+		fn clipboard_files() -> QString;
+		#[cxx_name = "clipboardClear"]
+		fn clipboard_clear();
 	}
 
 	extern "RustQt" {
@@ -177,6 +188,17 @@ pub mod ffi {
 		#[rust_name = "trash_selected"]
 		fn trashSelected(self: Pin<&mut Self>);
 		#[qinvokable]
+		fn reveal(self: Pin<&mut Self>, target: &QString);
+		#[qinvokable]
+		#[rust_name = "offer_selected"]
+		fn offerSelected(self: Pin<&mut Self>, cut: bool);
+		#[qinvokable]
+		#[rust_name = "paste_files"]
+		fn pasteFiles(self: Pin<&mut Self>);
+		#[qinvokable]
+		#[rust_name = "can_paste"]
+		fn canPaste(&self) -> bool;
+		#[qinvokable]
 		#[rust_name = "rename_row"]
 		fn renameRow(self: Pin<&mut Self>, row: i32, name: &QString);
 		#[qinvokable]
@@ -323,6 +345,8 @@ pub struct BackendBridgeRust {
 	/// The directory `measure` was last started for, so navigating restarts it
 	/// and a redraw does not.
 	measured:       String,
+	/// A name to select once the folder being opened has listed it.
+	revealing:      Option<Vec<u8>>,
 }
 
 /// Polls between full reconciles, at the frontend's 100ms poll interval.
@@ -369,6 +393,7 @@ impl Default for BackendBridgeRust {
 					recents: Vec::new(),
 					measure: Measure::new(),
 					measured: String::new(),
+					revealing: None,
 				}
 			}
 			Err(error) => Self {
@@ -390,6 +415,7 @@ impl Default for BackendBridgeRust {
 				recents:        Vec::new(),
 				measure:        Measure::new(),
 				measured:       String::new(),
+				revealing:      None,
 			},
 		}
 	}
@@ -443,6 +469,24 @@ impl ffi::BackendBridge {
 	pub fn navigate(mut self: Pin<&mut Self>, path: &QString) {
 		let location = self.as_mut().location(path);
 		self.submit_detached(Command::Navigate(location));
+	}
+
+	/// Open a folder, or the folder holding a file with that file selected.
+	/// Takes a path or a `file://` URI, as a command line or another
+	/// application hands them over.
+	pub fn reveal(mut self: Pin<&mut Self>, target: &QString) {
+		let text = String::from(target);
+		let path = uri::file_path(&text).unwrap_or_else(|| text.into_bytes());
+		let path = PathBuf::from(OsStr::from_bytes(&path));
+		if path.is_dir() {
+			self.as_mut().rust_mut().revealing = None;
+			self.navigate(&path.to_string_lossy().as_ref().into());
+			return;
+		}
+		let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else { return };
+		self.as_mut().rust_mut().revealing = Some(name.as_bytes().to_vec());
+		let parent = Location::local(NativePath::from(parent));
+		self.submit_detached(Command::Navigate(parent));
 	}
 
 	pub fn navigate_row(self: Pin<&mut Self>, row: i32) {
@@ -577,6 +621,36 @@ impl ffi::BackendBridge {
 		let destination = self.as_mut().location(destination);
 		self.submit(Command::Move { sources, destination, conflict_policy: ConflictPolicy::Rename });
 	}
+
+	/// Put the selection on the system clipboard, for this window or any other
+	/// file manager to paste. Only local files have a URI others can read.
+	pub fn offer_selected(self: Pin<&mut Self>, cut: bool) {
+		let uris: Vec<String> = self
+			.selected_locations()
+			.iter()
+			.filter(|location| location.backend == BackendId::LOCAL)
+			.map(|location| uri::file_uri(location.path.as_bytes()))
+			.collect();
+		if !uris.is_empty() {
+			ffi::clipboard_offer_files(&uris.join("\n").as_str().into(), cut);
+		}
+	}
+
+	/// Copy or move what the clipboard holds into the open folder. A name
+	/// already taken gets a free one, as with any other copy.
+	pub fn paste_files(self: Pin<&mut Self>) {
+		let Some(destination) = self.current() else { return };
+		let Some((cut, sources)) = clipboard_sources() else { return };
+		let conflict_policy = ConflictPolicy::Rename;
+		if cut {
+			self.submit(Command::Move { sources, destination, conflict_policy });
+			ffi::clipboard_clear();
+		} else {
+			self.submit(Command::Copy { sources, destination, conflict_policy });
+		}
+	}
+
+	pub fn can_paste(&self) -> bool { clipboard_sources().is_some() }
 
 	pub fn rename_row(self: Pin<&mut Self>, row: i32, name: &QString) {
 		let Some(source) = self.row(row).map(|entry| entry.location.to_location()) else {
@@ -1163,10 +1237,29 @@ impl ffi::BackendBridge {
 				self.as_mut().set_current_path(path.into());
 				let revision = self.model_revision().saturating_add(1);
 				self.as_mut().set_model_revision(revision);
+				self.as_mut().select_revealed();
 			}
 			Ok(_) => {}
 			Err(error) => self.as_mut().set_last_error(error.to_string().into()),
 		}
+	}
+
+	/// Select the entry [`Self::reveal`] asked for, once it is listed.
+	fn select_revealed(mut self: Pin<&mut Self>) {
+		let Some(name) = self.rust().revealing.as_deref() else { return };
+		let Some(id) = self
+			.rust()
+			.snapshot
+			.directory
+			.entries
+			.iter()
+			.find(|entry| entry.name.bytes == name)
+			.map(|entry| entry.id.to_entry_id())
+		else {
+			return;
+		};
+		self.as_mut().rust_mut().revealing = None;
+		self.submit(Command::SetSelection { selected: vec![id], focused: Some(id) });
 	}
 
 	fn current(&self) -> Option<Location> {
@@ -1257,6 +1350,21 @@ impl ffi::BackendBridge {
 			.map(|entry| entry.location.to_location())
 			.collect()
 	}
+}
+
+/// Whether the clipboard's files were cut, and where they are. `None` when it
+/// holds no local files.
+fn clipboard_sources() -> Option<(bool, Vec<Location>)> {
+	let text = String::from(&ffi::clipboard_files());
+	let mut lines = text.lines();
+	let cut = match lines.next()? {
+		"cut" => true,
+		"copy" => false,
+		_ => return None,
+	};
+	let sources: Vec<Location> =
+		lines.filter_map(uri::file_path).map(|path| Location::local(NativePath::new(path))).collect();
+	(!sources.is_empty()).then_some((cut, sources))
 }
 
 /// The files in the XDG templates folder, which "New file" offers as starting

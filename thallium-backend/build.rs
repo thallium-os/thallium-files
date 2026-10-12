@@ -7,5 +7,7 @@ fn main() {
 		cxx_qt_build::QmlModule::new("org.thallium.FileManager").qml_file("qml/main.qml"),
 	)
 	.files(["src/qt_bridge.rs"])
+	.include_dir("cpp")
+	.cpp_file("cpp/clipboard.cpp")
 	.build();
 }

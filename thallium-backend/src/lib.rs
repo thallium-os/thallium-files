@@ -17,6 +17,8 @@ mod search;
 mod services;
 #[cfg_attr(not(feature = "qt"), allow(dead_code))]
 mod storage;
+#[cfg_attr(not(feature = "qt"), allow(dead_code))]
+mod uri;
 
 #[cfg(feature = "qt")]
 pub mod qt_bridge;
