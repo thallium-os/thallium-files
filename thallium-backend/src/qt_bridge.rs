@@ -11,7 +11,7 @@ use thallium_icons::{IconService, Thumbnail};
 use thallium_protocol::{BrowserStateSnapshot, DirectoryEntryRow, PathBytes, TaskInfo, TaskStatus};
 use thallium_rclone::{Remotes, authorize, config::{Provider, Session, Step}};
 
-use crate::{Backend, BackendConfig, BackendResult, recents::Recent, search::Search, storage::Measure, uri};
+use crate::{Backend, BackendConfig, BackendResult, recents::Recent, search::Search, storage::Measure, trash_bin, uri};
 
 #[cxx_qt::bridge]
 pub mod ffi {
@@ -190,6 +190,33 @@ pub mod ffi {
 		#[qinvokable]
 		fn reveal(self: Pin<&mut Self>, target: &QString);
 		#[qinvokable]
+		#[rust_name = "refresh_trash"]
+		fn refreshTrash(self: Pin<&mut Self>);
+		#[qinvokable]
+		#[rust_name = "trash_count"]
+		fn trashCount(&self) -> i32;
+		#[qinvokable]
+		#[rust_name = "trash_name"]
+		fn trashName(&self, row: i32) -> QString;
+		#[qinvokable]
+		#[rust_name = "trash_origin"]
+		fn trashOrigin(&self, row: i32) -> QString;
+		#[qinvokable]
+		#[rust_name = "trash_deleted"]
+		fn trashDeleted(&self, row: i32) -> f64;
+		#[qinvokable]
+		#[rust_name = "restore_trash"]
+		fn restoreTrash(self: Pin<&mut Self>, rows: &QList_i32);
+		#[qinvokable]
+		#[rust_name = "purge_trash"]
+		fn purgeTrash(self: Pin<&mut Self>, rows: &QList_i32);
+		#[qinvokable]
+		#[rust_name = "empty_trash"]
+		fn emptyTrash(self: Pin<&mut Self>);
+		#[qinvokable]
+		#[rust_name = "trash_busy"]
+		fn trashBusy(&self) -> bool;
+		#[qinvokable]
 		#[rust_name = "offer_selected"]
 		fn offerSelected(self: Pin<&mut Self>, cut: bool);
 		#[qinvokable]
@@ -347,6 +374,10 @@ pub struct BackendBridgeRust {
 	measured:       String,
 	/// A name to select once the folder being opened has listed it.
 	revealing:      Option<Vec<u8>>,
+	/// The trash as last listed, most recently deleted first.
+	trash:          Vec<trash::TrashItem>,
+	/// A purge still running, collected on a later poll.
+	purge:          Option<trash_bin::Purge>,
 }
 
 /// Polls between full reconciles, at the frontend's 100ms poll interval.
@@ -394,6 +425,8 @@ impl Default for BackendBridgeRust {
 					measure: Measure::new(),
 					measured: String::new(),
 					revealing: None,
+					trash: Vec::new(),
+					purge: None,
 				}
 			}
 			Err(error) => Self {
@@ -416,6 +449,8 @@ impl Default for BackendBridgeRust {
 				measure:        Measure::new(),
 				measured:       String::new(),
 				revealing:      None,
+				trash:          Vec::new(),
+				purge:          None,
 			},
 		}
 	}
@@ -430,6 +465,7 @@ impl ffi::BackendBridge {
 			}
 		}
 		self.as_mut().carry_consent();
+		self.as_mut().collect_purge();
 		// A finished thumbnail changes what the view should draw without
 		// changing the snapshot, so it needs a revision of its own.
 		let thumbnails_arrived = self.rust().icons.poll_thumbnails();
@@ -487,6 +523,83 @@ impl ffi::BackendBridge {
 		self.as_mut().rust_mut().revealing = Some(name.as_bytes().to_vec());
 		let parent = Location::local(NativePath::from(parent));
 		self.submit_detached(Command::Navigate(parent));
+	}
+
+	pub fn refresh_trash(mut self: Pin<&mut Self>) {
+		match trash_bin::list() {
+			Ok(items) => self.as_mut().rust_mut().trash = items,
+			Err(error) => self.as_mut().set_last_error(error.into()),
+		}
+		let revision = self.model_revision().saturating_add(1);
+		self.set_model_revision(revision);
+	}
+
+	pub fn trash_count(&self) -> i32 { count(self.rust().trash.len()) }
+
+	pub fn trash_name(&self, row: i32) -> QString {
+		self
+			.trashed(row)
+			.map_or_else(QString::default, |item| item.name.to_string_lossy().as_ref().into())
+	}
+
+	pub fn trash_origin(&self, row: i32) -> QString {
+		self
+			.trashed(row)
+			.map_or_else(QString::default, |item| item.original_parent.to_string_lossy().as_ref().into())
+	}
+
+	/// When the item was trashed, in seconds since the epoch.
+	pub fn trash_deleted(&self, row: i32) -> f64 {
+		self.trashed(row).map_or(0.0, |item| item.time_deleted as f64)
+	}
+
+	pub fn restore_trash(mut self: Pin<&mut Self>, rows: &ffi::QList_i32) {
+		let items = self.trashed_rows(rows);
+		if let Err(error) = trash_bin::restore(items) {
+			self.as_mut().set_last_error(error.into());
+		}
+		self.refresh_trash();
+	}
+
+	pub fn purge_trash(mut self: Pin<&mut Self>, rows: &ffi::QList_i32) {
+		let items = self.trashed_rows(rows);
+		self.as_mut().begin_purge(items);
+	}
+
+	pub fn empty_trash(mut self: Pin<&mut Self>) {
+		let items = self.rust().trash.clone();
+		self.as_mut().begin_purge(items);
+	}
+
+	pub fn trash_busy(&self) -> bool { self.rust().purge.is_some() }
+
+	fn begin_purge(mut self: Pin<&mut Self>, items: Vec<trash::TrashItem>) {
+		if items.is_empty() || self.rust().purge.is_some() {
+			return;
+		}
+		self.as_mut().rust_mut().purge = Some(trash_bin::Purge::start(items));
+		let revision = self.model_revision().saturating_add(1);
+		self.set_model_revision(revision);
+	}
+
+	/// Pick up a finished purge and show the trash as it now is.
+	fn collect_purge(mut self: Pin<&mut Self>) {
+		let Some(outcome) = self.rust().purge.as_ref().and_then(trash_bin::Purge::take) else {
+			return;
+		};
+		self.as_mut().rust_mut().purge = None;
+		if let Err(error) = outcome {
+			self.as_mut().set_last_error(error.into());
+		}
+		self.refresh_trash();
+	}
+
+	fn trashed(&self, row: i32) -> Option<&trash::TrashItem> {
+		usize::try_from(row).ok().and_then(|row| self.rust().trash.get(row))
+	}
+
+	fn trashed_rows(&self, rows: &ffi::QList_i32) -> Vec<trash::TrashItem> {
+		rows.iter().filter_map(|row| self.trashed(*row).cloned()).collect()
 	}
 
 	pub fn navigate_row(self: Pin<&mut Self>, row: i32) {

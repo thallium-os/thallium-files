@@ -1645,6 +1645,7 @@ dependencies = [
  "thallium-vfs",
  "thallium-watcher",
  "tokio",
+ "trash",
 ]
 
 [[package]]

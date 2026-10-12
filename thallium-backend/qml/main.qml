@@ -168,6 +168,7 @@ ApplicationWindow {
                 out.push({ label: known[i], folder: known[i] })
         }
         out.push({ label: "Filesystem", folder: "/" })
+        out.push({ label: "Trash", folder: null, trash: true })
         // Whatever rclone is configured for, listed after the local places
         // because that is the order they are reached in.
         void root.configTick
@@ -302,8 +303,31 @@ ApplicationWindow {
 
     function showRecent() {
         root.endDeepSearch()
+        root.trashOpen = false
         root.recentOpen = true
         backendObject.refreshRecents()
+    }
+
+    // The trash, shown in place of a directory. Its selection is its own:
+    // trash rows are not entries of any open folder.
+    property bool trashOpen: false
+    property var trashPicked: []
+
+    function showTrash() {
+        root.endDeepSearch()
+        root.recentOpen = false
+        root.trashOpen = true
+        root.trashPicked = []
+        backendObject.refreshTrash()
+    }
+
+    function pickTrash(row, extend) {
+        const at = root.trashPicked.indexOf(row)
+        if (extend)
+            root.trashPicked = at >= 0 ? root.trashPicked.filter(function (r) { return r !== row })
+                                       : root.trashPicked.concat([row])
+        else
+            root.trashPicked = at >= 0 && root.trashPicked.length === 1 ? [] : [row]
     }
 
     function isHidden(name) {
@@ -502,7 +526,7 @@ ApplicationWindow {
         Component.onCompleted: {
             const args = Qt.application.arguments
             if (args.length > 1)
-                backendObject.reveal(args[args.length - 1])
+                root.openTarget(args[args.length - 1])
         }
     }
 
@@ -691,6 +715,70 @@ ApplicationWindow {
         MenuLine { text: "Refresh"; onTriggered: backendObject.refresh() }
     }
 
+    MenuSurface {
+        id: trashMenu
+        MenuLine {
+            text: "Restore"
+            onTriggered: {
+                backendObject.restoreTrash(root.trashPicked)
+                root.trashPicked = []
+            }
+        }
+        MenuLine {
+            text: "Delete permanently"
+            enabled: !backendObject.trashBusy()
+            onTriggered: {
+                backendObject.purgeTrash(root.trashPicked)
+                root.trashPicked = []
+            }
+        }
+    }
+
+    Popup {
+        id: emptyConfirm
+        anchors.centerIn: Overlay.overlay
+        width: 380
+        modal: true
+        focus: true
+        padding: 16
+        onClosed: root.release()
+        background: Rectangle {
+            color: root.raisedHigh
+            radius: 9
+            border.width: 1
+            border.color: root.line
+        }
+        Column {
+            width: parent.width
+            spacing: 12
+            Text {
+                text: "Empty the trash?"
+                color: root.ink
+                font.family: root.sansFamily
+                font.pixelSize: 14
+            }
+            Text {
+                text: "Everything in it is deleted permanently."
+                color: root.inkMuted
+                font.family: root.sansFamily
+                font.pixelSize: 12
+            }
+            Row {
+                anchors.right: parent.right
+                spacing: 8
+                Button { text: "Cancel"; onClicked: emptyConfirm.close() }
+                Button {
+                    text: "Empty Trash"
+                    onClicked: {
+                        backendObject.emptyTrash()
+                        root.trashPicked = []
+                        emptyConfirm.close()
+                    }
+                }
+            }
+        }
+    }
+
     // One prompt names things: a rename, a new folder, a new file. `mode` says
     // which; `row` is the entry being renamed and `template` the file a new
     // one copies, empty for an empty file.
@@ -716,6 +804,18 @@ ApplicationWindow {
         promptField.text = backendObject.freeName(base)
         const dot = promptField.text.lastIndexOf(".")
         promptField.select(0, kind === "folder" || dot <= 0 ? promptField.text.length : dot)
+    }
+
+    // A typed or handed-over location: `trash:` opens the trash, anything
+    // else is a path or file URI.
+    function openTarget(target) {
+        if (target.startsWith("trash:")) {
+            root.showTrash()
+            return
+        }
+        root.trashOpen = false
+        root.recentOpen = false
+        backendObject.reveal(target)
     }
 
     function editPath() {
@@ -917,6 +1017,7 @@ ApplicationWindow {
     function release() { keyCatcher.forceActiveFocus() }
 
     readonly property bool typing: namePrompt.opened || pathEditor.visible || deleteConfirm.opened
+                                   || emptyConfirm.opened
 
     Shortcut { sequences: ["Down"]; enabled: !root.typing; onActivated: root.moveFocus(root.columns(), false) }
     Shortcut { sequences: ["Up"]; enabled: !root.typing; onActivated: root.moveFocus(-root.columns(), false) }
@@ -1062,6 +1163,7 @@ ApplicationWindow {
         target: backendObject
         function onCurrentPathChanged() {
             root.focusRow = -1
+            root.trashOpen = false
             if (backendObject.currentPath !== backendObject.homePath)
                 return
             const found = []
@@ -1867,6 +1969,7 @@ ApplicationWindow {
                     readonly property bool adds: placeEntry.modelData.add === true
                     readonly property bool remote: placeEntry.modelData.remote === true
                     readonly property bool recent: placeEntry.modelData.recent === true
+                    readonly property bool trash: placeEntry.modelData.trash === true
                     readonly property string target: placeEntry.remote
                                                      ? placeEntry.modelData.target
                                                      : root.placePath(placeEntry.modelData.folder)
@@ -1875,6 +1978,8 @@ ApplicationWindow {
                            ? "+"
                            : (placeEntry.recent
                               ? "◴"
+                              : placeEntry.trash
+                              ? "⌫"
                               : placeEntry.remote
                               ? "◈"
                               : (placeEntry.modelData.folder === "/"
@@ -1885,17 +1990,22 @@ ApplicationWindow {
                     trailing: placeEntry.remote ? "remote" : ""
                     active: placeEntry.recent
                             ? root.recentOpen
-                            : (!placeEntry.adds && !root.recentOpen
+                            : placeEntry.trash
+                            ? root.trashOpen
+                            : (!placeEntry.adds && !root.recentOpen && !root.trashOpen
                                && backendObject.currentPath === placeEntry.target)
                     onActivated: {
                         if (placeEntry.recent) {
                             root.showRecent()
+                        } else if (placeEntry.trash) {
+                            root.showTrash()
                         } else if (placeEntry.adds) {
                             root.remoteDraftName = ""
                             root.providerQuery = ""
                             root.remoteSheetOpen = true
                         } else {
                             root.recentOpen = false
+                            root.trashOpen = false
                             backendObject.navigate(placeEntry.target)
                         }
                     }
@@ -2224,7 +2334,7 @@ ApplicationWindow {
                             if (target === "~" || target.startsWith("~/"))
                                 target = backendObject.homePath + target.substring(1)
                             if (target.length > 0)
-                                backendObject.reveal(target)
+                                root.openTarget(target)
                             finish()
                         }
                         Keys.onReturnPressed: go()
@@ -2424,6 +2534,8 @@ ApplicationWindow {
                         anchors.verticalCenterOffset: -3
                         text: root.recentOpen
                               ? "Recent"
+                              : root.trashOpen
+                              ? "Trash"
                               : root.leafName(backendObject.currentPath)
                         elide: Text.ElideMiddle
                         color: root.ink
@@ -2797,8 +2909,8 @@ ApplicationWindow {
                     anchors.top: selectionBar.bottom
                     anchors.leftMargin: 14
                     anchors.rightMargin: 14
-                    height: root.view === "list" ? 30 : 0
-                    visible: root.view === "list"
+                    height: visible ? 30 : 0
+                    visible: root.view === "list" && !root.trashOpen && !root.recentOpen
 
                     SortHead {
                         anchors.left: parent.left
@@ -2854,7 +2966,7 @@ ApplicationWindow {
                 Column {
                     anchors.centerIn: parent
                     spacing: 10
-                    visible: !root.deepSearch && !root.recentOpen && backendObject.loading && root.rows.length === 0
+                    visible: !root.deepSearch && !root.recentOpen && !root.trashOpen && backendObject.loading && root.rows.length === 0
 
                     Item {
                         id: spinnerTrack
@@ -2912,7 +3024,7 @@ ApplicationWindow {
                 Column {
                     anchors.centerIn: parent
                     spacing: 6
-                    visible: !root.deepSearch && !root.recentOpen && !backendObject.loading && root.rows.length === 0
+                    visible: !root.deepSearch && !root.recentOpen && !root.trashOpen && !backendObject.loading && root.rows.length === 0
 
                     Glyph {
                         anchors.horizontalCenter: parent.horizontalCenter
@@ -2936,6 +3048,162 @@ ApplicationWindow {
                 // The desktop's own record of what was opened, by any
                 // application. Nothing is written back to it: browsing is not
                 // using, and the rest of the desktop reads this list too.
+                // Trash actions, above the list.
+                Row {
+                    visible: root.trashOpen
+                    anchors.top: selectionBar.bottom
+                    anchors.topMargin: 12
+                    anchors.right: parent.right
+                    anchors.rightMargin: 16
+                    spacing: 8
+                    Mono {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: backendObject.trashBusy() ? "Deleting…" : ""
+                        font.pixelSize: 11
+                    }
+                    Button {
+                        text: "Restore"
+                        enabled: root.trashPicked.length > 0
+                        onClicked: {
+                            backendObject.restoreTrash(root.trashPicked)
+                            root.trashPicked = []
+                        }
+                    }
+                    Button {
+                        text: "Delete permanently"
+                        enabled: root.trashPicked.length > 0 && !backendObject.trashBusy()
+                        onClicked: {
+                            backendObject.purgeTrash(root.trashPicked)
+                            root.trashPicked = []
+                        }
+                    }
+                    Button {
+                        text: "Empty Trash"
+                        enabled: trashBrowser.count > 0 && !backendObject.trashBusy()
+                        onClicked: emptyConfirm.open()
+                    }
+                }
+
+                // The trash: what was thrown away, where from, and when.
+                ListView {
+                    id: trashBrowser
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: selectionBar.bottom
+                    anchors.bottom: parent.bottom
+                    anchors.margins: 12
+                    anchors.topMargin: 52
+                    visible: root.trashOpen
+                    clip: true
+                    model: {
+                        void root.revision
+                        return backendObject.trashCount()
+                    }
+                    boundsBehavior: Flickable.StopAtBounds
+                    cacheBuffer: 800
+
+                    delegate: Rectangle {
+                        id: trashRow
+                        required property int index
+                        readonly property string name: {
+                            void root.revision
+                            return backendObject.trashName(trashRow.index)
+                        }
+                        readonly property bool picked: root.trashPicked.indexOf(trashRow.index) >= 0
+                        readonly property string kind: root.kindOf(trashRow.name, false)
+
+                        width: ListView.view.width
+                        height: 44
+                        radius: 6
+                        color: trashRow.picked ? root.spectralDim
+                               : trashMouse.containsMouse ? root.hover : "transparent"
+
+                        EntryIcon {
+                            id: trashGlyph
+                            anchors.left: parent.left
+                            anchors.leftMargin: 10
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 20
+                            height: 20
+                            entry: -1
+                            allowThumbnail: false
+                            kind: trashRow.kind
+                            tint: root.markTone(trashRow.kind)
+                            markSize: trashRow.kind === "Code" ? 10 : 12
+                        }
+
+                        Text {
+                            id: trashName
+                            anchors.left: trashGlyph.right
+                            anchors.leftMargin: 10
+                            anchors.right: trashWhen.left
+                            anchors.rightMargin: 12
+                            anchors.top: parent.top
+                            anchors.topMargin: 6
+                            text: trashRow.name
+                            elide: Text.ElideMiddle
+                            color: root.ink
+                            font.family: root.sansFamily
+                            font.pixelSize: 13
+                        }
+
+                        Mono {
+                            anchors.left: trashName.left
+                            anchors.right: trashWhen.left
+                            anchors.rightMargin: 12
+                            anchors.top: trashName.bottom
+                            anchors.topMargin: 1
+                            text: backendObject.trashOrigin(trashRow.index)
+                            elide: Text.ElideLeft
+                            font.pixelSize: 10
+                        }
+
+                        Mono {
+                            id: trashWhen
+                            anchors.right: parent.right
+                            anchors.rightMargin: 12
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: root.modifiedText(backendObject.trashDeleted(trashRow.index))
+                            font.pixelSize: 11
+                        }
+
+                        MouseArea {
+                            id: trashMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            acceptedButtons: Qt.LeftButton | Qt.RightButton
+                            onClicked: function (mouse) {
+                                if (mouse.button === Qt.RightButton) {
+                                    if (!trashRow.picked)
+                                        root.trashPicked = [trashRow.index]
+                                    trashMenu.popup()
+                                    return
+                                }
+                                root.pickTrash(trashRow.index, (mouse.modifiers & Qt.ControlModifier) !== 0)
+                            }
+                        }
+                    }
+
+                    Column {
+                        anchors.centerIn: parent
+                        spacing: 6
+                        visible: trashBrowser.count === 0
+                        Glyph {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: "⌫"
+                            font.pixelSize: 20
+                            color: root.inkGhost
+                        }
+                        Text {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: "The trash is empty"
+                            color: root.inkMuted
+                            font.family: root.sansFamily
+                            font.pixelSize: 13
+                        }
+                    }
+                }
+
                 ListView {
                     id: recentBrowser
                     anchors.left: parent.left
@@ -3056,7 +3324,7 @@ ApplicationWindow {
                     anchors.top: selectionBar.bottom
                     anchors.bottom: resultsFoot.top
                     anchors.margins: 12
-                    visible: root.deepSearch && !root.recentOpen
+                    visible: root.deepSearch && !root.recentOpen && !root.trashOpen
                     clip: true
                     model: root.searchHits
                     boundsBehavior: Flickable.StopAtBounds
@@ -3199,7 +3467,7 @@ ApplicationWindow {
                     anchors.leftMargin: 14
                     anchors.rightMargin: 14
                     anchors.bottomMargin: 8
-                    visible: !root.deepSearch && !root.recentOpen && root.view === "list" && root.rows.length > 0
+                    visible: !root.deepSearch && !root.recentOpen && !root.trashOpen && root.view === "list" && root.rows.length > 0
                     clip: true
                     model: root.rows
                     boundsBehavior: Flickable.StopAtBounds
@@ -3438,7 +3706,7 @@ ApplicationWindow {
                     anchors.top: selectionBar.bottom
                     anchors.bottom: parent.bottom
                     anchors.margins: 12
-                    visible: !root.deepSearch && !root.recentOpen && root.view === "grid" && root.rows.length > 0
+                    visible: !root.deepSearch && !root.recentOpen && !root.trashOpen && root.view === "grid" && root.rows.length > 0
                     clip: true
                     model: root.rows
                     cellWidth: Math.floor(width / Math.max(3, Math.floor(width / 116)))

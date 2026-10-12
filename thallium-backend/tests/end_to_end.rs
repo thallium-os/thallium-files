@@ -327,7 +327,14 @@ fn trash_reaches_a_terminal_state_and_consumes_the_source_when_it_succeeds() {
 	let task = settle_task(&mut backend, TaskKind::Trash);
 	match task.status {
 		TaskStatus::Succeeded => {
-			assert!(!doomed.exists(), "a succeeding trash must consume the source")
+			assert!(!doomed.exists(), "a succeeding trash must consume the source");
+			// Leave the desktop trash as it was found.
+			let mine: Vec<_> = trash::os_limited::list()
+				.unwrap_or_default()
+				.into_iter()
+				.filter(|item| item.original_path() == doomed)
+				.collect();
+			let _ = trash::os_limited::purge_all(mine);
 		}
 		TaskStatus::Failed => assert!(task.issue.is_some(), "a failed trash must explain itself"),
 		other => panic!("unexpected terminal trash status: {other:?}"),
