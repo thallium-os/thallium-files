@@ -11,7 +11,7 @@ use thallium_icons::{IconService, Thumbnail};
 use thallium_protocol::{BrowserStateSnapshot, DirectoryEntryRow, PathBytes, TaskInfo, TaskStatus};
 use thallium_rclone::{Remotes, authorize, config::{Provider, Session, Step}};
 
-use crate::{Backend, BackendConfig, BackendResult, apps, recents::Recent, search::Search, storage::Measure, trash_bin, uri};
+use crate::{Backend, BackendConfig, BackendResult, apps, properties, recents::Recent, search::Search, storage::Measure, trash_bin, uri};
 
 #[cxx_qt::bridge]
 pub mod ffi {
@@ -214,6 +214,17 @@ pub mod ffi {
 		#[rust_name = "open_terminal_here"]
 		fn openTerminalHere(self: Pin<&mut Self>);
 		#[qinvokable]
+		fn inspect(self: Pin<&mut Self>, row: i32);
+		#[qinvokable]
+		#[rust_name = "prop_text"]
+		fn propText(&self, field: &QString) -> QString;
+		#[qinvokable]
+		#[rust_name = "prop_number"]
+		fn propNumber(&self, field: &QString) -> f64;
+		#[qinvokable]
+		#[rust_name = "set_mode"]
+		fn setMode(self: Pin<&mut Self>, mode: i32);
+		#[qinvokable]
 		#[rust_name = "refresh_trash"]
 		fn refreshTrash(self: Pin<&mut Self>);
 		#[qinvokable]
@@ -402,6 +413,11 @@ pub struct BackendBridgeRust {
 	trash:          Vec<trash::TrashItem>,
 	/// A purge still running, collected on a later poll.
 	purge:          Option<trash_bin::Purge>,
+	/// The entry the Properties sheet describes, its type, and the count of
+	/// what it holds when it is a folder.
+	inspected:      Option<properties::Properties>,
+	inspected_type: String,
+	inspect_size:   Measure,
 	/// Applications offered for the selection's type, best first, and the type.
 	offered:        Vec<apps::App>,
 	offered_type:   String,
@@ -455,6 +471,9 @@ impl Default for BackendBridgeRust {
 					trash: Vec::new(),
 					purge: None,
 					offered: Vec::new(),
+					inspected: None,
+					inspected_type: String::new(),
+					inspect_size: Measure::new(),
 					offered_type: String::new(),
 				}
 			}
@@ -481,6 +500,9 @@ impl Default for BackendBridgeRust {
 				trash:          Vec::new(),
 				purge:          None,
 				offered:        Vec::new(),
+				inspected:      None,
+				inspected_type: String::new(),
+				inspect_size:   Measure::new(),
 				offered_type:   String::new(),
 			},
 		}
@@ -505,7 +527,7 @@ impl ffi::BackendBridge {
 
 		// Navigating starts a new count of what the directory holds.
 		self.as_mut().measure_folder();
-		let counting = self.rust().measure.walking();
+		let counting = self.rust().measure.walking() || self.rust().inspect_size.walking();
 
 		// A search publishes as it walks, so the view is told whenever results
 		// have arrived and again when the walk stops.
@@ -554,6 +576,83 @@ impl ffi::BackendBridge {
 		self.as_mut().rust_mut().revealing = Some(name.as_bytes().to_vec());
 		let parent = Location::local(NativePath::from(parent));
 		self.submit_detached(Command::Navigate(parent));
+	}
+
+	/// Describe `row` for the Properties sheet; a folder's contents are
+	/// counted in the background.
+	pub fn inspect(mut self: Pin<&mut Self>, row: i32) {
+		let Some(entry) = self.row(row) else { return };
+		let path = PathBuf::from(OsStr::from_bytes(entry.location.to_location().path.as_bytes()));
+		match properties::read(&path) {
+			Ok(found) => {
+				let mime = self.rust().icons.mime_of(&path, found.directory);
+				if found.directory {
+					self.rust().inspect_size.start(path);
+				}
+				self.as_mut().rust_mut().inspected = Some(found);
+				self.as_mut().rust_mut().inspected_type = mime;
+			}
+			Err(error) => {
+				self.as_mut().rust_mut().inspected = None;
+				self.as_mut().set_last_error(error.to_string().into());
+			}
+		}
+	}
+
+	/// A text field of the inspected entry: name, path, folder, type, link,
+	/// owner, group, or mode (as `rwxr-xr-x`).
+	pub fn prop_text(&self, field: &QString) -> QString {
+		let Some(found) = self.rust().inspected.as_ref() else { return QString::default() };
+		let lossy = |path: &std::path::Path| path.to_string_lossy().into_owned();
+		let text = match String::from(field).as_str() {
+			"name" => {
+				found.path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()
+			}
+			"path" => lossy(&found.path),
+			"folder" => found.path.parent().map(lossy).unwrap_or_default(),
+			"type" => self.rust().inspected_type.clone(),
+			"link" => found.link_target.as_deref().map(lossy).unwrap_or_default(),
+			"owner" => found.owner.clone(),
+			"group" => found.group.clone(),
+			"mode" => properties::mode_text(found.mode),
+			_ => String::new(),
+		};
+		text.as_str().into()
+	}
+
+	/// A numeric field of the inspected entry: size (a folder's measured
+	/// contents), files, measuring (1 while counting), mode, owned, directory,
+	/// or a time in seconds: modified, accessed, changed, created.
+	pub fn prop_number(&self, field: &QString) -> f64 {
+		let Some(found) = self.rust().inspected.as_ref() else { return 0.0 };
+		let flag = |value: bool| if value { 1.0 } else { 0.0 };
+		let size = &self.rust().inspect_size;
+		match String::from(field).as_str() {
+			"size" if found.directory => size.bytes() as f64,
+			"size" => found.size as f64,
+			"files" => size.files() as f64,
+			"measuring" => flag(found.directory && size.walking()),
+			"mode" => f64::from(found.mode),
+			"owned" => flag(found.owned),
+			"directory" => flag(found.directory),
+			"modified" => found.modified as f64,
+			"accessed" => found.accessed as f64,
+			"changed" => found.changed as f64,
+			"created" => found.created.unwrap_or(0) as f64,
+			_ => 0.0,
+		}
+	}
+
+	pub fn set_mode(mut self: Pin<&mut Self>, mode: i32) {
+		let Some(path) = self.rust().inspected.as_ref().map(|found| found.path.clone()) else { return };
+		let Ok(mode) = u32::try_from(mode) else { return };
+		if let Err(error) = properties::set_mode(&path, mode) {
+			self.as_mut().set_last_error(error.to_string().into());
+		}
+		let reread = properties::read(&path).ok();
+		self.as_mut().rust_mut().inspected = reread;
+		let revision = self.model_revision().saturating_add(1);
+		self.set_model_revision(revision);
 	}
 
 	/// Collect the applications that open `row`'s type, for "Open with".

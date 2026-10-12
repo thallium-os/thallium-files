@@ -13,6 +13,8 @@ mod error;
 #[cfg_attr(not(feature = "qt"), allow(dead_code))]
 mod apps;
 #[cfg_attr(not(feature = "qt"), allow(dead_code))]
+mod properties;
+#[cfg_attr(not(feature = "qt"), allow(dead_code))]
 mod recents;
 #[cfg_attr(not(feature = "qt"), allow(dead_code))]
 mod search;

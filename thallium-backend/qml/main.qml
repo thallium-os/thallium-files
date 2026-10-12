@@ -687,6 +687,14 @@ ApplicationWindow {
             contentItem: Rectangle { implicitHeight: 1; color: root.line }
         }
         MenuLine {
+            text: "Properties…"
+            enabled: entryMenu.held <= 1
+            onTriggered: root.showProperties(entryMenu.row)
+        }
+        MenuSeparator {
+            contentItem: Rectangle { implicitHeight: 1; color: root.line }
+        }
+        MenuLine {
             text: entryMenu.held > 1 ? "Move " + entryMenu.held + " to Trash" : "Move to Trash"
             onTriggered: backendObject.trashSelected()
         }
@@ -806,6 +814,164 @@ ApplicationWindow {
                         emptyConfirm.close()
                     }
                 }
+            }
+        }
+    }
+
+    // ---- Properties ----
+    property int propTick: 0
+
+    function showProperties(row) {
+        if (row < 0)
+            return
+        backendObject.inspect(row)
+        root.propTick++
+        propertiesSheet.open()
+    }
+
+    Shortcut {
+        sequences: ["Alt+Return", "Alt+Enter"]
+        enabled: !root.typing
+        onActivated: root.showProperties(root.firstSelectedRow())
+    }
+
+    Popup {
+        id: propertiesSheet
+        anchors.centerIn: Overlay.overlay
+        width: 440
+        modal: true
+        focus: true
+        padding: 18
+        onClosed: root.release()
+        background: Rectangle {
+            color: root.raisedHigh
+            radius: 9
+            border.width: 1
+            border.color: root.line
+        }
+        function text(field) {
+            void root.propTick
+            void root.revision
+            return backendObject.propText(field)
+        }
+        function number(field) {
+            void root.propTick
+            void root.revision
+            return backendObject.propNumber(field)
+        }
+        readonly property int mode: number("mode")
+        readonly property bool owned: number("owned") === 1
+
+        Column {
+            width: parent.width
+            spacing: 12
+            Text {
+                width: parent.width
+                text: propertiesSheet.text("name")
+                elide: Text.ElideMiddle
+                color: root.ink
+                font.family: root.sansFamily
+                font.pixelSize: 16
+            }
+            Grid {
+                columns: 2
+                columnSpacing: 14
+                rowSpacing: 6
+                Repeater {
+                    model: [
+                        ["Type", propertiesSheet.text("type")],
+                        ["Size", propertiesSheet.number("directory") === 1
+                            ? root.readableSize(propertiesSheet.number("size")) + ", "
+                              + propertiesSheet.number("files")
+                              + (propertiesSheet.number("files") === 1 ? " file" : " files")
+                              + (propertiesSheet.number("measuring") === 1 ? " (counting…)" : "")
+                            : root.readableSize(propertiesSheet.number("size"))],
+                        ["Location", propertiesSheet.text("folder")],
+                        ["Link to", propertiesSheet.text("link")],
+                        ["Modified", root.modifiedText(propertiesSheet.number("modified"))],
+                        ["Accessed", root.modifiedText(propertiesSheet.number("accessed"))],
+                        ["Created", root.modifiedText(propertiesSheet.number("created"))],
+                        ["Owner", propertiesSheet.text("owner") + " : " + propertiesSheet.text("group")],
+                        ["Permissions", propertiesSheet.text("mode")]
+                    ].filter(function (pair) { return pair[1].length > 0 })
+                    delegate: Repeater {
+                        required property var modelData
+                        model: [modelData[0], modelData[1]]
+                        delegate: Text {
+                            required property var modelData
+                            required property int index
+                            width: index === 0 ? 90 : 300
+                            text: modelData
+                            wrapMode: Text.WrapAnywhere
+                            color: index === 0 ? root.inkMuted : root.ink
+                            font.family: index === 0 ? root.sansFamily : root.monoFamily
+                            font.pixelSize: 12
+                        }
+                    }
+                }
+            }
+            // Read, write and run for the owner, the group and everyone else,
+            // applied as they are ticked.
+            Grid {
+                columns: 4
+                columnSpacing: 12
+                rowSpacing: 2
+                enabled: propertiesSheet.owned
+                Repeater {
+                    model: ["", "Read", "Write", propertiesSheet.number("directory") === 1 ? "Enter" : "Run"]
+                    delegate: Text {
+                        required property var modelData
+                        width: modelData.length === 0 ? 70 : 60
+                        text: modelData
+                        color: root.inkMuted
+                        font.family: root.sansFamily
+                        font.pixelSize: 11
+                    }
+                }
+                Repeater {
+                    model: [["Owner", 6], ["Group", 3], ["Others", 0]]
+                    delegate: Repeater {
+                        id: permRow
+                        required property var modelData
+                        readonly property string who: modelData[0]
+                        readonly property int shift: modelData[1]
+                        model: 4
+                        delegate: Item {
+                            id: permCell
+                            required property int index
+                            width: index === 0 ? 70 : 60
+                            height: 26
+                            readonly property int bit: index === 0 ? 0 : (4 >> (index - 1)) << permRow.shift
+                            Text {
+                                visible: permCell.index === 0
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: permRow.who
+                                color: root.ink
+                                font.family: root.sansFamily
+                                font.pixelSize: 12
+                            }
+                            CheckBox {
+                                visible: permCell.index > 0
+                                anchors.verticalCenter: parent.verticalCenter
+                                checked: (propertiesSheet.mode & permCell.bit) !== 0
+                                onToggled: backendObject.setMode(checked ? propertiesSheet.mode | permCell.bit
+                                                                         : propertiesSheet.mode & ~permCell.bit)
+                            }
+                        }
+                    }
+                }
+            }
+            Text {
+                visible: !propertiesSheet.owned
+                text: "Only the owner can change permissions."
+                color: root.inkMuted
+                font.family: root.sansFamily
+                font.pixelSize: 11
+            }
+            Button {
+                anchors.right: parent.right
+                text: "Close"
+                onClicked: propertiesSheet.close()
             }
         }
     }
@@ -1160,7 +1326,7 @@ ApplicationWindow {
     function release() { keyCatcher.forceActiveFocus() }
 
     readonly property bool typing: namePrompt.opened || pathEditor.visible || deleteConfirm.opened
-                                   || emptyConfirm.opened || appPicker.opened
+                                   || emptyConfirm.opened || appPicker.opened || propertiesSheet.opened
 
     Shortcut { sequences: ["Down"]; enabled: !root.typing; onActivated: root.moveFocus(root.columns(), false) }
     Shortcut { sequences: ["Up"]; enabled: !root.typing; onActivated: root.moveFocus(-root.columns(), false) }
