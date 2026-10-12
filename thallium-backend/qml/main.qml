@@ -841,9 +841,11 @@ ApplicationWindow {
         id: groundMenu
         property bool pasteable: false
         property bool undoable: false
+        property bool isDefault: true
         onAboutToShow: {
             pasteable = root.bridge.canPaste()
             undoable = root.bridge.canUndo()
+            isDefault = root.bridge.isDefaultManager()
         }
         MenuLine {
             text: "Paste"
@@ -882,6 +884,12 @@ ApplicationWindow {
         }
         MenuLine { text: "Open terminal here"; onTriggered: root.bridge.openTerminalHere() }
         MenuLine { text: "Edit custom actions…"; onTriggered: root.bridge.editActions() }
+        MenuLine {
+            text: "Make Thallium Files the default file manager"
+            visible: !groundMenu.isDefault
+            height: visible ? implicitHeight : 0
+            onTriggered: root.bridge.makeDefaultManager()
+        }
         MenuLine { text: "Bookmark this folder"; onTriggered: root.bridge.addBookmark(root.bridge.currentPath) }
         MenuSeparator {
             contentItem: Rectangle { implicitHeight: 1; color: root.line }

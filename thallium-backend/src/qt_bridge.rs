@@ -231,6 +231,12 @@ pub mod ffi {
 		#[rust_name = "open_terminal_here"]
 		fn openTerminalHere(self: Pin<&mut Self>);
 		#[qinvokable]
+		#[rust_name = "is_default_manager"]
+		fn isDefaultManager(&self) -> bool;
+		#[qinvokable]
+		#[rust_name = "make_default_manager"]
+		fn makeDefaultManager(self: Pin<&mut Self>);
+		#[qinvokable]
 		#[rust_name = "bulk_rule"]
 		fn bulkRule(
 			self: Pin<&mut Self>,
@@ -557,6 +563,9 @@ pub struct BackendBridgeRust {
 	offered_type:   String,
 }
 
+/// The desktop file this application installs.
+const DESKTOP_ID: &str = "io.thallium.Files.desktop";
+
 /// Polls between full reconciles, at the frontend's 100ms poll interval.
 ///
 /// Deltas say when the state has moved, so the snapshot is normally re-read
@@ -727,6 +736,20 @@ impl ffi::BackendBridge {
 		self.as_mut().rust_mut().revealing = Some(name.as_bytes().to_vec());
 		let parent = Location::local(NativePath::from(parent));
 		self.submit_detached(Command::Navigate(parent));
+	}
+
+	pub fn is_default_manager(&self) -> bool {
+		apps::default_for("inode/directory").is_some_and(|id| id == DESKTOP_ID)
+	}
+
+	/// Make this the user's file manager for folders and the trash.
+	pub fn make_default_manager(mut self: Pin<&mut Self>) {
+		for mime in ["inode/directory", "x-scheme-handler/trash"] {
+			if let Err(error) = apps::set_default(mime, DESKTOP_ID) {
+				self.as_mut().set_last_error(error.into());
+				return;
+			}
+		}
 	}
 
 	/// Set the bulk rename rule and work out the new names for the selection.
