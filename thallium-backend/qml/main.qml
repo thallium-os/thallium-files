@@ -8,41 +8,40 @@ import org.thallium.FileManager 1.0
 
 // Thallium Files.
 //
-// Thallium the element is named for the bright green line in its emission
-// spectrum. That line is the only chroma in this interface: it marks the
-// active view and live work, and nothing else. Everything that carries
-// structure is graphite. Every path, byte count and timestamp is set in a
-// monospace face, because in a file manager the data is the content.
+// Monochrome throughout: surfaces step in lightness, state is shown by fill
+// and a full outline, and the only ornament is the cross-ended hairline.
 ApplicationWindow {
     id: root
 
-    // Surfaces: one hue, lightness steps only.
-    readonly property color canvas: "#0E0F10"
-    readonly property color raised: "#17191A"
-    readonly property color raisedHigh: "#1D2021"
-    readonly property color hover: "#202324"
-    readonly property color inset: "#0A0B0C"
-    // Borders: low-opacity so they define edges without being seen.
-    readonly property color line: "#14FFFFFF"
-    readonly property color lineSoft: "#0BFFFFFF"
-    readonly property color lineStrong: "#26FFFFFF"
-    // Text: four levels, used consistently.
-    readonly property color ink: "#E6E8E7"
-    readonly property color inkMuted: "#9AA0A0"
-    readonly property color inkFaint: "#6B7272"
-    readonly property color inkGhost: "#454B4B"
-    // The emission line: live work, and nothing else.
-    readonly property color spectral: "#5FDC82"
-    readonly property color spectralDim: "#2E5FDC82"
-    // The ember, lifted from the Thallium terminal cursor. It means held.
-    readonly property color ember: "#FF8D29"
-    readonly property color emberInk: "#FFB552"
-    readonly property color emberWash: "#1FFF8D29"
-    readonly property color emberEdge: "#4DFF8D29"
-    readonly property color destructive: "#E0645C"
+    // The palette lives in Theme. These names are what the rest of this
+    // file was written against; the design is monochrome, so the old accent
+    // and warning roles all resolve to steps of grey.
+    readonly property color canvas: Theme.canvas
+    readonly property color raised: Theme.surface
+    readonly property color raisedHigh: Theme.selected
+    readonly property color hover: Theme.surfaceHigh
+    readonly property color inset: Theme.inset
 
-    readonly property string sansFamily: "Inter, Adwaita Sans, Cantarell, Noto Sans, DejaVu Sans"
-    readonly property string monoFamily: "JetBrains Mono, IBM Plex Mono, DejaVu Sans Mono, monospace"
+    readonly property color line: Theme.line
+    readonly property color lineSoft: Theme.line
+    readonly property color lineStrong: Theme.outline
+
+    readonly property color ink: Theme.ink
+    readonly property color inkMuted: Theme.inkSoft
+    readonly property color inkFaint: Theme.inkDim
+    readonly property color inkGhost: Theme.inkFaint
+
+    readonly property color spectral: Theme.ink
+    readonly property color spectralDim: "#33FFFFFF"
+
+    readonly property color ember: Theme.inkSoft
+    readonly property color emberInk: Theme.ink
+    readonly property color emberWash: Theme.selected
+    readonly property color emberEdge: Theme.outline
+    readonly property color destructive: Theme.inkSoft
+
+    readonly property string sansFamily: Theme.family
+    readonly property string monoFamily: Theme.family
 
     readonly property int unit: 4
     readonly property int sidebarWidth: 292
