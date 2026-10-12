@@ -51,7 +51,7 @@ ApplicationWindow {
     readonly property int controlHeight: 34
     readonly property int bandHeight: 52
     readonly property int inspectorWidth: 348
-    readonly property int rowHeight: root.view === "dense" ? 32 : 40
+    readonly property int rowHeight: root.view === "dense" ? Theme.rowHeightDense : Theme.rowHeight + 8
 
     property string view: "list"
     property bool searchShown: false
@@ -3634,167 +3634,66 @@ ApplicationWindow {
                 anchors.right: parent.right
                 anchors.top: folderBar.bottom
                 anchors.bottom: parent.bottom
-                anchors.leftMargin: 16
-                anchors.rightMargin: 16
-                anchors.topMargin: 0
+                anchors.leftMargin: 24
+                anchors.rightMargin: 24
+                anchors.topMargin: 10
                 anchors.bottomMargin: 14
                 clip: true
 
-                // The pane is cut away at the bottom-right, as the mockup draws
-                // it. A Shape rather than a Rectangle, since a corner cannot be
-                // taken out of a radius.
-                Shape {
-                    anchors.fill: parent
-                    preferredRendererType: Shape.CurveRenderer
-
-                    ShapePath {
-                        fillColor: root.raised
-                        strokeColor: root.line
-                        strokeWidth: 1
-                        startX: 12; startY: 1
-                        PathLine { x: browser.width - 12; y: 1 }
-                        PathArc {
-                            x: browser.width - 1; y: 12
-                            radiusX: 11; radiusY: 11
-                        }
-                        PathLine { x: browser.width - 1; y: browser.height - 54 }
-                        PathLine { x: browser.width - 54; y: browser.height - 1 }
-                        PathLine { x: 12; y: browser.height - 1 }
-                        PathArc {
-                            x: 1; y: browser.height - 12
-                            radiusX: 11; radiusY: 11
-                        }
-                        PathLine { x: 1; y: 12 }
-                        PathArc {
-                            x: 12; y: 1
-                            radiusX: 11; radiusY: 11
-                        }
-                    }
-                }
 
                 // Selection toolbar, present only while something is held.
-                Rectangle {
+                // Views anchor under this; it takes no room, so holding an
+                // entry never moves the list.
+                Item {
                     id: selectionBar
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.top: parent.top
-                    height: root.selectedCount > 0 ? 44 : 0
-                    visible: height > 0
-                    color: root.raisedHigh
+                    height: 0
+                }
 
-                    Behavior on height {
-                        NumberAnimation { duration: 90 }
-                    }
-
-                    Rectangle {
-                        anchors.bottom: parent.bottom
-                        width: parent.width
-                        height: 1
-                        color: root.line
-                    }
+                // What can be done with the held entries, floating over the
+                // foot of the pane while anything is held.
+                Rectangle {
+                    id: selectionDock
+                    z: 20
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.bottom: parent.bottom
+                    anchors.bottomMargin: 18
+                    visible: root.selectedCount > 0 && !root.trashOpen && !root.recentOpen
+                    width: dockRow.implicitWidth + 16
+                    height: 46
+                    radius: Theme.radius
+                    color: Theme.control
+                    border.width: 1
+                    border.color: Theme.outline
 
                     Row {
-                        anchors.left: parent.left
-                        anchors.leftMargin: 12
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 10
-
-                        IconAction {
-                            glyph: "✕"
-                            hint: "Clear selection"
-                            anchors.verticalCenter: parent.verticalCenter
-                            onActivated: root.bridge.clearSelection()
-                        }
+                        id: dockRow
+                        anchors.centerIn: parent
+                        spacing: 4
 
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
-                            text: root.selectedCount + " selected"
-                            color: root.ink
-                            font.family: root.sansFamily
-                            font.pixelSize: 12
+                            leftPadding: 8
+                            rightPadding: 10
+                            text: root.selectedCount + " held"
+                            color: Theme.ink
+                            font.family: Theme.family
+                            font.pixelSize: Theme.text
                             font.weight: Font.Medium
                         }
-                    }
-
-                    Row {
-                        anchors.right: parent.right
-                        anchors.rightMargin: 12
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 6
-
-                        // Whatever is held, opening it is only meaningful when
-                        // it is one directory.
-                        TextAction {
-                            label: "Open"
-                            visible: root.selectedCount === 1 && root.focusRow >= 0
-                                     && root.bridge.entryIsDirectory(root.focusRow)
-                            anchors.verticalCenter: parent.verticalCenter
-                            onActivated: root.bridge.navigateRow(root.focusRow)
+                        IconButton { icon: "scissors"; hint: "Cut (Ctrl+X)"; onClicked: root.bridge.offerSelected(true) }
+                        IconButton { icon: "copy"; hint: "Copy (Ctrl+C)"; onClicked: root.bridge.offerSelected(false) }
+                        IconButton {
+                            icon: "pencil"
+                            hint: "Rename (F2)"
+                            onClicked: root.selectedCount > 1 ? root.beginBulkRename() : root.beginRename(root.firstSelectedRow())
                         }
-
-                        // Copy and move need somewhere to land; the field is
-                        // seeded with the folder on screen.
-                        Rectangle {
-                            width: 200
-                            height: 26
-                            radius: 6
-                            color: root.inset
-                            border.width: 1
-                            border.color: destinationInput.activeFocus ? root.lineStrong : root.line
-                            anchors.verticalCenter: parent.verticalCenter
-
-                            Text {
-                                id: destinationMark
-                                anchors.left: parent.left
-                                anchors.leftMargin: 8
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: "→"
-                                color: root.inkGhost
-                                font.family: root.sansFamily
-                                font.pixelSize: 11
-                            }
-
-                            TextInput {
-                                id: destinationInput
-                                anchors.fill: parent
-                                anchors.leftMargin: 24
-                                anchors.rightMargin: 8
-                                verticalAlignment: TextInput.AlignVCenter
-                                clip: true
-                                color: root.inkMuted
-                                selectionColor: root.spectralDim
-                                selectedTextColor: root.ink
-                                font.family: root.monoFamily
-                                font.pixelSize: 11
-                                text: root.bridge.currentPath
-                            }
-                        }
-
-                        TextAction {
-                            label: "Copy"
-                            anchors.verticalCenter: parent.verticalCenter
-                            onActivated: root.bridge.copySelected(destinationInput.text)
-                        }
-
-                        TextAction {
-                            label: "Move"
-                            anchors.verticalCenter: parent.verticalCenter
-                            onActivated: root.bridge.moveSelected(destinationInput.text)
-                        }
-
-                        TextAction {
-                            label: "Trash"
-                            danger: true
-                            anchors.verticalCenter: parent.verticalCenter
-                            onActivated: root.bridge.trashSelected()
-                        }
-
-                        TextAction {
-                            label: "Delete"
-                            danger: true
-                            anchors.verticalCenter: parent.verticalCenter
-                            onActivated: deleteConfirm.open()
-                        }
+                        IconButton { icon: "info"; hint: "Properties (Alt+Enter)"; enabled: root.selectedCount === 1; onClicked: root.showProperties(root.firstSelectedRow()) }
+                        IconButton { icon: "trash-2"; hint: "Move to Trash (Delete)"; onClicked: root.bridge.trashSelected() }
+                        Rectangle { width: 1; height: 22; color: Theme.outlineSoft; anchors.verticalCenter: parent.verticalCenter }
+                        IconButton { icon: "x"; hint: "Let go (Escape)"; onClicked: root.bridge.clearSelection() }
                     }
                 }
 
@@ -3804,56 +3703,47 @@ ApplicationWindow {
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.top: selectionBar.bottom
-                    anchors.leftMargin: 14
-                    anchors.rightMargin: 14
-                    height: visible ? 30 : 0
-                    visible: root.view !== "grid" && !root.trashOpen && !root.recentOpen
+                    height: visible ? 26 : 0
+                    visible: root.view !== "grid" && !root.trashOpen && !root.recentOpen && !root.deepSearch
+                    readonly property bool dense: root.view === "dense"
 
                     SortHead {
                         anchors.left: parent.left
-                        anchors.leftMargin: 25
-                        anchors.right: kindHead.left
+                        anchors.leftMargin: columnHeads.dense ? 38 : 64
                         anchors.verticalCenter: parent.verticalCenter
+                        width: 120
                         label: "Name"
                         key: "name"
                     }
-
                     SortHead {
                         id: kindHead
+                        visible: columnHeads.dense
                         anchors.right: sizeHead.left
-                        anchors.rightMargin: 18
+                        anchors.rightMargin: 16
                         anchors.verticalCenter: parent.verticalCenter
-                        width: 84
+                        width: 90
                         label: "Kind"
                         key: "kind"
                         numeric: true
                     }
-
                     Overline {
                         id: sizeHead
                         anchors.right: modifiedHead.left
-                        anchors.rightMargin: 18
+                        anchors.rightMargin: 16
                         anchors.verticalCenter: parent.verticalCenter
-                        width: 84
+                        width: 80
                         horizontalAlignment: Text.AlignRight
                         text: "SIZE"
                     }
-
                     SortHead {
                         id: modifiedHead
                         anchors.right: parent.right
+                        anchors.rightMargin: columnHeads.dense ? 30 : 52
                         anchors.verticalCenter: parent.verticalCenter
-                        width: 116
+                        width: 110
                         label: "Modified"
                         key: "modified"
                         numeric: true
-                    }
-
-                    Rectangle {
-                        anchors.bottom: parent.bottom
-                        width: parent.width
-                        height: 1
-                        color: root.lineSoft
                     }
                 }
 
@@ -4371,8 +4261,8 @@ ApplicationWindow {
                     anchors.right: parent.right
                     anchors.top: columnHeads.bottom
                     anchors.bottom: parent.bottom
-                    anchors.leftMargin: 14
-                    anchors.rightMargin: 14
+                    anchors.leftMargin: 0
+                    anchors.rightMargin: 0
                     anchors.bottomMargin: 8
                     visible: !root.deepSearch && !root.recentOpen && !root.trashOpen && root.view !== "grid" && root.rows.length > 0
                     clip: true
@@ -4429,7 +4319,7 @@ ApplicationWindow {
                         radius: 3
                     }
 
-                    delegate: Rectangle {
+                    delegate: Item {
                         id: listRow
                         required property int modelData
                         readonly property int entry: modelData
@@ -4443,130 +4333,110 @@ ApplicationWindow {
                             void root.revision
                             return root.bridge.entryIsDirectory(entry)
                         }
-                        readonly property string kind: {
+                        readonly property string name: {
                             void root.revision
-                            return root.kindOf(root.bridge.entryName(entry), listRow.folder)
+                            return root.bridge.entryName(entry)
                         }
-                        // A hidden entry is shown at half strength: present when
-                        // asked for, never competing with the rest.
-                        readonly property real dim: {
-                            void root.revision
-                            return root.isHidden(root.bridge.entryName(entry)) ? 0.5 : 1.0
-                        }
+                        readonly property bool dense: root.view === "dense"
+                        // A hidden entry is shown at half strength.
+                        readonly property real dim: root.isHidden(listRow.name) ? 0.5 : 1.0
 
                         width: ListView.view.width
                         height: root.rowHeight
-                        radius: 6
-                        color: listRow.selected
-                               ? root.raisedHigh
-                               : (rowMouse.containsMouse ? root.hover : "transparent")
 
-                        // The focused row wears the emission line.
+                        // In the list view every entry is a card; dense rows are
+                        // flat. Held entries are filled and outlined all round.
                         Rectangle {
-                            anchors.left: parent.left
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: 2
-                            height: parent.height - 14
-                            radius: 1
-                            color: root.spectral
-                            visible: root.focusRow === listRow.entry
+                            anchors.fill: parent
+                            anchors.topMargin: listRow.dense ? 0 : 4
+                            anchors.bottomMargin: listRow.dense ? 0 : 4
+                            radius: listRow.dense ? Theme.radiusSmall : Theme.radius
+                            color: listRow.selected ? Theme.selected
+                                 : rowMouse.containsMouse ? Theme.surfaceHigh
+                                 : listRow.dense ? "transparent" : Theme.surface
+                            border.width: listRow.selected || root.focusRow === listRow.entry ? 1 : 0
+                            border.color: listRow.selected ? Theme.outline : Theme.outlineSoft
                         }
 
-                        Tick {
-                            id: rowTick
-                            anchors.left: parent.left
-                            anchors.leftMargin: 9
-                            anchors.verticalCenter: parent.verticalCenter
-                            checked: listRow.selected
-                            onToggled: {
-                                root.focusRow = listRow.entry
-                                root.bridge.toggleSelection(listRow.entry)
-                            }
-                        }
-
-                        // The seam: directories above, everything else below.
-                        DashRule {
-                            anchors.left: rowTick.right
-                            anchors.leftMargin: 10
-                            anchors.right: parent.right
-                            anchors.rightMargin: 4
-                            anchors.top: parent.top
-                            visible: root.firstFileRow === listRow.entry && root.rows.length > 0
-                        }
-
-                        EntryIcon {
-                            id: rowGlyph
+                        FileTile {
+                            id: rowTile
                             opacity: listRow.dim
-                            anchors.left: rowTick.right
-                            anchors.leftMargin: 10
+                            anchors.left: parent.left
+                            anchors.leftMargin: listRow.dense ? 10 : 18
                             anchors.verticalCenter: parent.verticalCenter
-                            width: 20
-                            height: 20
-                            entry: listRow.entry
-                            kind: listRow.kind
-                            tint: listRow.selected || listRow.folder ? root.ink : root.markTone(listRow.kind)
-                            markSize: listRow.kind === "Code" ? 10 : 12
+                            width: listRow.dense ? 18 : 30
+                            height: width
+                            name: listRow.name
+                            folder: listRow.folder
+                            lifted: listRow.selected
+                            thumbnail: {
+                                void root.revision
+                                return listRow.dense ? "" : root.bridge.entryThumbnail(listRow.entry)
+                            }
                         }
 
                         Text {
                             opacity: listRow.dim
-                            anchors.left: rowGlyph.right
-                            anchors.leftMargin: 8
-                            anchors.right: rowKind.left
-                            anchors.rightMargin: 12
+                            anchors.left: rowTile.right
+                            anchors.leftMargin: listRow.dense ? 10 : 16
+                            anchors.right: listRow.dense ? rowKind.left : rowSize.left
+                            anchors.rightMargin: 16
                             anchors.verticalCenter: parent.verticalCenter
-                            text: {
-                                void root.revision
-                                return root.bridge.entryName(listRow.entry)
-                            }
+                            text: listRow.name
                             elide: Text.ElideMiddle
-                            color: listRow.selected || listRow.folder ? root.ink : root.inkMuted
-                            font.family: root.sansFamily
-                            font.pixelSize: 14
+                            color: listRow.selected || listRow.folder ? Theme.ink : Theme.inkSoft
+                            font.family: Theme.family
+                            font.pixelSize: Theme.text
                             font.weight: listRow.folder ? Font.Medium : Font.Normal
                         }
 
                         Text {
                             id: rowKind
+                            visible: listRow.dense
                             opacity: listRow.dim
                             anchors.right: rowSize.left
-                            anchors.rightMargin: 18
+                            anchors.rightMargin: 16
                             anchors.verticalCenter: parent.verticalCenter
-                            width: 84
-                            horizontalAlignment: Text.AlignRight
+                            width: 90
                             elide: Text.ElideRight
-                            text: listRow.kind
-                            color: root.inkGhost
-                            font.family: root.sansFamily
+                            text: listRow.folder ? "Folder" : root.kindOf(listRow.name, false)
+                            color: Theme.inkFaint
+                            font.family: Theme.family
                             font.pixelSize: 12
                         }
 
-                        Mono {
+                        Text {
                             id: rowSize
                             opacity: listRow.dim
                             anchors.right: rowModified.left
-                            anchors.rightMargin: 18
+                            anchors.rightMargin: 16
                             anchors.verticalCenter: parent.verticalCenter
-                            width: 84
+                            width: 80
                             horizontalAlignment: Text.AlignRight
                             text: {
                                 void root.revision
-                                return root.bridge.entryDetail(listRow.entry)
+                                return listRow.folder ? "—" : root.bridge.entryDetail(listRow.entry)
                             }
+                            color: Theme.inkDim
+                            font.family: Theme.family
+                            font.pixelSize: 12
                         }
 
-                        Mono {
+                        Text {
                             id: rowModified
                             opacity: listRow.dim
-                            anchors.right: parent.right
-                            anchors.rightMargin: 4
+                            anchors.right: rowMore.left
+                            anchors.rightMargin: listRow.dense ? 4 : 12
                             anchors.verticalCenter: parent.verticalCenter
-                            width: 116
+                            width: 110
                             horizontalAlignment: Text.AlignRight
                             text: {
                                 void root.revision
                                 return root.modifiedText(root.bridge.entryModified(listRow.entry))
                             }
+                            color: Theme.inkSoft
+                            font.family: Theme.family
+                            font.pixelSize: 12
                         }
 
                         // A folder takes what is dropped on it.
@@ -4584,11 +4454,11 @@ ApplicationWindow {
                             }
                         }
 
+
                         MouseArea {
                             id: rowMouse
                             anchors.fill: parent
-                            anchors.leftMargin: 26
-                            hoverEnabled: true
+                                                        hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             preventStealing: true
                             acceptedButtons: Qt.LeftButton | Qt.RightButton
@@ -4626,6 +4496,22 @@ ApplicationWindow {
                             onDoubleClicked: root.activateRow(listRow.entry)
                             onCanceled: root.sweepRelease()
                         }
+
+                        IconButton {
+                            id: rowMore
+                            anchors.right: parent.right
+                            anchors.rightMargin: listRow.dense ? 2 : 10
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: !listRow.dense || rowMouse.containsMouse || listRow.selected
+                            width: listRow.dense ? 24 : 30
+                            height: width
+                            implicitWidth: width
+                            implicitHeight: height
+                            icon: "ellipsis-vertical"
+                            iconSize: 16
+                            hint: "More"
+                            onClicked: root.openEntryMenu(listRow.entry)
+                        }
                     }
                 }
 
@@ -4636,12 +4522,12 @@ ApplicationWindow {
                     anchors.right: parent.right
                     anchors.top: selectionBar.bottom
                     anchors.bottom: parent.bottom
-                    anchors.margins: 12
+                    anchors.margins: 0
                     visible: !root.deepSearch && !root.recentOpen && !root.trashOpen && root.view === "grid" && root.rows.length > 0
                     clip: true
                     model: root.rows
-                    cellWidth: Math.floor(width / Math.max(3, Math.floor(width / 116)))
-                    cellHeight: 118
+                    cellWidth: Math.floor(width / Math.max(2, Math.floor(width / 220)))
+                    cellHeight: 250
                     boundsBehavior: Flickable.StopAtBounds
                     // Resizing changes the layout constantly. Holding a screen
                     // of delegates either side keeps that from rebuilding them,
@@ -4698,8 +4584,6 @@ ApplicationWindow {
                         id: tileHost
                         required property int modelData
                         readonly property int entry: modelData
-                        // A sweep in flight answers first, so the highlight
-                        // follows the band without a round trip per move.
                         readonly property bool selected: {
                             void root.revision
                             return root.sweepMark[entry] === true || root.bridge.entrySelected(entry)
@@ -4708,108 +4592,121 @@ ApplicationWindow {
                             void root.revision
                             return root.bridge.entryIsDirectory(entry)
                         }
-                        readonly property string kind: {
+                        readonly property string name: {
                             void root.revision
-                            return root.kindOf(root.bridge.entryName(entry), tileHost.folder)
+                            return root.bridge.entryName(entry)
                         }
-                        // A hidden entry is shown at half strength: present when
-                        // asked for, never competing with the rest.
-                        readonly property real dim: {
+                        readonly property string thumbnail: {
                             void root.revision
-                            return root.isHidden(root.bridge.entryName(entry)) ? 0.5 : 1.0
+                            return tileHost.folder ? "" : root.bridge.entryThumbnail(tileHost.entry)
                         }
+                        readonly property bool pictured: tileHost.thumbnail.length > 0 && cardPicture.status === Image.Ready
 
-                        width: GridView.view.cellWidth
-                        height: GridView.view.cellHeight
+                        width: gridBrowser.cellWidth
+                        height: gridBrowser.cellHeight
+                        opacity: root.isHidden(tileHost.name) ? 0.5 : 1
 
-                        // A resting tile draws nothing of its own: the icon and
-                        // the name are the tile. The card only surfaces to
-                        // answer the pointer, the selection or the keyboard.
+                        // The reference's file card: mark, name, a ruled line,
+                        // and what it weighs.
                         Rectangle {
+                            id: card
                             anchors.fill: parent
-                            anchors.margins: 4
-                            radius: 9
-                            color: tileHost.selected
-                                   ? root.raisedHigh
-                                   : (tileMouse.containsMouse ? root.hover : "transparent")
-                            border.width: root.focusRow === tileHost.entry ? 1 : 0
-                            border.color: root.spectral
+                            anchors.margins: 7
+                            radius: Theme.radius
+                            color: tileHost.selected ? Theme.selected : (tileMouse.containsMouse ? Theme.surfaceHigh : Theme.surface)
+                            border.width: tileHost.selected || root.focusRow === tileHost.entry ? 1 : 0
+                            border.color: tileHost.selected ? Theme.outline : Theme.outlineSoft
+                            clip: true
 
-                            // The frame means "this is the file itself". Icons
-                            // stand on their own; only a real thumbnail earns
-                            // the plate and border around it.
-                            Rectangle {
-                                id: tilePreview
-                                opacity: tileHost.dim
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                anchors.top: parent.top
-                                anchors.topMargin: 10
-                                width: 54
-                                height: 54
-                                radius: 6
-                                clip: true
-                                color: tileIcon.thumbnailShown ? root.raised : "transparent"
-                                border.width: tileIcon.thumbnailShown ? 1 : 0
-                                border.color: root.line
-
-                                EntryIcon {
-                                    id: tileIcon
-                                    anchors.fill: parent
-                                    anchors.margins: 1
-                                    entry: tileHost.entry
-                                    kind: tileHost.kind
-                                    tint: tileHost.selected || tileHost.folder
-                                          ? root.ink
-                                          : root.markTone(tileHost.kind)
-                                    glyphSize: 44
-                                    markSize: tileHost.kind === "Code" ? 20 : 26
-                                }
-                            }
-
-                            // Reaching for the tick is a deliberate act, so it
-                            // only appears once the tile is under the pointer
-                            // or already carries a selection.
-                            Tick {
-                                anchors.left: parent.left
-                                anchors.top: parent.top
-                                anchors.margins: 6
-                                visible: tileHost.selected || tileMouse.containsMouse
-                                checked: tileHost.selected
-                                onToggled: {
-                                    root.focusRow = tileHost.entry
-                                    root.bridge.toggleSelection(tileHost.entry)
-                                }
-                            }
-
-                            // Two lines of name, centred under the icon. A name
-                            // too long for that elides rather than widening the
-                            // cell, which would break the grid's rhythm.
-                            Text {
-                                id: tileName
-                                opacity: tileHost.dim
+                            // A picture or video fills the top of its card.
+                            Image {
+                                id: cardPicture
                                 anchors.left: parent.left
                                 anchors.right: parent.right
-                                anchors.top: tilePreview.bottom
-                                anchors.margins: 5
-                                anchors.topMargin: 8
-                                text: {
-                                    void root.revision
-                                    return root.bridge.entryName(tileHost.entry)
-                                }
-                                horizontalAlignment: Text.AlignHCenter
-                                wrapMode: Text.Wrap
-                                maximumLineCount: 2
-                                elide: Text.ElideRight
-                                lineHeight: 1.15
-                                color: tileHost.selected || tileHost.folder ? root.ink : root.inkMuted
-                                font.family: root.sansFamily
-                                font.pixelSize: 12
-                                font.weight: tileHost.folder ? Font.Medium : Font.Normal
+                                anchors.top: parent.top
+                                anchors.margins: 1
+                                height: parent.height * 0.56
+                                visible: tileHost.pictured
+                                source: tileHost.thumbnail
+                                fillMode: Image.PreserveAspectCrop
+                                sourceSize: Qt.size(width * 2, height * 2)
+                                asynchronous: true
                             }
 
-                            // A drag that starts on a tile sweeps a band like
-                            // any other, so selecting a run of files does not
-                            // depend on finding the gutter between them.
+                            FileTile {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                anchors.top: parent.top
+                                anchors.topMargin: 38
+                                visible: !tileHost.pictured
+                                width: 60
+                                height: 60
+                                name: tileHost.name
+                                folder: tileHost.folder
+                                lifted: tileHost.selected
+                            }
+
+                            Text {
+                                id: cardName
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.leftMargin: 14
+                                anchors.rightMargin: 14
+                                anchors.bottom: cardRule.top
+                                anchors.bottomMargin: 10
+                                height: 34
+                                text: tileHost.name
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignBottom
+                                wrapMode: Text.Wrap
+                                maximumLineCount: 2
+                                elide: Text.ElideMiddle
+                                color: Theme.ink
+                                font.family: Theme.family
+                                font.pixelSize: Theme.text
+                            }
+
+                            CrossRule {
+                                id: cardRule
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.bottom: cardFoot.top
+                                anchors.leftMargin: 14
+                                anchors.rightMargin: 14
+                                anchors.bottomMargin: 8
+                            }
+
+                            Item {
+                                id: cardFoot
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.bottom: parent.bottom
+                                anchors.margins: 16
+                                height: 32
+                                Column {
+                                    anchors.left: parent.left
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    spacing: 2
+                                    Text {
+                                        text: tileHost.folder ? "Folder" : "Filesize:"
+                                        color: Theme.ink
+                                        font.family: Theme.family
+                                        font.pixelSize: 12
+                                        font.weight: Font.Medium
+                                    }
+                                    Text {
+                                        text: {
+                                            void root.revision
+                                            return tileHost.folder ? root.modifiedText(root.bridge.entryModified(tileHost.entry))
+                                                                   : root.bridge.entryDetail(tileHost.entry)
+                                        }
+                                        color: Theme.inkDim
+                                        font.family: Theme.family
+                                        font.pixelSize: 11
+                                    }
+                                }
+                            }
+                        }
+
                             // A folder takes what is dropped on it.
                             DropArea {
                                 anchors.fill: parent
@@ -4824,6 +4721,7 @@ ApplicationWindow {
                                     border.color: root.spectral
                                 }
                             }
+
 
                             MouseArea {
                                 id: tileMouse
@@ -4866,6 +4764,34 @@ ApplicationWindow {
                                 onDoubleClicked: root.activateRow(tileHost.entry)
                                 onCanceled: root.sweepRelease()
                             }
+
+                        // The bookmark star a folder card carries, and the menu.
+                        IconButton {
+                            anchors.left: card.left
+                            anchors.top: card.top
+                            anchors.margins: 8
+                            width: 28
+                            height: 28
+                            implicitWidth: 28
+                            implicitHeight: 28
+                            visible: tileHost.folder
+                            icon: "star"
+                            iconSize: 15
+                            hint: "Bookmark"
+                            onClicked: root.bridge.addBookmark(root.bridge.entryPath(tileHost.entry))
+                        }
+                        IconButton {
+                            anchors.right: card.right
+                            anchors.top: card.top
+                            anchors.margins: 8
+                            width: 28
+                            height: 28
+                            implicitWidth: 28
+                            implicitHeight: 28
+                            icon: "ellipsis-vertical"
+                            iconSize: 15
+                            hint: "More"
+                            onClicked: root.openEntryMenu(tileHost.entry)
                         }
                     }
                 }

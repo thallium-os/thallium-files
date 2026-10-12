@@ -20,7 +20,7 @@ fn main() {
 		cxx_qt_build::QmlModule::new("org.thallium.FileManager")
 			.qml_file("qml/main.qml")
 			.qml_file(cxx_qt_build::QmlFile::from("qml/Theme.qml").singleton(true))
-			.qml_files(["qml/CrossRule.qml", "qml/Icon.qml", "qml/Rail.qml", "qml/IconButton.qml", "qml/Segmented.qml"]),
+			.qml_files(["qml/CrossRule.qml", "qml/Icon.qml", "qml/Rail.qml", "qml/IconButton.qml", "qml/Segmented.qml", "qml/FileTile.qml"]),
 	)
 	.qrc_resources(resources)
 	.files(["src/qt_bridge.rs"])

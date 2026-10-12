@@ -25,7 +25,7 @@ Item {
             width: 9
             height: 9
             x: index === 0 ? 0 : rule.width - width
-            anchors.verticalCenter: parent.verticalCenter
+            y: (rule.height - height) / 2
             Rectangle { anchors.centerIn: parent; width: 9; height: 1; color: rule.crossColor }
             Rectangle { anchors.centerIn: parent; width: 1; height: 9; color: rule.crossColor }
         }
