@@ -11,7 +11,7 @@ use thallium_icons::{IconService, Thumbnail};
 use thallium_protocol::{BrowserStateSnapshot, DirectoryEntryRow, PathBytes, TaskInfo, TaskStatus};
 use thallium_rclone::{Remotes, authorize, config::{Provider, Session, Step}};
 
-use crate::{Backend, BackendConfig, BackendResult, apps, archive, bookmarks, drives, properties, recents::Recent, search::Search, storage::Measure, trash_bin, uri};
+use crate::{Backend, BackendConfig, BackendResult, apps, archive, bookmarks, drives, properties, recents::Recent, search::Search, storage::Measure, trash_bin, uca, uri};
 
 #[cxx_qt::bridge]
 pub mod ffi {
@@ -230,6 +230,21 @@ pub mod ffi {
 		#[qinvokable]
 		#[rust_name = "open_terminal_here"]
 		fn openTerminalHere(self: Pin<&mut Self>);
+		#[qinvokable]
+		#[rust_name = "offer_actions"]
+		fn offerActions(self: Pin<&mut Self>);
+		#[qinvokable]
+		#[rust_name = "action_count"]
+		fn actionCount(&self) -> i32;
+		#[qinvokable]
+		#[rust_name = "action_name"]
+		fn actionName(&self, index: i32) -> QString;
+		#[qinvokable]
+		#[rust_name = "run_action"]
+		fn runAction(self: Pin<&mut Self>, index: i32);
+		#[qinvokable]
+		#[rust_name = "edit_actions"]
+		fn editActions(self: Pin<&mut Self>);
 		#[qinvokable]
 		#[rust_name = "is_archive"]
 		fn isArchive(&self, row: i32) -> bool;
@@ -490,6 +505,8 @@ pub struct BackendBridgeRust {
 	trash:          Vec<trash::TrashItem>,
 	/// A purge still running, collected on a later poll.
 	purge:          Option<trash_bin::Purge>,
+	/// Custom actions that apply to the selection, read when its menu opens.
+	actions:        Vec<uca::Action>,
 	/// Extractions and compressions still running.
 	archive_jobs:   Vec<archive::Job>,
 	/// Mountable drives as last listed, and a mount, unmount or eject still
@@ -557,6 +574,7 @@ impl Default for BackendBridgeRust {
 					inspected: None,
 					drives: drives::list(),
 					archive_jobs: Vec::new(),
+					actions: Vec::new(),
 					drive_action: None,
 					inspected_type: String::new(),
 					inspect_size: Measure::new(),
@@ -589,6 +607,7 @@ impl Default for BackendBridgeRust {
 				inspected:      None,
 				drives:         Vec::new(),
 				archive_jobs:   Vec::new(),
+				actions:        Vec::new(),
 				drive_action:   None,
 				inspected_type: String::new(),
 				inspect_size:   Measure::new(),
@@ -670,6 +689,58 @@ impl ffi::BackendBridge {
 		self.as_mut().rust_mut().revealing = Some(name.as_bytes().to_vec());
 		let parent = Location::local(NativePath::from(parent));
 		self.submit_detached(Command::Navigate(parent));
+	}
+
+	/// Collect the custom actions that apply to every selected entry.
+	pub fn offer_actions(mut self: Pin<&mut Self>) {
+		let paths = self.selected_paths();
+		let kinds: Vec<(bool, String)> = paths
+			.iter()
+			.map(|path| {
+				let directory = path.is_dir();
+				(directory, self.rust().icons.mime_of(path, directory))
+			})
+			.collect();
+		let targets: Vec<uca::Target<'_>> = paths
+			.iter()
+			.zip(&kinds)
+			.map(|(path, (directory, mime))| uca::Target { path, directory: *directory, mime })
+			.collect();
+		let applying = uca::read().into_iter().filter(|action| action.applies(&targets)).collect();
+		self.as_mut().rust_mut().actions = applying;
+	}
+
+	pub fn action_count(&self) -> i32 { count(self.rust().actions.len()) }
+
+	pub fn action_name(&self, index: i32) -> QString {
+		usize::try_from(index)
+			.ok()
+			.and_then(|index| self.rust().actions.get(index))
+			.map_or_else(QString::default, |action| action.name.as_str().into())
+	}
+
+	pub fn run_action(mut self: Pin<&mut Self>, index: i32) {
+		let Some(action) =
+			usize::try_from(index).ok().and_then(|index| self.rust().actions.get(index)).cloned()
+		else {
+			return;
+		};
+		let paths = self.selected_paths();
+		let folder = self
+			.current()
+			.map(|here| PathBuf::from(OsStr::from_bytes(here.path.as_bytes())))
+			.unwrap_or_default();
+		if let Err(error) = action.run(&paths, &folder) {
+			self.as_mut().set_last_error(error.into());
+		}
+	}
+
+	/// Open the actions file in the default editor, creating it if needed.
+	pub fn edit_actions(mut self: Pin<&mut Self>) {
+		match uca::ensure_file() {
+			Ok(path) => self.open_path(&path.to_string_lossy().as_ref().into()),
+			Err(error) => self.as_mut().set_last_error(error.to_string().into()),
+		}
 	}
 
 	pub fn is_archive(&self, row: i32) -> bool {

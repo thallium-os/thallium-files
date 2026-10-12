@@ -696,6 +696,8 @@ ApplicationWindow {
         id: menuSurface
         implicitWidth: 232
         padding: 5
+        // Submenu titles are drawn by this delegate, not the platform style.
+        delegate: MenuLine {}
         background: Rectangle {
             color: root.raisedHigh
             radius: 9
@@ -711,6 +713,7 @@ ApplicationWindow {
         property int row: -1
         onAboutToShow: {
             root.bridge.offerApps(entryMenu.row)
+            root.bridge.offerActions()
             root.offerTick++
         }
         readonly property bool folder: {
@@ -785,6 +788,21 @@ ApplicationWindow {
         MenuSeparator {
             contentItem: Rectangle { implicitHeight: 1; color: root.line }
         }
+        // Custom actions that apply to everything held.
+        Repeater {
+            model: {
+                void root.offerTick
+                return root.bridge.actionCount()
+            }
+            delegate: MenuLine {
+                required property int index
+                text: {
+                    void root.offerTick
+                    return root.bridge.actionName(index)
+                }
+                onTriggered: root.bridge.runAction(index)
+            }
+        }
         MenuLine {
             text: "Extract here"
             visible: entryMenu.archive
@@ -855,6 +873,7 @@ ApplicationWindow {
             contentItem: Rectangle { implicitHeight: 1; color: root.line }
         }
         MenuLine { text: "Open terminal here"; onTriggered: root.bridge.openTerminalHere() }
+        MenuLine { text: "Edit custom actions…"; onTriggered: root.bridge.editActions() }
         MenuLine { text: "Bookmark this folder"; onTriggered: root.bridge.addBookmark(root.bridge.currentPath) }
         MenuSeparator {
             contentItem: Rectangle { implicitHeight: 1; color: root.line }
@@ -1610,6 +1629,22 @@ ApplicationWindow {
     Shortcut { sequences: ["Shift+Delete"]; enabled: !root.typing && root.selectedCount > 0; onActivated: deleteConfirm.open() }
     Shortcut { sequences: ["Ctrl+L", "F6"]; enabled: !root.typing; onActivated: root.editPath() }
     Shortcut { sequences: [StandardKey.Find]; enabled: !root.typing; onActivated: searchInput.forceActiveFocus() }
+    // The context menu from the keyboard: for the held entry, or for the
+    // folder when nothing is held.
+    Shortcut {
+        sequences: ["Menu", "Shift+F10"]
+        enabled: !root.typing
+        onActivated: {
+            const row = root.focusRow >= 0 && root.bridge.entrySelected(root.focusRow)
+                ? root.focusRow : root.firstSelectedRow()
+            if (row >= 0) {
+                entryMenu.row = row
+                entryMenu.popup(root.contentItem, root.width / 3, root.height / 3)
+            } else {
+                groundMenu.popup(root.contentItem, root.width / 3, root.height / 3)
+            }
+        }
+    }
     Shortcut { sequences: ["Ctrl+1"]; onActivated: root.view = "list" }
     Shortcut { sequences: ["Ctrl+2"]; onActivated: root.view = "grid" }
 
