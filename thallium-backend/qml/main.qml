@@ -51,9 +51,22 @@ ApplicationWindow {
     readonly property int controlHeight: 34
     readonly property int bandHeight: 52
     readonly property int inspectorWidth: 348
-    readonly property int rowHeight: 40
+    readonly property int rowHeight: root.view === "dense" ? 32 : 40
 
     property string view: "list"
+    property bool searchShown: false
+    readonly property bool bookmarked: {
+        void root.revision
+        for (let b = 0; b < root.bridge.bookmarkCount(); ++b)
+            if (root.bridge.bookmarkPath(b) === root.bridge.currentPath)
+                return true
+        return false
+    }
+
+    function openSearch() {
+        root.searchShown = true
+        searchInput.forceActiveFocus()
+    }
     property string query: ""
     property string folderQuery: ""
     property bool showHidden: false
@@ -139,13 +152,24 @@ ApplicationWindow {
         return out
     }
 
+    // The path as crumbs. Under home it starts at Home rather than at the
+    // root, which is how people think of their own files.
     readonly property var crumbs: {
         const path = root.bridge.currentPath
+        const home = root.bridge.homePath
         if (!path || path === "/")
-            return [{ label: "/", path: "/" }]
-        const parts = path.split("/").filter(function (part) { return part.length > 0 })
-        const out = [{ label: "/", path: "/" }]
-        let walked = ""
+            return [{ label: "Filesystem", path: "/" }]
+        let out, walked, rest
+        if (home.length > 0 && (path === home || path.startsWith(home + "/"))) {
+            out = [{ label: "Home", path: home }]
+            walked = home
+            rest = path.substring(home.length)
+        } else {
+            out = [{ label: "Filesystem", path: "/" }]
+            walked = ""
+            rest = path
+        }
+        const parts = rest.split("/").filter(function (part) { return part.length > 0 })
         for (let i = 0; i < parts.length; ++i) {
             walked += "/" + parts[i]
             out.push({ label: parts[i], path: walked })
@@ -1904,7 +1928,7 @@ ApplicationWindow {
     Shortcut { sequences: ["Delete"]; enabled: !root.typing && root.selectedCount > 0; onActivated: root.bridge.trashSelected() }
     Shortcut { sequences: ["Shift+Delete"]; enabled: !root.typing && root.selectedCount > 0; onActivated: deleteConfirm.open() }
     Shortcut { sequences: ["Ctrl+L", "F6"]; enabled: !root.typing; onActivated: root.editPath() }
-    Shortcut { sequences: [StandardKey.Find]; enabled: !root.typing; onActivated: searchInput.forceActiveFocus() }
+    Shortcut { sequences: [StandardKey.Find]; enabled: !root.typing; onActivated: root.openSearch() }
     // The context menu from the keyboard: for the held entry, or for the
     // folder when nothing is held.
     Shortcut {
@@ -2728,8 +2752,7 @@ ApplicationWindow {
 
                     Text {
                         anchors.left: parent.left
-                        anchors.right: headActions.left
-                        anchors.rightMargin: 8
+                        anchors.right: parent.right
                         anchors.verticalCenter: parent.verticalCenter
                         text: "Places"
                         elide: Text.ElideMiddle
@@ -2739,24 +2762,6 @@ ApplicationWindow {
                         font.weight: Font.Medium
                     }
 
-                    Row {
-                        id: headActions
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 2
-
-                        IconAction {
-                            glyph: "⟳"
-                            hint: "Refresh"
-                            onActivated: root.bridge.refresh()
-                        }
-
-                        IconAction {
-                            glyph: root.previewOpen ? "◨" : "◧"
-                            hint: root.previewOpen ? "Hide preview" : "Show preview"
-                            onActivated: root.previewOpen = !root.previewOpen
-                        }
-                    }
                 }
 
                 // ---- Filter the tree, not the file list ----
@@ -3173,79 +3178,44 @@ ApplicationWindow {
             width: parent.width - root.sidebarWidth - (root.previewOpen ? root.inspectorWidth : 0)
             height: parent.height
 
-            // ---- Header: one line, as the mockup has it ----
-            // Where you are and how to get elsewhere, left to right: the mark,
-            // the way back, the path, the search, the reload.
+            // ---- Header ----
+            // The folder's name on the left, the window's actions on the right,
+            // and the tabs between them once there is more than one.
             Item {
                 id: header
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.top: parent.top
-                anchors.leftMargin: 16
-                anchors.rightMargin: 16
-                anchors.topMargin: 14
-                height: root.controlHeight
+                anchors.leftMargin: 28
+                anchors.rightMargin: 28
+                anchors.topMargin: 16
+                height: 46
 
-                // The mark, and the one thing it offers: somewhere new.
-                Rectangle {
-                    id: brand
+                Text {
+                    id: headerTitle
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
-                    width: brandRow.implicitWidth + 22
-                    height: root.controlHeight
-                    radius: 9
-                    color: root.inset
-                    border.width: 1
-                    border.color: root.line
-
-                    Row {
-                        id: brandRow
-                        anchors.centerIn: parent
-                        spacing: 9
-
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: "FILES"
-                            color: root.ink
-                            font.family: root.sansFamily
-                            font.pixelSize: 14
-                            font.weight: Font.DemiBold
-                            font.letterSpacing: 1.6
-                        }
-
-                        Rectangle {
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: 1
-                            height: 16
-                            color: root.line
-                        }
-
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: "+"
-                            color: newFolderMouse.containsMouse ? root.spectral : root.inkMuted
-                            font.family: root.sansFamily
-                            font.pixelSize: 17
-
-                            MouseArea {
-                                id: newFolderMouse
-                                anchors.fill: parent
-                                anchors.margins: -6
-                                hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: root.remoteSheetOpen = true
-                            }
-                        }
-                    }
+                    width: Math.min(implicitWidth, 260)
+                    text: root.trashOpen ? "Trash"
+                        : root.recentOpen ? "Recent"
+                        : root.crumbs[root.crumbs.length - 1].label
+                    elide: Text.ElideMiddle
+                    color: Theme.ink
+                    font.family: Theme.family
+                    font.pixelSize: Theme.title
+                    font.weight: Font.Medium
                 }
 
-                // One chip per tab, shown once there is more than one.
                 Row {
                     id: tabStrip
-                    anchors.left: headerNav.right
-                    anchors.leftMargin: root.tabs.length > 1 ? 10 : 0
+                    anchors.left: headerTitle.right
+                    anchors.leftMargin: 20
+                    anchors.right: headerActions.left
+                    anchors.rightMargin: 12
                     anchors.verticalCenter: parent.verticalCenter
-                    spacing: 4
+                    spacing: 6
+                    clip: true
+
                     Repeater {
                         model: root.tabs.length > 1 ? root.tabs : []
                         delegate: Rectangle {
@@ -3253,31 +3223,30 @@ ApplicationWindow {
                             required property var modelData
                             required property int index
                             readonly property bool current: tabChip.index === root.currentTab
-                            width: Math.min(150, tabLabel.implicitWidth + 34)
-                            height: root.controlHeight
-                            radius: 9
-                            color: tabChip.current ? root.raisedHigh : root.inset
-                            border.width: 1
-                            border.color: tabChip.current ? root.lineStrong : root.line
+                            width: Math.min(160, tabLabel.implicitWidth + 40)
+                            height: 30
+                            radius: Theme.radiusSmall
+                            color: tabChip.current ? Theme.selected : (tabMouse.containsMouse ? Theme.surfaceHigh : Theme.surface)
+                            border.width: tabChip.current ? 1 : 0
+                            border.color: Theme.outline
+
                             Text {
                                 id: tabLabel
                                 anchors.left: parent.left
-                                anchors.leftMargin: 10
+                                anchors.leftMargin: 11
                                 anchors.right: tabClose.left
                                 anchors.rightMargin: 4
                                 anchors.verticalCenter: parent.verticalCenter
                                 text: root.leafName(tabChip.modelData.currentPath)
                                 elide: Text.ElideMiddle
-                                color: tabChip.current ? root.ink : root.inkMuted
-                                font.family: root.sansFamily
+                                color: tabChip.current ? Theme.ink : Theme.inkDim
+                                font.family: Theme.family
                                 font.pixelSize: 12
                             }
-                            DropArea {
-                                anchors.fill: parent
-                                onDropped: function (drop) { root.dropInto(drop, tabChip.modelData.currentPath) }
-                            }
                             MouseArea {
+                                id: tabMouse
                                 anchors.fill: parent
+                                hoverEnabled: true
                                 acceptedButtons: Qt.LeftButton | Qt.MiddleButton
                                 onClicked: function (mouse) {
                                     if (mouse.button === Qt.MiddleButton)
@@ -3286,14 +3255,18 @@ ApplicationWindow {
                                         root.switchTab(tabChip.index)
                                 }
                             }
-                            Text {
+                            DropArea {
+                                anchors.fill: parent
+                                onDropped: function (drop) { root.dropInto(drop, tabChip.modelData.currentPath) }
+                            }
+                            Icon {
                                 id: tabClose
                                 anchors.right: parent.right
                                 anchors.rightMargin: 8
                                 anchors.verticalCenter: parent.verticalCenter
-                                text: "×"
-                                color: tabCloseMouse.containsMouse ? root.ink : root.inkGhost
-                                font.pixelSize: 14
+                                name: "x"
+                                size: 13
+                                shade: tabCloseMouse.containsMouse ? 1 : 0.45
                                 MouseArea {
                                     id: tabCloseMouse
                                     anchors.fill: parent
@@ -3307,53 +3280,204 @@ ApplicationWindow {
                 }
 
                 Row {
-                    id: headerNav
-                    anchors.left: brand.right
-                    anchors.leftMargin: 10
+                    id: headerActions
+                    anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    spacing: 5
+                    spacing: 6
 
-                    IconAction {
-                        implicitWidth: root.controlHeight
-                        implicitHeight: root.controlHeight
-                        glyph: "←"
-                        hint: "Back"
-                        onActivated: root.bridge.back()
+                    // Search opens in place, to the left of the buttons.
+                    Rectangle {
+                        id: headerSearch
+                        visible: root.searchShown || root.query.length > 0
+                        width: 240
+                        height: Theme.controlHeight
+                        radius: Theme.radius
+                        color: Theme.surface
+                        border.width: 1
+                        border.color: searchInput.activeFocus ? Theme.outline : Theme.outlineSoft
+
+                        Icon {
+                            id: searchMark
+                            anchors.left: parent.left
+                            anchors.leftMargin: 10
+                            anchors.verticalCenter: parent.verticalCenter
+                            name: "search"
+                            size: 15
+                            shade: root.deepSearch ? 1 : 0.5
+                        }
+
+                        TextInput {
+                            id: searchInput
+                            anchors.left: searchMark.right
+                            anchors.leftMargin: 8
+                            anchors.right: clearSearch.left
+                            anchors.rightMargin: 6
+                            anchors.verticalCenter: parent.verticalCenter
+                            clip: true
+                            color: Theme.ink
+                            selectionColor: Theme.controlHigh
+                            selectedTextColor: Theme.ink
+                            font.family: Theme.family
+                            font.pixelSize: Theme.text
+                            text: root.query
+                            onTextChanged: root.query = text
+                            onActiveFocusChanged: if (!activeFocus && text.length === 0) root.searchShown = false
+                            Keys.onEscapePressed: {
+                                if (root.deepSearch)
+                                    root.endDeepSearch()
+                                else
+                                    root.query = ""
+                                root.searchShown = false
+                                root.release()
+                            }
+                            Keys.onReturnPressed: root.beginDeepSearch()
+                            Keys.onEnterPressed: root.beginDeepSearch()
+
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                visible: searchInput.text.length === 0
+                                text: "Filter, or Enter to search below"
+                                color: Theme.inkFaint
+                                font.family: Theme.family
+                                font.pixelSize: 12
+                            }
+                        }
+
+                        IconButton {
+                            id: clearSearch
+                            anchors.right: parent.right
+                            anchors.rightMargin: 3
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: root.query.length > 0
+                            implicitWidth: 26
+                            implicitHeight: 26
+                            icon: "x"
+                            iconSize: 14
+                            onClicked: {
+                                root.endDeepSearch()
+                                root.query = ""
+                            }
+                        }
                     }
 
-                    IconAction {
-                        implicitWidth: root.controlHeight
-                        implicitHeight: root.controlHeight
-                        glyph: "→"
-                        hint: "Forward"
-                        onActivated: root.bridge.forward()
+                    IconButton {
+                        icon: "square-plus"
+                        hint: "New folder (Ctrl+Shift+N)"
+                        enabled: !root.trashOpen && !root.recentOpen
+                        onClicked: root.beginCreate("folder", "")
                     }
+                    IconButton {
+                        icon: "search"
+                        hint: "Search (Ctrl+F)"
+                        on: headerSearch.visible
+                        onClicked: root.openSearch()
+                    }
+                    IconButton {
+                        icon: "star"
+                        hint: root.bookmarked ? "Bookmarked" : "Bookmark this folder (Ctrl+D)"
+                        on: root.bookmarked
+                        enabled: !root.trashOpen && !root.recentOpen
+                        onClicked: if (!root.bookmarked) root.bridge.addBookmark(root.bridge.currentPath)
+                    }
+                    IconButton {
+                        icon: "panel-right"
+                        hint: root.previewOpen ? "Hide preview" : "Show preview"
+                        on: root.previewOpen
+                        onClicked: root.previewOpen = !root.previewOpen
+                    }
+                }
+            }
 
-                    IconAction {
-                        implicitWidth: root.controlHeight
-                        implicitHeight: root.controlHeight
-                        glyph: "↑"
-                        hint: "Parent folder"
-                        onActivated: root.bridge.up()
+            CrossRule {
+                id: headerRule
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: header.bottom
+                anchors.leftMargin: 24
+                anchors.rightMargin: 24
+                anchors.topMargin: 8
+            }
+
+            // ---- Folder bar: the way back, where you are, how to look ----
+            Item {
+                id: folderBar
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: headerRule.bottom
+                anchors.leftMargin: 28
+                anchors.rightMargin: 28
+                anchors.topMargin: 16
+                height: 40
+
+                // The reference's folder button: here it lists the way up.
+                Rectangle {
+                    id: ancestry
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 58
+                    height: 40
+                    radius: Theme.radius
+                    color: ancestryMouse.containsMouse ? Theme.surfaceHigh : Theme.surface
+                    Row {
+                        anchors.centerIn: parent
+                        spacing: 6
+                        Icon { name: "folder"; size: 18; shade: 0.85; anchors.verticalCenter: parent.verticalCenter }
+                        Icon { name: "chevron-down"; size: 14; shade: 0.6; anchors.verticalCenter: parent.verticalCenter }
+                    }
+                    MouseArea {
+                        id: ancestryMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: ancestryMenu.popup(ancestry, 0, ancestry.height + 4)
+                    }
+                    MenuSurface {
+                        id: ancestryMenu
+                        Repeater {
+                            model: root.crumbs.slice().reverse()
+                            delegate: MenuLine {
+                                required property var modelData
+                                text: modelData.label
+                                onTriggered: {
+                                    root.recentOpen = false
+                                    root.trashOpen = false
+                                    root.bridge.navigate(modelData.path)
+                                }
+                            }
+                        }
                     }
                 }
 
-                // The path, given the width the mockup gives it.
-                Rectangle {
-                    id: pathBar
-                    anchors.left: tabStrip.right
+                Row {
+                    id: headerNav
+                    anchors.left: ancestry.right
                     anchors.leftMargin: 10
-                    anchors.right: headerSearch.left
-                    anchors.rightMargin: 10
                     anchors.verticalCenter: parent.verticalCenter
-                    height: root.controlHeight
-                    radius: 9
-                    color: root.inset
-                    border.width: 1
-                    border.color: root.line
+                    spacing: 2
+                    IconButton { icon: "arrow-left"; hint: "Back (Alt+Left)"; iconSize: 16; onClicked: root.bridge.back() }
+                    IconButton { icon: "arrow-right"; hint: "Forward (Alt+Right)"; iconSize: 16; onClicked: root.bridge.forward() }
+                    IconButton { icon: "arrow-up"; hint: "Up (Alt+Up)"; iconSize: 16; onClicked: root.bridge.up() }
+                }
+
+                Item {
+                    id: pathBar
+                    anchors.left: headerNav.right
+                    anchors.leftMargin: 14
+                    anchors.right: folderTools.left
+                    anchors.rightMargin: 14
+                    anchors.verticalCenter: parent.verticalCenter
+                    height: Theme.controlHeight
 
                     // Ctrl+L swaps the crumbs for a field that takes a typed
                     // path; Enter goes there, Escape puts the crumbs back.
+                    Rectangle {
+                        anchors.fill: parent
+                        visible: pathEditor.visible
+                        radius: Theme.radius
+                        color: Theme.surface
+                        border.width: 1
+                        border.color: Theme.outline
+                    }
                     TextInput {
                         id: pathEditor
                         visible: false
@@ -3362,11 +3486,11 @@ ApplicationWindow {
                         anchors.rightMargin: 12
                         verticalAlignment: TextInput.AlignVCenter
                         clip: true
-                        color: root.ink
-                        selectionColor: root.spectralDim
-                        selectedTextColor: root.ink
-                        font.family: root.monoFamily
-                        font.pixelSize: 12
+                        color: Theme.ink
+                        selectionColor: Theme.controlHigh
+                        selectedTextColor: Theme.ink
+                        font.family: Theme.family
+                        font.pixelSize: Theme.text
                         function finish() {
                             visible = false
                             root.release()
@@ -3387,318 +3511,57 @@ ApplicationWindow {
 
                     Flickable {
                         visible: !pathEditor.visible
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.leftMargin: 12
-                        anchors.rightMargin: 12
-                        anchors.verticalCenter: parent.verticalCenter
-                        height: 20
+                        anchors.fill: parent
                         contentWidth: crumbRow.width
                         clip: true
                         flickableDirection: Flickable.HorizontalFlick
+                        // Keep the deepest crumb in view.
+                        contentX: Math.max(0, crumbRow.width - width)
 
                         Row {
                             id: crumbRow
                             height: parent.height
-                            spacing: 3
+                            spacing: 8
 
                             Repeater {
-                                model: root.crumbs
+                                id: crumbRepeater
+                                model: root.trashOpen ? [{ label: "Trash", path: "" }]
+                                     : root.recentOpen ? [{ label: "Recent", path: "" }]
+                                     : root.crumbs
                                 delegate: Row {
                                     id: crumb
                                     required property int index
                                     required property var modelData
-                                    readonly property bool last: crumb.index === root.crumbs.length - 1
-                                    spacing: 3
+                                    readonly property bool last: crumb.index === crumbRepeater.count - 1
+                                    spacing: 8
                                     anchors.verticalCenter: parent.verticalCenter
 
                                     Text {
+                                        anchors.verticalCenter: parent.verticalCenter
                                         text: crumb.modelData.label
-                                        color: crumb.last
-                                               ? root.ink
-                                               : (crumbMouse.containsMouse ? root.ink : root.inkFaint)
-                                        font.family: root.monoFamily
-                                        font.pixelSize: 12
-
+                                        color: crumb.last || crumbMouse.containsMouse ? Theme.ink : Theme.inkDim
+                                        font.family: Theme.family
+                                        font.pixelSize: Theme.textLarge + 1
                                         MouseArea {
                                             id: crumbMouse
                                             anchors.fill: parent
                                             hoverEnabled: true
                                             cursorShape: Qt.PointingHandCursor
-                                            onClicked: root.bridge.navigate(crumb.modelData.path)
+                                            onClicked: if (crumb.modelData.path.length > 0) root.bridge.navigate(crumb.modelData.path)
+                                            onDoubleClicked: root.editPath()
+                                        }
+                                        DropArea {
+                                            anchors.fill: parent
+                                            enabled: crumb.modelData.path.length > 0
+                                            onDropped: function (drop) { root.dropInto(drop, crumb.modelData.path) }
                                         }
                                     }
-
-                                    Text {
+                                    Icon {
                                         visible: !crumb.last
-                                        text: "\u203a"
-                                        color: root.inkGhost
-                                        font.family: root.sansFamily
-                                        font.pixelSize: 11
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Rectangle {
-                    id: headerSearch
-                    anchors.right: headerReload.left
-                    anchors.rightMargin: 10
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 260
-                    height: root.controlHeight
-                    radius: 9
-                    color: root.inset
-                    border.width: 1
-                    border.color: searchInput.activeFocus ? root.spectralDim : root.line
-
-                    Glyph {
-                        id: searchMark
-                        anchors.left: parent.left
-                        anchors.leftMargin: 11
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: root.deepSearch ? "\u2318" : "\u2315"
-                        color: root.deepSearch ? root.spectral : root.inkGhost
-                        font.pixelSize: 13
-                    }
-
-                    TextInput {
-                        id: searchInput
-                        anchors.left: searchMark.right
-                        anchors.leftMargin: 8
-                        anchors.right: clearSearch.left
-                        anchors.rightMargin: 6
-                        anchors.verticalCenter: parent.verticalCenter
-                        clip: true
-                        color: root.ink
-                        selectionColor: root.spectralDim
-                        selectedTextColor: root.ink
-                        font.family: root.sansFamily
-                        font.pixelSize: 13
-                        text: root.query
-                        onTextChanged: root.query = text
-                        Keys.onEscapePressed: {
-                            if (root.deepSearch)
-                                root.endDeepSearch()
-                            else
-                                root.query = ""
-                        }
-                        Keys.onReturnPressed: root.beginDeepSearch()
-                        Keys.onEnterPressed: root.beginDeepSearch()
-
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            visible: searchInput.text.length === 0
-                            text: "search"
-                            color: root.inkGhost
-                            font.family: root.sansFamily
-                            font.pixelSize: 12
-                        }
-                    }
-
-                    IconAction {
-                        id: clearSearch
-                        anchors.right: parent.right
-                        anchors.rightMargin: 3
-                        anchors.verticalCenter: parent.verticalCenter
-                        visible: root.query.length > 0
-                        implicitWidth: 24
-                        implicitHeight: 24
-                        glyph: "\u2715"
-                        hint: "Clear search"
-                        onActivated: {
-                            root.endDeepSearch()
-                            root.query = ""
-                        }
-                    }
-                }
-
-                IconAction {
-                    id: headerReload
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    implicitWidth: root.controlHeight
-                    implicitHeight: root.controlHeight
-                    glyph: "\u27f3"
-                    hint: "Refresh"
-                    onActivated: root.bridge.refresh()
-                }
-            }
-
-            // ---- Folder bar: the name, what is in here, how to look at it ----
-            Item {
-                id: folderBar
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: header.bottom
-                anchors.leftMargin: 16
-                anchors.rightMargin: 16
-                anchors.topMargin: 12
-                height: root.bandHeight
-
-                // The name sits on a tab that runs into the pane below it, so
-                // the folder reads as the label of what is being shown.
-                Item {
-                    id: folderTab
-                    anchors.left: parent.left
-                    anchors.bottom: parent.bottom
-                    width: Math.min(folderName.implicitWidth + 34, parent.width * 0.42)
-                    height: parent.height
-
-                    Shape {
-                        anchors.fill: parent
-                        preferredRendererType: Shape.CurveRenderer
-
-                        ShapePath {
-                            fillColor: root.raised
-                            strokeColor: root.line
-                            strokeWidth: 1
-                            // Square at the top-left, cut away at the
-                            // bottom-right so the tab leans into the pane.
-                            startX: 1; startY: 1
-                            PathLine { x: folderTab.width - 1; y: 1 }
-                            PathLine { x: folderTab.width - 1; y: folderTab.height - 15 }
-                            PathLine { x: folderTab.width - 15; y: folderTab.height - 1 }
-                            PathLine { x: 1; y: folderTab.height - 1 }
-                            PathLine { x: 1; y: 1 }
-                        }
-                    }
-
-                    Text {
-                        id: folderName
-                        anchors.left: parent.left
-                        anchors.leftMargin: 16
-                        anchors.right: parent.right
-                        anchors.rightMargin: 18
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.verticalCenterOffset: -3
-                        text: root.recentOpen
-                              ? "Recent"
-                              : root.trashOpen
-                              ? "Trash"
-                              : root.leafName(root.bridge.currentPath)
-                        elide: Text.ElideMiddle
-                        color: root.ink
-                        font.family: root.sansFamily
-                        font.pixelSize: 19
-                        font.weight: Font.DemiBold
-                    }
-                }
-
-                // What this folder is made of, beside its name.
-                Rectangle {
-                    id: mixPanel
-                    anchors.left: folderTab.right
-                    anchors.leftMargin: 14
-                    anchors.bottom: parent.bottom
-                    // Bounded, not stretched. Given the whole gap it grew to a
-                    // thousand pixels of bar for five numbers, which is what
-                    // made the top of the window look lopsided.
-                    width: Math.max(0, Math.min(440, parent.width - folderTab.width
-                                                     - viewControls.width - 40))
-                    height: parent.height
-                    radius: 9
-                    color: root.inset
-                    border.width: 1
-                    border.color: root.line
-                    visible: width > 180
-
-                    Column {
-                        id: mixColumn
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.margins: 10
-                        spacing: 6
-
-                        Item {
-                            width: parent.width
-                            height: 11
-
-                            Overline {
-                                anchors.left: parent.left
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: "THIS FOLDER"
-                            }
-
-                            Mono {
-                                anchors.right: parent.right
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: root.compositionTotal + " items"
-                                font.pixelSize: 10
-                            }
-                        }
-
-                        Row {
-                            width: parent.width
-                            height: 5
-                            spacing: 2
-
-                            Repeater {
-                                model: root.composition
-
-                                delegate: Rectangle {
-                                    id: mixSegment
-                                    required property var modelData
-                                    readonly property real share: root.compositionTotal > 0
-                                                                  ? mixSegment.modelData.count / root.compositionTotal
-                                                                  : 0
-                                    visible: mixSegment.modelData.count > 0
-                                    width: Math.max(0, (mixColumn.width
-                                                        - 2 * Math.max(0, root.compositionShown - 1))
-                                                       * mixSegment.share)
-                                    height: 5
-                                    radius: 3
-                                    color: mixSegment.modelData.shade
-                                }
-                            }
-
-                            Rectangle {
-                                visible: root.compositionTotal === 0
-                                width: mixColumn.width
-                                height: 5
-                                radius: 3
-                                color: root.raisedHigh
-                            }
-                        }
-
-                        Row {
-                            width: parent.width
-                            spacing: 10
-                            clip: true
-
-                            Repeater {
-                                model: root.composition
-
-                                delegate: Row {
-                                    id: mixLegend
-                                    required property var modelData
-                                    visible: mixLegend.modelData.count > 0
-                                    spacing: 5
-
-                                    Rectangle {
                                         anchors.verticalCenter: parent.verticalCenter
-                                        width: 5
-                                        height: 5
-                                        radius: 3
-                                        color: mixLegend.modelData.shade
-                                    }
-
-                                    Text {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        text: mixLegend.modelData.label
-                                        color: root.inkFaint
-                                        font.family: root.sansFamily
-                                        font.pixelSize: 10
-                                    }
-
-                                    Mono {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        text: mixLegend.modelData.count
-                                        color: root.inkGhost
-                                        font.pixelSize: 10
+                                        name: "chevron-right"
+                                        size: 14
+                                        shade: 0.4
                                     }
                                 }
                             }
@@ -3707,67 +3570,59 @@ ApplicationWindow {
                 }
 
                 Row {
-                    id: viewControls
+                    id: folderTools
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    spacing: 6
+                    spacing: 10
 
-                    IconAction {
-                        glyph: root.showHidden ? "\u25c9" : "\u25cc"
-                        active: root.showHidden
-                        hint: root.showHidden
-                              ? "Hide dotfiles  (Ctrl+H)"
-                              : "Show hidden files  (Ctrl+H)"
-                        onActivated: root.showHidden = !root.showHidden
-                    }
-
-                    IconAction {
-                        glyph: root.previewOpen ? "\u25e8" : "\u25e7"
-                        hint: root.previewOpen ? "Hide preview" : "Show preview"
-                        onActivated: root.previewOpen = !root.previewOpen
-                    }
-
-                    // List and grid share one segmented control.
+                    // How many entries are showing, in the reference's count chip.
                     Rectangle {
-                        width: 72
-                        height: 30
-                        radius: 8
-                        color: root.inset
-                        border.width: 1
-                        border.color: root.lineSoft
-
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: countRow.implicitWidth + 20
+                        height: Theme.controlHeight
+                        radius: Theme.radius
+                        color: Theme.surface
+                        visible: !root.trashOpen && !root.recentOpen
                         Row {
+                            id: countRow
                             anchors.centerIn: parent
-                            spacing: 2
-
-                            Repeater {
-                                model: [{ mode: "list", glyph: "\u2261" }, { mode: "grid", glyph: "\u25a6" }]
-                                delegate: Rectangle {
-                                    id: viewOption
-                                    required property var modelData
-                                    readonly property bool current: root.view === viewOption.modelData.mode
-                                    width: 32
-                                    height: 24
-                                    radius: 6
-                                    color: viewOption.current ? root.raisedHigh : "transparent"
-                                    border.width: viewOption.current ? 1 : 0
-                                    border.color: root.line
-
-                                    Glyph {
-                                        anchors.centerIn: parent
-                                        text: viewOption.modelData.glyph
-                                        color: viewOption.current ? root.ink : root.inkGhost
-                                        font.pixelSize: 13
-                                    }
-
-                                    MouseArea {
-                                        anchors.fill: parent
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: root.view = viewOption.modelData.mode
-                                    }
+                            spacing: 8
+                            Rectangle {
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: Math.max(20, countText.implicitWidth + 10)
+                                height: 20
+                                radius: 4
+                                color: Theme.controlHigh
+                                Text {
+                                    id: countText
+                                    anchors.centerIn: parent
+                                    text: root.rows.length
+                                    color: Theme.ink
+                                    font.family: Theme.family
+                                    font.pixelSize: 11
+                                    font.weight: Font.Medium
                                 }
                             }
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: root.selectedCount > 0 ? root.selectedCount + " held" : (root.showHidden ? "All, hidden too" : "Items")
+                                color: Theme.inkDim
+                                font.family: Theme.family
+                                font.pixelSize: 12
+                            }
                         }
+                    }
+
+                    Segmented {
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: !root.trashOpen && !root.recentOpen
+                        options: [
+                            { key: "list", icon: "list" },
+                            { key: "grid", icon: "layout-grid" },
+                            { key: "dense", icon: "grid-3x3" }
+                        ]
+                        current: root.view
+                        onPicked: function (key) { root.view = key }
                     }
                 }
             }
@@ -3952,7 +3807,7 @@ ApplicationWindow {
                     anchors.leftMargin: 14
                     anchors.rightMargin: 14
                     height: visible ? 30 : 0
-                    visible: root.view === "list" && !root.trashOpen && !root.recentOpen
+                    visible: root.view !== "grid" && !root.trashOpen && !root.recentOpen
 
                     SortHead {
                         anchors.left: parent.left
@@ -4519,7 +4374,7 @@ ApplicationWindow {
                     anchors.leftMargin: 14
                     anchors.rightMargin: 14
                     anchors.bottomMargin: 8
-                    visible: !root.deepSearch && !root.recentOpen && !root.trashOpen && root.view === "list" && root.rows.length > 0
+                    visible: !root.deepSearch && !root.recentOpen && !root.trashOpen && root.view !== "grid" && root.rows.length > 0
                     clip: true
                     model: root.rows
                     boundsBehavior: Flickable.StopAtBounds
