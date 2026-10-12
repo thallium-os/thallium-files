@@ -73,32 +73,32 @@ ApplicationWindow {
     property string providerQuery: ""
 
     // Re-read the imperative bridge whenever it stamps a new revision.
-    readonly property int revision: backendObject.modelRevision
+    readonly property int revision: root.bridge.modelRevision
     readonly property int selectedCount: {
         void root.revision
-        return backendObject.selectionCount()
+        return root.bridge.selectionCount()
     }
     readonly property int taskCount: {
         void root.revision
-        return backendObject.taskCount()
+        return root.bridge.taskCount()
     }
 
     // Directories first, then the chosen sort key, then the search filter.
     readonly property var rows: {
         void root.revision
         const needle = root.query.toLowerCase()
-        const total = backendObject.entryCount()
+        const total = root.bridge.entryCount()
         const kept = []
         for (let i = 0; i < total; ++i) {
-            const name = backendObject.entryName(i)
+            const name = root.bridge.entryName(i)
             if (!root.showHidden && root.isHidden(name))
                 continue
             if (needle.length === 0 || name.toLowerCase().indexOf(needle) >= 0) {
                 kept.push({
                     row: i,
                     name: name,
-                    folder: backendObject.entryIsDirectory(i),
-                    modified: backendObject.entryModified(i)
+                    folder: root.bridge.entryIsDirectory(i),
+                    modified: root.bridge.entryModified(i)
                 })
             }
         }
@@ -125,7 +125,7 @@ ApplicationWindow {
     readonly property int firstFileRow: {
         void root.revision
         for (let i = 0; i < root.rows.length; ++i) {
-            if (!backendObject.entryIsDirectory(root.rows[i]))
+            if (!root.bridge.entryIsDirectory(root.rows[i]))
                 return root.rows[i]
         }
         return -1
@@ -134,14 +134,14 @@ ApplicationWindow {
     readonly property var tasks: {
         void root.revision
         const out = []
-        const total = backendObject.taskCount()
+        const total = root.bridge.taskCount()
         for (let i = 0; i < total; ++i)
             out.push(i)
         return out
     }
 
     readonly property var crumbs: {
-        const path = backendObject.currentPath
+        const path = root.bridge.currentPath
         if (!path || path === "/")
             return [{ label: "/", path: "/" }]
         const parts = path.split("/").filter(function (part) { return part.length > 0 })
@@ -172,24 +172,24 @@ ApplicationWindow {
         // The GTK bookmarks, less any that name a place already listed.
         void root.revision
         const listed = out.map(function (place) { return root.placePath(place.folder) })
-        for (let b = 0; b < backendObject.bookmarkCount(); ++b) {
-            const path = backendObject.bookmarkPath(b)
+        for (let b = 0; b < root.bridge.bookmarkCount(); ++b) {
+            const path = root.bridge.bookmarkPath(b)
             if (listed.indexOf(path) < 0)
-                out.push({ label: backendObject.bookmarkLabel(b), folder: null, target: path, bookmark: b })
+                out.push({ label: root.bridge.bookmarkLabel(b), folder: null, target: path, bookmark: b })
         }
         // Whatever rclone is configured for, listed after the local places
         // because that is the order they are reached in.
         void root.configTick
-        const remotes = backendObject.remoteCount()
+        const remotes = root.bridge.remoteCount()
         for (let r = 0; r < remotes; ++r) {
             out.push({
-                label: backendObject.remoteName(r),
+                label: root.bridge.remoteName(r),
                 folder: null,
-                target: backendObject.remoteLocation(r),
+                target: root.bridge.remoteLocation(r),
                 remote: true
             })
         }
-        if (backendObject.remotesConfigurable())
+        if (root.bridge.remotesConfigurable())
             out.push({ label: "Add a remote", folder: null, add: true })
         return out
     }
@@ -201,7 +201,7 @@ ApplicationWindow {
         const buckets = { Folders: 0, Code: 0, Documents: 0, Media: 0, Archives: 0, Other: 0 }
         for (let i = 0; i < root.rows.length; ++i) {
             const at = root.rows[i]
-            buckets[root.kindOf(backendObject.entryName(at), backendObject.entryIsDirectory(at))] += 1
+            buckets[root.kindOf(root.bridge.entryName(at), root.bridge.entryIsDirectory(at))] += 1
         }
         return [
             { label: "Folders", count: buckets.Folders, shade: root.ink },
@@ -229,18 +229,18 @@ ApplicationWindow {
             })
         }
         const needle = root.folderQuery.toLowerCase()
-        const total = backendObject.entryCount()
+        const total = root.bridge.entryCount()
         for (let i = 0; i < total; ++i) {
-            if (!backendObject.entryIsDirectory(i))
+            if (!root.bridge.entryIsDirectory(i))
                 continue
-            const name = backendObject.entryName(i)
+            const name = root.bridge.entryName(i)
             if (!root.showHidden && root.isHidden(name))
                 continue
             if (needle.length > 0 && name.toLowerCase().indexOf(needle) < 0)
                 continue
             out.push({
                 label: name,
-                path: backendObject.entryPath(i),
+                path: root.bridge.entryPath(i),
                 depth: chain.length,
                 current: false,
                 badge: ""
@@ -274,7 +274,7 @@ ApplicationWindow {
     minimumHeight: 640
     visible: true
     color: canvas
-    title: leafName(backendObject.currentPath) + " — Thallium Files"
+    title: leafName(root.bridge.currentPath) + " — Thallium Files"
 
     function leafName(path) {
         if (!path || path === "/")
@@ -288,10 +288,10 @@ ApplicationWindow {
         // Remotes and the "add" entry carry no folder; they are not paths under
         // home and must not be resolved as if they were.
         if (!folder)
-            return folder === "" ? backendObject.homePath : ""
+            return folder === "" ? root.bridge.homePath : ""
         if (folder === "/")
             return "/"
-        return backendObject.homePath + "/" + folder
+        return root.bridge.homePath + "/" + folder
     }
 
     // Bytes as a disk is spoken about: three significant figures, no more.
@@ -313,7 +313,7 @@ ApplicationWindow {
         root.endDeepSearch()
         root.trashOpen = false
         root.recentOpen = true
-        backendObject.refreshRecents()
+        root.bridge.refreshRecents()
     }
 
     // The trash, shown in place of a directory. Its selection is its own:
@@ -326,7 +326,7 @@ ApplicationWindow {
         root.recentOpen = false
         root.trashOpen = true
         root.trashPicked = []
-        backendObject.refreshTrash()
+        root.bridge.refreshTrash()
     }
 
     function pickTrash(row, extend) {
@@ -459,7 +459,7 @@ ApplicationWindow {
             let rows = []
             for (let at = 0; at < marked.length; at++)
                 rows.push(Number(marked[at]))
-            backendObject.selectRows(rows)
+            root.bridge.selectRows(rows)
         }
         root.sweepMark = ({})
         root.sweepKey = ""
@@ -507,11 +507,11 @@ ApplicationWindow {
     function pick(row, extend) {
         root.focusRow = row
         if (extend) {
-            backendObject.toggleSelection(row)
+            root.bridge.toggleSelection(row)
             return
         }
-        const held = backendObject.entrySelected(row) && root.selectedCount === 1
-        backendObject.selectRows(held ? [] : [row])
+        const held = root.bridge.entrySelected(row) && root.selectedCount === 1
+        root.bridge.selectRows(held ? [] : [row])
     }
 
     function applySort(key) {
@@ -528,8 +528,67 @@ ApplicationWindow {
         onActivated: root.showHidden = !root.showHidden
     }
 
+    // ---- Tabs ----
+    // Each tab is a bridge of its own: its own folder, history, selection and
+    // watcher. Everything on screen talks to the current one through
+    // `root.bridge`, so switching tabs is swapping that one property.
+    property BackendBridge bridge: firstBridge
+    property var tabs: [firstBridge]
+    property int currentTab: 0
+
+    Component {
+        id: bridgeFactory
+        BackendBridge {}
+    }
+
+    function newTab(path) {
+        const tab = bridgeFactory.createObject(root)
+        if (path.length > 0)
+            tab.navigate(path)
+        root.tabs = root.tabs.concat([tab])
+        root.switchTab(root.tabs.length - 1)
+    }
+
+    function closeTab(index) {
+        if (root.tabs.length <= 1)
+            return
+        const closing = root.tabs[index]
+        const kept = root.tabs.filter(function (tab, at) { return at !== index })
+        const next = Math.min(index < root.currentTab ? root.currentTab - 1 : root.currentTab, kept.length - 1)
+        root.tabs = kept
+        root.switchTab(next)
+        if (closing !== firstBridge)
+            closing.destroy()
+    }
+
+    function switchTab(index) {
+        if (index < 0 || index >= root.tabs.length)
+            return
+        root.endDeepSearch()
+        root.query = ""
+        root.focusRow = -1
+        root.anchorRow = -1
+        root.recentOpen = false
+        root.trashOpen = false
+        root.currentTab = index
+        root.bridge = root.tabs[index]
+    }
+
+    Shortcut { sequences: ["Ctrl+T"]; enabled: !root.typing; onActivated: root.newTab(root.bridge.currentPath) }
+    Shortcut { sequences: ["Ctrl+W"]; enabled: !root.typing; onActivated: root.closeTab(root.currentTab) }
+    Shortcut {
+        sequences: ["Ctrl+Tab", "Ctrl+PgDown"]
+        enabled: root.tabs.length > 1
+        onActivated: root.switchTab((root.currentTab + 1) % root.tabs.length)
+    }
+    Shortcut {
+        sequences: ["Ctrl+Shift+Tab", "Ctrl+PgUp"]
+        enabled: root.tabs.length > 1
+        onActivated: root.switchTab((root.currentTab + root.tabs.length - 1) % root.tabs.length)
+    }
+
     BackendBridge {
-        id: backendObject
+        id: firstBridge
         // `thallium-file-manager PATH` opens PATH, or the folder holding it.
         Component.onCompleted: {
             const args = Qt.application.arguments
@@ -544,13 +603,13 @@ ApplicationWindow {
     property bool deepSearch: false
     readonly property int searchHits: {
         void root.revision
-        return backendObject.searchCount()
+        return root.bridge.searchCount()
     }
 
     Timer {
         id: searchDebounce
         interval: 180
-        onTriggered: backendObject.startSearch(root.query, root.showHidden)
+        onTriggered: root.bridge.startSearch(root.query, root.showHidden)
     }
 
     function beginDeepSearch() {
@@ -563,7 +622,7 @@ ApplicationWindow {
     function endDeepSearch() {
         root.deepSearch = false
         searchDebounce.stop()
-        backendObject.cancelSearch()
+        root.bridge.cancelSearch()
     }
 
     onQueryChanged: {
@@ -588,7 +647,7 @@ ApplicationWindow {
     }
 
     function selectAll() {
-        backendObject.selectRows(root.rows)
+        root.bridge.selectRows(root.rows)
     }
 
     // A menu item drawn like everything else here; the platform style is light
@@ -629,22 +688,28 @@ ApplicationWindow {
         id: entryMenu
         property int row: -1
         onAboutToShow: {
-            backendObject.offerApps(entryMenu.row)
+            root.bridge.offerApps(entryMenu.row)
             root.offerTick++
         }
         readonly property bool folder: {
             void root.revision
-            return entryMenu.row >= 0 && backendObject.entryIsDirectory(entryMenu.row)
+            return entryMenu.row >= 0 && root.bridge.entryIsDirectory(entryMenu.row)
         }
         readonly property int held: root.selectedCount
 
         MenuLine {
+            text: "Open in new tab"
+            visible: entryMenu.folder
+            height: visible ? implicitHeight : 0
+            onTriggered: root.newTab(root.bridge.entryPath(entryMenu.row))
+        }
+        MenuLine {
             text: entryMenu.folder ? "Open" : "Open with default application"
             onTriggered: {
                 if (entryMenu.folder)
-                    backendObject.navigateRow(entryMenu.row)
+                    root.bridge.navigateRow(entryMenu.row)
                 else
-                    backendObject.openEntry(entryMenu.row)
+                    root.bridge.openEntry(entryMenu.row)
             }
         }
         MenuSurface {
@@ -653,16 +718,16 @@ ApplicationWindow {
             Repeater {
                 model: {
                     void root.offerTick
-                    return backendObject.offeredCount()
+                    return root.bridge.offeredCount()
                 }
                 delegate: MenuLine {
                     required property int index
                     text: {
                         void root.offerTick
-                        return backendObject.offeredName(index)
-                               + (backendObject.offeredIsDefault(index) ? "  (default)" : "")
+                        return root.bridge.offeredName(index)
+                               + (root.bridge.offeredIsDefault(index) ? "  (default)" : "")
                     }
-                    onTriggered: backendObject.launchOffered(index, false)
+                    onTriggered: root.bridge.launchOffered(index, false)
                 }
             }
             MenuSeparator {
@@ -672,13 +737,13 @@ ApplicationWindow {
         }
         MenuLine {
             text: "Copy path"
-            onTriggered: root.copyToClipboard(backendObject.entryPath(entryMenu.row))
+            onTriggered: root.copyToClipboard(root.bridge.entryPath(entryMenu.row))
         }
         MenuSeparator {
             contentItem: Rectangle { implicitHeight: 1; color: root.line }
         }
-        MenuLine { text: "Cut"; onTriggered: backendObject.offerSelected(true) }
-        MenuLine { text: "Copy"; onTriggered: backendObject.offerSelected(false) }
+        MenuLine { text: "Cut"; onTriggered: root.bridge.offerSelected(true) }
+        MenuLine { text: "Copy"; onTriggered: root.bridge.offerSelected(false) }
         MenuSeparator {
             contentItem: Rectangle { implicitHeight: 1; color: root.line }
         }
@@ -689,7 +754,7 @@ ApplicationWindow {
         }
         MenuLine {
             text: entryMenu.held > 1 ? "Make " + entryMenu.held + " links" : "Make link"
-            onTriggered: backendObject.linkSelected(backendObject.currentPath)
+            onTriggered: root.bridge.linkSelected(root.bridge.currentPath)
         }
         MenuSeparator {
             contentItem: Rectangle { implicitHeight: 1; color: root.line }
@@ -698,7 +763,7 @@ ApplicationWindow {
             text: "Add bookmark"
             visible: entryMenu.folder && entryMenu.held <= 1
             height: visible ? implicitHeight : 0
-            onTriggered: backendObject.addBookmark(backendObject.entryPath(entryMenu.row))
+            onTriggered: root.bridge.addBookmark(root.bridge.entryPath(entryMenu.row))
         }
         MenuLine {
             text: "Properties…"
@@ -710,7 +775,7 @@ ApplicationWindow {
         }
         MenuLine {
             text: entryMenu.held > 1 ? "Move " + entryMenu.held + " to Trash" : "Move to Trash"
-            onTriggered: backendObject.trashSelected()
+            onTriggered: root.bridge.trashSelected()
         }
         MenuLine {
             text: entryMenu.held > 1 ? "Delete " + entryMenu.held + " permanently" : "Delete permanently"
@@ -722,11 +787,11 @@ ApplicationWindow {
     MenuSurface {
         id: groundMenu
         property bool pasteable: false
-        onAboutToShow: pasteable = backendObject.canPaste()
+        onAboutToShow: pasteable = root.bridge.canPaste()
         MenuLine {
             text: "Paste"
             enabled: groundMenu.pasteable
-            onTriggered: backendObject.pasteFiles()
+            onTriggered: root.bridge.pasteFiles()
         }
         MenuSeparator {
             contentItem: Rectangle { implicitHeight: 1; color: root.line }
@@ -741,20 +806,20 @@ ApplicationWindow {
                 id: templateList
                 model: {
                     void root.revision
-                    return backendObject.templateCount()
+                    return root.bridge.templateCount()
                 }
                 delegate: MenuLine {
                     required property int index
-                    text: backendObject.templateName(index)
-                    onTriggered: root.beginCreate("file", backendObject.templatePath(index))
+                    text: root.bridge.templateName(index)
+                    onTriggered: root.beginCreate("file", root.bridge.templatePath(index))
                 }
             }
         }
         MenuSeparator {
             contentItem: Rectangle { implicitHeight: 1; color: root.line }
         }
-        MenuLine { text: "Open terminal here"; onTriggered: backendObject.openTerminalHere() }
-        MenuLine { text: "Bookmark this folder"; onTriggered: backendObject.addBookmark(backendObject.currentPath) }
+        MenuLine { text: "Open terminal here"; onTriggered: root.bridge.openTerminalHere() }
+        MenuLine { text: "Bookmark this folder"; onTriggered: root.bridge.addBookmark(root.bridge.currentPath) }
         MenuSeparator {
             contentItem: Rectangle { implicitHeight: 1; color: root.line }
         }
@@ -766,7 +831,7 @@ ApplicationWindow {
         MenuSeparator {
             contentItem: Rectangle { implicitHeight: 1; color: root.line }
         }
-        MenuLine { text: "Refresh"; onTriggered: backendObject.refresh() }
+        MenuLine { text: "Refresh"; onTriggered: root.bridge.refresh() }
     }
 
     MenuSurface {
@@ -774,15 +839,15 @@ ApplicationWindow {
         MenuLine {
             text: "Restore"
             onTriggered: {
-                backendObject.restoreTrash(root.trashPicked)
+                root.bridge.restoreTrash(root.trashPicked)
                 root.trashPicked = []
             }
         }
         MenuLine {
             text: "Delete permanently"
-            enabled: !backendObject.trashBusy()
+            enabled: !root.bridge.trashBusy()
             onTriggered: {
-                backendObject.purgeTrash(root.trashPicked)
+                root.bridge.purgeTrash(root.trashPicked)
                 root.trashPicked = []
             }
         }
@@ -824,7 +889,7 @@ ApplicationWindow {
                 Button {
                     text: "Empty Trash"
                     onClicked: {
-                        backendObject.emptyTrash()
+                        root.bridge.emptyTrash()
                         root.trashPicked = []
                         emptyConfirm.close()
                     }
@@ -839,7 +904,7 @@ ApplicationWindow {
     function showProperties(row) {
         if (row < 0)
             return
-        backendObject.inspect(row)
+        root.bridge.inspect(row)
         root.propTick++
         propertiesSheet.open()
     }
@@ -867,12 +932,12 @@ ApplicationWindow {
         function text(field) {
             void root.propTick
             void root.revision
-            return backendObject.propText(field)
+            return root.bridge.propText(field)
         }
         function number(field) {
             void root.propTick
             void root.revision
-            return backendObject.propNumber(field)
+            return root.bridge.propNumber(field)
         }
         readonly property int mode: number("mode")
         readonly property bool owned: number("owned") === 1
@@ -969,7 +1034,7 @@ ApplicationWindow {
                                 visible: permCell.index > 0
                                 anchors.verticalCenter: parent.verticalCenter
                                 checked: (propertiesSheet.mode & permCell.bit) !== 0
-                                onToggled: backendObject.setMode(checked ? propertiesSheet.mode | permCell.bit
+                                onToggled: root.bridge.setMode(checked ? propertiesSheet.mode | permCell.bit
                                                                          : propertiesSheet.mode & ~permCell.bit)
                             }
                         }
@@ -1002,27 +1067,27 @@ ApplicationWindow {
                 namePrompt.row = bookmarkMenu.index
                 namePrompt.template = ""
                 namePrompt.open()
-                promptField.text = backendObject.bookmarkLabel(bookmarkMenu.index)
+                promptField.text = root.bridge.bookmarkLabel(bookmarkMenu.index)
                 promptField.selectAll()
             }
         }
         MenuLine {
             text: "Remove bookmark"
-            onTriggered: backendObject.removeBookmark(bookmarkMenu.index)
+            onTriggered: root.bridge.removeBookmark(bookmarkMenu.index)
         }
     }
 
     Shortcut {
         sequences: ["Ctrl+D"]
         enabled: !root.typing && !root.trashOpen && !root.recentOpen
-        onActivated: backendObject.addBookmark(backendObject.currentPath)
+        onActivated: root.bridge.addBookmark(root.bridge.currentPath)
     }
 
     // Bumped whenever the offered application list is re-read.
     property int offerTick: 0
 
     function pickApp() {
-        backendObject.offerAllApps()
+        root.bridge.offerAllApps()
         root.offerTick++
         appFilter.text = ""
         appDefault.checked = false
@@ -1051,13 +1116,13 @@ ApplicationWindow {
             void root.offerTick
             const needle = appFilter.text.toLowerCase()
             const out = []
-            for (let i = 0; i < backendObject.offeredCount(); i++)
-                if (backendObject.offeredName(i).toLowerCase().indexOf(needle) >= 0)
+            for (let i = 0; i < root.bridge.offeredCount(); i++)
+                if (root.bridge.offeredName(i).toLowerCase().indexOf(needle) >= 0)
                     out.push(i)
             return out
         }
         function choose(index) {
-            backendObject.launchOffered(index, appDefault.checked)
+            root.bridge.launchOffered(index, appDefault.checked)
             close()
         }
 
@@ -1111,7 +1176,7 @@ ApplicationWindow {
                         anchors.left: parent.left
                         anchors.leftMargin: 8
                         anchors.verticalCenter: parent.verticalCenter
-                        text: backendObject.offeredName(modelData)
+                        text: root.bridge.offeredName(modelData)
                         color: root.ink
                         font.family: root.sansFamily
                         font.pixelSize: 13
@@ -1125,7 +1190,7 @@ ApplicationWindow {
             }
             CheckBox {
                 id: appDefault
-                text: "Always use for " + backendObject.offeredType()
+                text: "Always use for " + root.bridge.offeredType()
             }
         }
     }
@@ -1140,9 +1205,9 @@ ApplicationWindow {
         namePrompt.row = row
         namePrompt.template = ""
         namePrompt.open()
-        promptField.text = backendObject.entryName(row)
+        promptField.text = root.bridge.entryName(row)
         const dot = promptField.text.lastIndexOf(".")
-        promptField.select(0, backendObject.entryIsDirectory(row) || dot <= 0 ? promptField.text.length : dot)
+        promptField.select(0, root.bridge.entryIsDirectory(row) || dot <= 0 ? promptField.text.length : dot)
     }
 
     function beginCreate(kind, template) {
@@ -1152,7 +1217,7 @@ ApplicationWindow {
         namePrompt.open()
         const base = kind === "folder" ? "New Folder"
             : template.length > 0 ? template.substring(template.lastIndexOf("/") + 1) : "Untitled"
-        promptField.text = backendObject.freeName(base)
+        promptField.text = root.bridge.freeName(base)
         const dot = promptField.text.lastIndexOf(".")
         promptField.select(0, kind === "folder" || dot <= 0 ? promptField.text.length : dot)
     }
@@ -1166,19 +1231,19 @@ ApplicationWindow {
         }
         root.trashOpen = false
         root.recentOpen = false
-        backendObject.reveal(target)
+        root.bridge.reveal(target)
     }
 
     function editPath() {
-        pathEditor.text = backendObject.currentPath
+        pathEditor.text = root.bridge.currentPath
         pathEditor.visible = true
         pathEditor.forceActiveFocus()
         pathEditor.selectAll()
     }
 
     function firstSelectedRow() {
-        for (let row = 0; row < backendObject.entryCount(); row++)
-            if (backendObject.entrySelected(row))
+        for (let row = 0; row < root.bridge.entryCount(); row++)
+            if (root.bridge.entrySelected(row))
                 return row
         return -1
     }
@@ -1207,13 +1272,13 @@ ApplicationWindow {
             if (name.length === 0)
                 return
             if (mode === "rename")
-                backendObject.renameRow(row, name)
+                root.bridge.renameRow(row, name)
             else if (mode === "bookmark")
-                backendObject.renameBookmark(row, name)
+                root.bridge.renameBookmark(row, name)
             else if (mode === "folder")
-                backendObject.createFolder(name)
+                root.bridge.createFolder(name)
             else
-                backendObject.createFile(name, template)
+                root.bridge.createFile(name, template)
             close()
         }
 
@@ -1299,9 +1364,9 @@ ApplicationWindow {
         if (extend) {
             const from = root.displayIndex(root.anchorRow)
             const lo = Math.min(from, index), hi = Math.max(from, index)
-            backendObject.selectRows(root.rows.slice(lo, hi + 1))
+            root.bridge.selectRows(root.rows.slice(lo, hi + 1))
         } else {
-            backendObject.selectRows([row])
+            root.bridge.selectRows([row])
         }
         if (root.view === "grid")
             gridBrowser.positionViewAtIndex(index, GridView.Contain)
@@ -1322,16 +1387,16 @@ ApplicationWindow {
         if (root.selectedCount <= 1) {
             if (row < 0)
                 return
-            if (backendObject.entryIsDirectory(row))
-                backendObject.navigateRow(row)
+            if (root.bridge.entryIsDirectory(row))
+                root.bridge.navigateRow(row)
             else
-                backendObject.openEntry(row)
+                root.bridge.openEntry(row)
             return
         }
         for (let i = 0; i < root.rows.length; i++) {
             const each = root.rows[i]
-            if (backendObject.entrySelected(each) && !backendObject.entryIsDirectory(each))
-                backendObject.openEntry(each)
+            if (root.bridge.entrySelected(each) && !root.bridge.entryIsDirectory(each))
+                root.bridge.openEntry(each)
         }
     }
 
@@ -1348,7 +1413,7 @@ ApplicationWindow {
         root.typed += text.toLowerCase()
         typeAhead.restart()
         for (let i = 0; i < root.rows.length; i++)
-            if (backendObject.entryName(root.rows[i]).toLowerCase().startsWith(root.typed)) {
+            if (root.bridge.entryName(root.rows[i]).toLowerCase().startsWith(root.typed)) {
                 root.focusOn(i, false)
                 return
             }
@@ -1388,22 +1453,22 @@ ApplicationWindow {
     Shortcut { sequences: ["PgDown"]; enabled: !root.typing; onActivated: root.moveFocus(root.pageSize(), false) }
     Shortcut { sequences: ["PgUp"]; enabled: !root.typing; onActivated: root.moveFocus(-root.pageSize(), false) }
     Shortcut { sequences: ["Return", "Enter"]; enabled: !root.typing && root.query.length === 0; onActivated: root.activateSelection() }
-    Shortcut { sequences: ["Backspace", "Alt+Up"]; enabled: !root.typing; onActivated: backendObject.up() }
-    Shortcut { sequences: ["Alt+Left", "Back"]; enabled: !root.typing; onActivated: backendObject.back() }
-    Shortcut { sequences: ["Alt+Right", "Forward"]; enabled: !root.typing; onActivated: backendObject.forward() }
-    Shortcut { sequences: ["F5", "Ctrl+R"]; enabled: !root.typing; onActivated: backendObject.refresh() }
+    Shortcut { sequences: ["Backspace", "Alt+Up"]; enabled: !root.typing; onActivated: root.bridge.up() }
+    Shortcut { sequences: ["Alt+Left", "Back"]; enabled: !root.typing; onActivated: root.bridge.back() }
+    Shortcut { sequences: ["Alt+Right", "Forward"]; enabled: !root.typing; onActivated: root.bridge.forward() }
+    Shortcut { sequences: ["F5", "Ctrl+R"]; enabled: !root.typing; onActivated: root.bridge.refresh() }
     Shortcut { sequences: [StandardKey.SelectAll]; enabled: !root.typing; onActivated: root.selectAll() }
-    Shortcut { sequences: ["Ctrl+Space"]; enabled: !root.typing && root.focusRow >= 0; onActivated: backendObject.toggleSelection(root.focusRow) }
+    Shortcut { sequences: ["Ctrl+Space"]; enabled: !root.typing && root.focusRow >= 0; onActivated: root.bridge.toggleSelection(root.focusRow) }
     Shortcut {
         sequences: ["Escape"]
         enabled: !root.typing
         onActivated: {
-            backendObject.clearSelection()
+            root.bridge.clearSelection()
             root.typed = ""
             root.release()
         }
     }
-    Shortcut { sequences: ["Delete"]; enabled: !root.typing && root.selectedCount > 0; onActivated: backendObject.trashSelected() }
+    Shortcut { sequences: ["Delete"]; enabled: !root.typing && root.selectedCount > 0; onActivated: root.bridge.trashSelected() }
     Shortcut { sequences: ["Shift+Delete"]; enabled: !root.typing && root.selectedCount > 0; onActivated: deleteConfirm.open() }
     Shortcut { sequences: ["Ctrl+L", "F6"]; enabled: !root.typing; onActivated: root.editPath() }
     Shortcut { sequences: [StandardKey.Find]; enabled: !root.typing; onActivated: searchInput.forceActiveFocus() }
@@ -1433,7 +1498,7 @@ ApplicationWindow {
                 width: parent.width
                 wrapMode: Text.Wrap
                 text: root.selectedCount === 1
-                    ? "Permanently delete “" + backendObject.entryName(root.firstSelectedRow()) + "”?"
+                    ? "Permanently delete “" + root.bridge.entryName(root.firstSelectedRow()) + "”?"
                     : "Permanently delete " + root.selectedCount + " items?"
                 color: root.ink
                 font.family: root.sansFamily
@@ -1457,7 +1522,7 @@ ApplicationWindow {
                     id: deleteYes
                     text: "Delete"
                     onClicked: {
-                        backendObject.deleteSelected()
+                        root.bridge.deleteSelected()
                         deleteConfirm.close()
                     }
                     Keys.onReturnPressed: clicked()
@@ -1474,19 +1539,19 @@ ApplicationWindow {
     Shortcut {
         sequences: ["Ctrl+X"]
         enabled: !root.typing
-        onActivated: backendObject.offerSelected(true)
+        onActivated: root.bridge.offerSelected(true)
     }
 
     Shortcut {
         sequences: ["Ctrl+C", "Ctrl+Insert"]
         enabled: !root.typing
-        onActivated: backendObject.offerSelected(false)
+        onActivated: root.bridge.offerSelected(false)
     }
 
     Shortcut {
         sequences: ["Ctrl+V", "Shift+Insert"]
         enabled: !root.typing
-        onActivated: backendObject.pasteFiles()
+        onActivated: root.bridge.pasteFiles()
     }
 
     Shortcut {
@@ -1498,7 +1563,7 @@ ApplicationWindow {
     // Opening the menu for a row that is not part of the selection makes that
     // row the selection first, so the actions always name what is on screen.
     function openEntryMenu(row) {
-        if (!backendObject.entrySelected(row))
+        if (!root.bridge.entrySelected(row))
             root.pick(row, false)
         entryMenu.row = row
         entryMenu.popup()
@@ -1509,22 +1574,26 @@ ApplicationWindow {
         interval: 100
         repeat: true
         running: true
-        onTriggered: backendObject.poll()
+        // Background tabs are polled too, so their queues keep draining.
+        onTriggered: {
+            for (let i = 0; i < root.tabs.length; i++)
+                root.tabs[i].poll()
+        }
     }
 
     // Remember what home holds, so the places list stays truthful.
     Connections {
-        target: backendObject
+        target: root.bridge
         function onCurrentPathChanged() {
             root.focusRow = -1
             root.trashOpen = false
-            if (backendObject.currentPath !== backendObject.homePath)
+            if (root.bridge.currentPath !== root.bridge.homePath)
                 return
             const found = []
-            const total = backendObject.entryCount()
+            const total = root.bridge.entryCount()
             for (let i = 0; i < total; ++i) {
-                if (backendObject.entryIsDirectory(i))
-                    found.push(backendObject.entryName(i))
+                if (root.bridge.entryIsDirectory(i))
+                    found.push(root.bridge.entryName(i))
             }
             root.homeFolders = found
         }
@@ -1559,12 +1628,12 @@ ApplicationWindow {
 
         readonly property string iconSource: {
             void root.revision
-            return entryIcon.entry >= 0 ? backendObject.entryIcon(entryIcon.entry) : ""
+            return entryIcon.entry >= 0 ? root.bridge.entryIcon(entryIcon.entry) : ""
         }
         readonly property string thumbnailSource: {
             void root.revision
             return entryIcon.allowThumbnail && entryIcon.entry >= 0
-                   ? backendObject.entryThumbnail(entryIcon.entry)
+                   ? root.bridge.entryThumbnail(entryIcon.entry)
                    : ""
         }
         readonly property bool symbolic: entryIcon.iconSource.indexOf("symbolic") >= 0
@@ -2168,7 +2237,7 @@ ApplicationWindow {
                     anchors.right: headActions.left
                     anchors.rightMargin: 8
                     anchors.verticalCenter: parent.verticalCenter
-                    text: root.leafName(backendObject.currentPath)
+                    text: root.leafName(root.bridge.currentPath)
                     elide: Text.ElideMiddle
                     color: root.ink
                     font.family: root.sansFamily
@@ -2185,7 +2254,7 @@ ApplicationWindow {
                     IconAction {
                         glyph: "⟳"
                         hint: "Refresh"
-                        onActivated: backendObject.refresh()
+                        onActivated: root.bridge.refresh()
                     }
 
                     IconAction {
@@ -2311,7 +2380,7 @@ ApplicationWindow {
                     badge: treeEntry.modelData.badge
                     depth: treeEntry.modelData.depth
                     current: treeEntry.modelData.current
-                    onActivated: backendObject.navigate(treeEntry.modelData.path)
+                    onActivated: root.bridge.navigate(treeEntry.modelData.path)
                 }
             }
 
@@ -2357,7 +2426,7 @@ ApplicationWindow {
                             : placeEntry.trash
                             ? root.trashOpen
                             : (!placeEntry.adds && !root.recentOpen && !root.trashOpen
-                               && backendObject.currentPath === placeEntry.target)
+                               && root.bridge.currentPath === placeEntry.target)
                     onMenuRequested: {
                         if (!placeEntry.marked)
                             return
@@ -2376,7 +2445,7 @@ ApplicationWindow {
                         } else {
                             root.recentOpen = false
                             root.trashOpen = false
-                            backendObject.navigate(placeEntry.target)
+                            root.bridge.navigate(placeEntry.target)
                         }
                     }
                 }
@@ -2418,11 +2487,11 @@ ApplicationWindow {
                     // rather than nothing.
                     readonly property real share: {
                         void root.revision
-                        return backendObject.folderShare()
+                        return root.bridge.folderShare()
                     }
                     readonly property bool counting: {
                         void root.revision
-                        return backendObject.folderMeasuring()
+                        return root.bridge.folderMeasuring()
                     }
 
                     Shape {
@@ -2466,7 +2535,7 @@ ApplicationWindow {
                         anchors.centerIn: parent
                         text: {
                             void root.revision
-                            return root.readableSize(backendObject.folderBytes())
+                            return root.readableSize(root.bridge.folderBytes())
                         }
                         color: ring.counting ? root.inkFaint : root.inkMuted
                         font.pixelSize: 10
@@ -2484,18 +2553,18 @@ ApplicationWindow {
                     Repeater {
                         model: {
                             void root.revision
-                            if (!backendObject.storageKnown())
+                            if (!root.bridge.storageKnown())
                                 return []
                             return [
                                 {
                                     label: "This folder",
-                                    value: root.readableSize(backendObject.folderBytes()),
+                                    value: root.readableSize(root.bridge.folderBytes()),
                                     shade: root.spectral
                                 },
                                 {
                                     label: "Disk free",
-                                    value: root.readableSize(backendObject.storageTotal()
-                                                             - backendObject.storageUsed()),
+                                    value: root.readableSize(root.bridge.storageTotal()
+                                                             - root.bridge.storageUsed()),
                                     shade: root.raisedHigh
                                 }
                             ]
@@ -2534,11 +2603,11 @@ ApplicationWindow {
                     Text {
                         visible: {
                             void root.revision
-                            return backendObject.storageKnown()
+                            return root.bridge.storageKnown()
                         }
                         text: {
                             void root.revision
-                            const files = backendObject.folderFiles()
+                            const files = root.bridge.folderFiles()
                             return ring.counting
                                    ? "counting… " + files + " files"
                                    : files + " files in all"
@@ -2551,7 +2620,7 @@ ApplicationWindow {
                     Text {
                         visible: {
                             void root.revision
-                            return !backendObject.storageKnown()
+                            return !root.bridge.storageKnown()
                         }
                         text: "Not this machine's disk"
                         color: root.inkGhost
@@ -2634,6 +2703,69 @@ ApplicationWindow {
                     }
                 }
 
+                // One chip per tab, shown once there is more than one.
+                Row {
+                    id: tabStrip
+                    anchors.left: headerNav.right
+                    anchors.leftMargin: root.tabs.length > 1 ? 10 : 0
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 4
+                    Repeater {
+                        model: root.tabs.length > 1 ? root.tabs : []
+                        delegate: Rectangle {
+                            id: tabChip
+                            required property var modelData
+                            required property int index
+                            readonly property bool current: tabChip.index === root.currentTab
+                            width: Math.min(150, tabLabel.implicitWidth + 34)
+                            height: root.controlHeight
+                            radius: 9
+                            color: tabChip.current ? root.raisedHigh : root.inset
+                            border.width: 1
+                            border.color: tabChip.current ? root.lineStrong : root.line
+                            Text {
+                                id: tabLabel
+                                anchors.left: parent.left
+                                anchors.leftMargin: 10
+                                anchors.right: tabClose.left
+                                anchors.rightMargin: 4
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: root.leafName(tabChip.modelData.currentPath)
+                                elide: Text.ElideMiddle
+                                color: tabChip.current ? root.ink : root.inkMuted
+                                font.family: root.sansFamily
+                                font.pixelSize: 12
+                            }
+                            MouseArea {
+                                anchors.fill: parent
+                                acceptedButtons: Qt.LeftButton | Qt.MiddleButton
+                                onClicked: function (mouse) {
+                                    if (mouse.button === Qt.MiddleButton)
+                                        root.closeTab(tabChip.index)
+                                    else
+                                        root.switchTab(tabChip.index)
+                                }
+                            }
+                            Text {
+                                id: tabClose
+                                anchors.right: parent.right
+                                anchors.rightMargin: 8
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: "×"
+                                color: tabCloseMouse.containsMouse ? root.ink : root.inkGhost
+                                font.pixelSize: 14
+                                MouseArea {
+                                    id: tabCloseMouse
+                                    anchors.fill: parent
+                                    anchors.margins: -4
+                                    hoverEnabled: true
+                                    onClicked: root.closeTab(tabChip.index)
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Row {
                     id: headerNav
                     anchors.left: brand.right
@@ -2646,7 +2778,7 @@ ApplicationWindow {
                         implicitHeight: root.controlHeight
                         glyph: "←"
                         hint: "Back"
-                        onActivated: backendObject.back()
+                        onActivated: root.bridge.back()
                     }
 
                     IconAction {
@@ -2654,7 +2786,7 @@ ApplicationWindow {
                         implicitHeight: root.controlHeight
                         glyph: "→"
                         hint: "Forward"
-                        onActivated: backendObject.forward()
+                        onActivated: root.bridge.forward()
                     }
 
                     IconAction {
@@ -2662,14 +2794,14 @@ ApplicationWindow {
                         implicitHeight: root.controlHeight
                         glyph: "↑"
                         hint: "Parent folder"
-                        onActivated: backendObject.up()
+                        onActivated: root.bridge.up()
                     }
                 }
 
                 // The path, given the width the mockup gives it.
                 Rectangle {
                     id: pathBar
-                    anchors.left: headerNav.right
+                    anchors.left: tabStrip.right
                     anchors.leftMargin: 10
                     anchors.right: headerSearch.left
                     anchors.rightMargin: 10
@@ -2702,7 +2834,7 @@ ApplicationWindow {
                         function go() {
                             let target = text.trim()
                             if (target === "~" || target.startsWith("~/"))
-                                target = backendObject.homePath + target.substring(1)
+                                target = root.bridge.homePath + target.substring(1)
                             if (target.length > 0)
                                 root.openTarget(target)
                             finish()
@@ -2753,7 +2885,7 @@ ApplicationWindow {
                                             anchors.fill: parent
                                             hoverEnabled: true
                                             cursorShape: Qt.PointingHandCursor
-                                            onClicked: backendObject.navigate(crumb.modelData.path)
+                                            onClicked: root.bridge.navigate(crumb.modelData.path)
                                         }
                                     }
 
@@ -2851,7 +2983,7 @@ ApplicationWindow {
                     implicitHeight: root.controlHeight
                     glyph: "\u27f3"
                     hint: "Refresh"
-                    onActivated: backendObject.refresh()
+                    onActivated: root.bridge.refresh()
                 }
             }
 
@@ -2906,7 +3038,7 @@ ApplicationWindow {
                               ? "Recent"
                               : root.trashOpen
                               ? "Trash"
-                              : root.leafName(backendObject.currentPath)
+                              : root.leafName(root.bridge.currentPath)
                         elide: Text.ElideMiddle
                         color: root.ink
                         font.family: root.sansFamily
@@ -3176,7 +3308,7 @@ ApplicationWindow {
                             glyph: "✕"
                             hint: "Clear selection"
                             anchors.verticalCenter: parent.verticalCenter
-                            onActivated: backendObject.clearSelection()
+                            onActivated: root.bridge.clearSelection()
                         }
 
                         Text {
@@ -3200,9 +3332,9 @@ ApplicationWindow {
                         TextAction {
                             label: "Open"
                             visible: root.selectedCount === 1 && root.focusRow >= 0
-                                     && backendObject.entryIsDirectory(root.focusRow)
+                                     && root.bridge.entryIsDirectory(root.focusRow)
                             anchors.verticalCenter: parent.verticalCenter
-                            onActivated: backendObject.navigateRow(root.focusRow)
+                            onActivated: root.bridge.navigateRow(root.focusRow)
                         }
 
                         // Copy and move need somewhere to land; the field is
@@ -3239,27 +3371,27 @@ ApplicationWindow {
                                 selectedTextColor: root.ink
                                 font.family: root.monoFamily
                                 font.pixelSize: 11
-                                text: backendObject.currentPath
+                                text: root.bridge.currentPath
                             }
                         }
 
                         TextAction {
                             label: "Copy"
                             anchors.verticalCenter: parent.verticalCenter
-                            onActivated: backendObject.copySelected(destinationInput.text)
+                            onActivated: root.bridge.copySelected(destinationInput.text)
                         }
 
                         TextAction {
                             label: "Move"
                             anchors.verticalCenter: parent.verticalCenter
-                            onActivated: backendObject.moveSelected(destinationInput.text)
+                            onActivated: root.bridge.moveSelected(destinationInput.text)
                         }
 
                         TextAction {
                             label: "Trash"
                             danger: true
                             anchors.verticalCenter: parent.verticalCenter
-                            onActivated: backendObject.trashSelected()
+                            onActivated: root.bridge.trashSelected()
                         }
 
                         TextAction {
@@ -3336,7 +3468,7 @@ ApplicationWindow {
                 Column {
                     anchors.centerIn: parent
                     spacing: 10
-                    visible: !root.deepSearch && !root.recentOpen && !root.trashOpen && backendObject.loading && root.rows.length === 0
+                    visible: !root.deepSearch && !root.recentOpen && !root.trashOpen && root.bridge.loading && root.rows.length === 0
 
                     Item {
                         id: spinnerTrack
@@ -3372,7 +3504,7 @@ ApplicationWindow {
 
                             RotationAnimator {
                                 target: spinnerArm
-                                running: backendObject.loading
+                                running: root.bridge.loading
                                 from: 0
                                 to: 360
                                 duration: 900
@@ -3394,7 +3526,7 @@ ApplicationWindow {
                 Column {
                     anchors.centerIn: parent
                     spacing: 6
-                    visible: !root.deepSearch && !root.recentOpen && !root.trashOpen && !backendObject.loading && root.rows.length === 0
+                    visible: !root.deepSearch && !root.recentOpen && !root.trashOpen && !root.bridge.loading && root.rows.length === 0
 
                     Glyph {
                         anchors.horizontalCenter: parent.horizontalCenter
@@ -3428,28 +3560,28 @@ ApplicationWindow {
                     spacing: 8
                     Mono {
                         anchors.verticalCenter: parent.verticalCenter
-                        text: backendObject.trashBusy() ? "Deleting…" : ""
+                        text: root.bridge.trashBusy() ? "Deleting…" : ""
                         font.pixelSize: 11
                     }
                     Button {
                         text: "Restore"
                         enabled: root.trashPicked.length > 0
                         onClicked: {
-                            backendObject.restoreTrash(root.trashPicked)
+                            root.bridge.restoreTrash(root.trashPicked)
                             root.trashPicked = []
                         }
                     }
                     Button {
                         text: "Delete permanently"
-                        enabled: root.trashPicked.length > 0 && !backendObject.trashBusy()
+                        enabled: root.trashPicked.length > 0 && !root.bridge.trashBusy()
                         onClicked: {
-                            backendObject.purgeTrash(root.trashPicked)
+                            root.bridge.purgeTrash(root.trashPicked)
                             root.trashPicked = []
                         }
                     }
                     Button {
                         text: "Empty Trash"
-                        enabled: trashBrowser.count > 0 && !backendObject.trashBusy()
+                        enabled: trashBrowser.count > 0 && !root.bridge.trashBusy()
                         onClicked: emptyConfirm.open()
                     }
                 }
@@ -3467,7 +3599,7 @@ ApplicationWindow {
                     clip: true
                     model: {
                         void root.revision
-                        return backendObject.trashCount()
+                        return root.bridge.trashCount()
                     }
                     boundsBehavior: Flickable.StopAtBounds
                     cacheBuffer: 800
@@ -3477,7 +3609,7 @@ ApplicationWindow {
                         required property int index
                         readonly property string name: {
                             void root.revision
-                            return backendObject.trashName(trashRow.index)
+                            return root.bridge.trashName(trashRow.index)
                         }
                         readonly property bool picked: root.trashPicked.indexOf(trashRow.index) >= 0
                         readonly property string kind: root.kindOf(trashRow.name, false)
@@ -3523,7 +3655,7 @@ ApplicationWindow {
                             anchors.rightMargin: 12
                             anchors.top: trashName.bottom
                             anchors.topMargin: 1
-                            text: backendObject.trashOrigin(trashRow.index)
+                            text: root.bridge.trashOrigin(trashRow.index)
                             elide: Text.ElideLeft
                             font.pixelSize: 10
                         }
@@ -3533,7 +3665,7 @@ ApplicationWindow {
                             anchors.right: parent.right
                             anchors.rightMargin: 12
                             anchors.verticalCenter: parent.verticalCenter
-                            text: root.modifiedText(backendObject.trashDeleted(trashRow.index))
+                            text: root.modifiedText(root.bridge.trashDeleted(trashRow.index))
                             font.pixelSize: 11
                         }
 
@@ -3585,7 +3717,7 @@ ApplicationWindow {
                     clip: true
                     model: {
                         void root.revision
-                        return backendObject.recentCount()
+                        return root.bridge.recentCount()
                     }
                     boundsBehavior: Flickable.StopAtBounds
                     cacheBuffer: 800
@@ -3595,11 +3727,11 @@ ApplicationWindow {
                         required property int index
                         readonly property string name: {
                             void root.revision
-                            return backendObject.recentName(recentRow.index)
+                            return root.bridge.recentName(recentRow.index)
                         }
                         readonly property string where: {
                             void root.revision
-                            return backendObject.recentFolder(recentRow.index)
+                            return root.bridge.recentFolder(recentRow.index)
                         }
                         readonly property string kind: root.kindOf(recentRow.name, false)
 
@@ -3655,9 +3787,9 @@ ApplicationWindow {
                             cursorShape: Qt.PointingHandCursor
                             onClicked: {
                                 root.recentOpen = false
-                                backendObject.navigate(recentRow.where)
+                                root.bridge.navigate(recentRow.where)
                             }
-                            onDoubleClicked: backendObject.openPath(backendObject.recentPath(recentRow.index))
+                            onDoubleClicked: root.bridge.openPath(root.bridge.recentPath(recentRow.index))
                         }
                     }
 
@@ -3705,15 +3837,15 @@ ApplicationWindow {
                         required property int index
                         readonly property string name: {
                             void root.revision
-                            return backendObject.searchName(resultRow.index)
+                            return root.bridge.searchName(resultRow.index)
                         }
                         readonly property string where: {
                             void root.revision
-                            return backendObject.searchFolder(resultRow.index)
+                            return root.bridge.searchFolder(resultRow.index)
                         }
                         readonly property bool folder: {
                             void root.revision
-                            return backendObject.searchIsDirectory(resultRow.index)
+                            return root.bridge.searchIsDirectory(resultRow.index)
                         }
                         readonly property string kind: root.kindOf(resultRow.name, resultRow.folder)
 
@@ -3775,13 +3907,13 @@ ApplicationWindow {
                             onClicked: {
                                 root.endDeepSearch()
                                 root.query = ""
-                                backendObject.navigate(resultRow.folder
-                                                       ? backendObject.searchPath(resultRow.index)
+                                root.bridge.navigate(resultRow.folder
+                                                       ? root.bridge.searchPath(resultRow.index)
                                                        : resultRow.where)
                             }
                             onDoubleClicked: {
                                 if (!resultRow.folder)
-                                    backendObject.openPath(backendObject.searchPath(resultRow.index))
+                                    root.bridge.openPath(root.bridge.searchPath(resultRow.index))
                             }
                         }
                     }
@@ -3804,8 +3936,8 @@ ApplicationWindow {
                         text: {
                             void root.revision
                             const found = root.searchHits
-                            const capped = backendObject.searchTruncated()
-                            if (backendObject.searching)
+                            const capped = root.bridge.searchTruncated()
+                            if (root.bridge.searching)
                                 return "Searching…  " + found + " found"
                             if (found === 0)
                                 return "Nothing beneath this folder matches “" + root.query + "”"
@@ -3873,7 +4005,7 @@ ApplicationWindow {
                                 return
                             }
                             if (!root.sweepConsumed())
-                                backendObject.clearSelection()
+                                root.bridge.clearSelection()
                         }
                         onCanceled: root.sweepRelease()
                     }
@@ -3900,21 +4032,21 @@ ApplicationWindow {
                         // follows the band without a round trip per move.
                         readonly property bool selected: {
                             void root.revision
-                            return root.sweepMark[entry] === true || backendObject.entrySelected(entry)
+                            return root.sweepMark[entry] === true || root.bridge.entrySelected(entry)
                         }
                         readonly property bool folder: {
                             void root.revision
-                            return backendObject.entryIsDirectory(entry)
+                            return root.bridge.entryIsDirectory(entry)
                         }
                         readonly property string kind: {
                             void root.revision
-                            return root.kindOf(backendObject.entryName(entry), listRow.folder)
+                            return root.kindOf(root.bridge.entryName(entry), listRow.folder)
                         }
                         // A hidden entry is shown at half strength: present when
                         // asked for, never competing with the rest.
                         readonly property real dim: {
                             void root.revision
-                            return root.isHidden(backendObject.entryName(entry)) ? 0.5 : 1.0
+                            return root.isHidden(root.bridge.entryName(entry)) ? 0.5 : 1.0
                         }
 
                         width: ListView.view.width
@@ -3943,7 +4075,7 @@ ApplicationWindow {
                             checked: listRow.selected
                             onToggled: {
                                 root.focusRow = listRow.entry
-                                backendObject.toggleSelection(listRow.entry)
+                                root.bridge.toggleSelection(listRow.entry)
                             }
                         }
 
@@ -3980,7 +4112,7 @@ ApplicationWindow {
                             anchors.verticalCenter: parent.verticalCenter
                             text: {
                                 void root.revision
-                                return backendObject.entryName(listRow.entry)
+                                return root.bridge.entryName(listRow.entry)
                             }
                             elide: Text.ElideMiddle
                             color: listRow.selected || listRow.folder ? root.ink : root.inkMuted
@@ -4014,7 +4146,7 @@ ApplicationWindow {
                             horizontalAlignment: Text.AlignRight
                             text: {
                                 void root.revision
-                                return backendObject.entryDetail(listRow.entry)
+                                return root.bridge.entryDetail(listRow.entry)
                             }
                         }
 
@@ -4028,7 +4160,7 @@ ApplicationWindow {
                             horizontalAlignment: Text.AlignRight
                             text: {
                                 void root.revision
-                                return root.modifiedText(backendObject.entryModified(listRow.entry))
+                                return root.modifiedText(root.bridge.entryModified(listRow.entry))
                             }
                         }
 
@@ -4062,7 +4194,7 @@ ApplicationWindow {
                                     return
                                 root.pick(listRow.entry, mouse.modifiers & (Qt.ControlModifier | Qt.ShiftModifier))
                             }
-                            onDoubleClicked: backendObject.navigateRow(listRow.entry)
+                            onDoubleClicked: root.bridge.navigateRow(listRow.entry)
                             onCanceled: root.sweepRelease()
                         }
                     }
@@ -4114,7 +4246,7 @@ ApplicationWindow {
                                 return
                             }
                             if (!root.sweepConsumed())
-                                backendObject.clearSelection()
+                                root.bridge.clearSelection()
                         }
                         onCanceled: root.sweepRelease()
                     }
@@ -4141,21 +4273,21 @@ ApplicationWindow {
                         // follows the band without a round trip per move.
                         readonly property bool selected: {
                             void root.revision
-                            return root.sweepMark[entry] === true || backendObject.entrySelected(entry)
+                            return root.sweepMark[entry] === true || root.bridge.entrySelected(entry)
                         }
                         readonly property bool folder: {
                             void root.revision
-                            return backendObject.entryIsDirectory(entry)
+                            return root.bridge.entryIsDirectory(entry)
                         }
                         readonly property string kind: {
                             void root.revision
-                            return root.kindOf(backendObject.entryName(entry), tileHost.folder)
+                            return root.kindOf(root.bridge.entryName(entry), tileHost.folder)
                         }
                         // A hidden entry is shown at half strength: present when
                         // asked for, never competing with the rest.
                         readonly property real dim: {
                             void root.revision
-                            return root.isHidden(backendObject.entryName(entry)) ? 0.5 : 1.0
+                            return root.isHidden(root.bridge.entryName(entry)) ? 0.5 : 1.0
                         }
 
                         width: GridView.view.cellWidth
@@ -4216,7 +4348,7 @@ ApplicationWindow {
                                 checked: tileHost.selected
                                 onToggled: {
                                     root.focusRow = tileHost.entry
-                                    backendObject.toggleSelection(tileHost.entry)
+                                    root.bridge.toggleSelection(tileHost.entry)
                                 }
                             }
 
@@ -4233,7 +4365,7 @@ ApplicationWindow {
                                 anchors.topMargin: 8
                                 text: {
                                     void root.revision
-                                    return backendObject.entryName(tileHost.entry)
+                                    return root.bridge.entryName(tileHost.entry)
                                 }
                                 horizontalAlignment: Text.AlignHCenter
                                 wrapMode: Text.Wrap
@@ -4278,7 +4410,7 @@ ApplicationWindow {
                                         return
                                     root.pick(tileHost.entry, mouse.modifiers & (Qt.ControlModifier | Qt.ShiftModifier))
                                 }
-                                onDoubleClicked: backendObject.navigateRow(tileHost.entry)
+                                onDoubleClicked: root.bridge.navigateRow(tileHost.entry)
                                 onCanceled: root.sweepRelease()
                             }
                         }
@@ -4300,14 +4432,14 @@ ApplicationWindow {
                 NumberAnimation { duration: 130; easing.type: Easing.OutCubic }
             }
 
-            readonly property bool single: root.focusRow >= 0 && root.focusRow < backendObject.entryCount()
+            readonly property bool single: root.focusRow >= 0 && root.focusRow < root.bridge.entryCount()
             readonly property string entryName: {
                 void root.revision
-                return inspector.single ? backendObject.entryName(root.focusRow) : ""
+                return inspector.single ? root.bridge.entryName(root.focusRow) : ""
             }
             readonly property bool entryFolder: {
                 void root.revision
-                return inspector.single && backendObject.entryIsDirectory(root.focusRow)
+                return inspector.single && root.bridge.entryIsDirectory(root.focusRow)
             }
             readonly property string entryKind: root.kindOf(inspector.entryName, inspector.entryFolder)
 
@@ -4480,9 +4612,9 @@ ApplicationWindow {
                                 void root.revision
                                 if (!inspector.single)
                                     return ""
-                                return backendObject.entryDetail(root.focusRow)
+                                return root.bridge.entryDetail(root.focusRow)
                                         + "   ·   "
-                                        + root.modifiedText(backendObject.entryModified(root.focusRow))
+                                        + root.modifiedText(root.bridge.entryModified(root.focusRow))
                             }
                             font.pixelSize: 11
                         }
@@ -4499,7 +4631,7 @@ ApplicationWindow {
                             width: parent.width
                             text: {
                                 void root.revision
-                                return inspector.single ? backendObject.entryPath(root.focusRow) : ""
+                                return inspector.single ? root.bridge.entryPath(root.focusRow) : ""
                             }
                             wrapMode: Text.WrapAnywhere
                             color: root.inkFaint
@@ -4522,9 +4654,9 @@ ApplicationWindow {
                                     return []
                                 return [
                                     { key: "Kind", value: inspector.entryKind },
-                                    { key: "Size", value: backendObject.entryDetail(root.focusRow) },
-                                    { key: "Modified", value: root.modifiedText(backendObject.entryModified(root.focusRow)) },
-                                    { key: "Held", value: backendObject.entrySelected(root.focusRow) ? "Yes" : "No" }
+                                    { key: "Size", value: root.bridge.entryDetail(root.focusRow) },
+                                    { key: "Modified", value: root.modifiedText(root.bridge.entryModified(root.focusRow)) },
+                                    { key: "Held", value: root.bridge.entrySelected(root.focusRow) ? "Yes" : "No" }
                                 ]
                             }
 
@@ -4585,7 +4717,7 @@ ApplicationWindow {
                         height: parent.height
                         glyph: "↗"
                         label: "Open"
-                        onActivated: backendObject.navigateRow(root.focusRow)
+                        onActivated: root.bridge.navigateRow(root.focusRow)
                     }
 
                     Rectangle {
@@ -4601,8 +4733,8 @@ ApplicationWindow {
                         glyph: "⌗"
                         label: "Hold"
                         onActivated: {
-                            backendObject.clearSelection()
-                            backendObject.toggleSelection(root.focusRow)
+                            root.bridge.clearSelection()
+                            root.bridge.toggleSelection(root.focusRow)
                         }
                     }
 
@@ -4620,9 +4752,9 @@ ApplicationWindow {
                         label: "Trash"
                         danger: true
                         onActivated: {
-                            backendObject.clearSelection()
-                            backendObject.toggleSelection(root.focusRow)
-                            backendObject.trashSelected()
+                            root.bridge.clearSelection()
+                            root.bridge.toggleSelection(root.focusRow)
+                            root.bridge.trashSelected()
                         }
                     }
                 }
@@ -4682,7 +4814,7 @@ ApplicationWindow {
                             elide: Text.ElideMiddle
                             text: {
                                 void root.revision
-                                return backendObject.taskTitle(taskRow.slot)
+                                return root.bridge.taskTitle(taskRow.slot)
                             }
                             color: root.inkMuted
                             font.family: root.sansFamily
@@ -4698,7 +4830,7 @@ ApplicationWindow {
                             implicitHeight: 22
                             glyph: "✕"
                             hint: "Cancel"
-                            onActivated: backendObject.cancelTask(backendObject.taskId(taskRow.slot))
+                            onActivated: root.bridge.cancelTask(root.bridge.taskId(taskRow.slot))
                         }
 
                         Mono {
@@ -4707,7 +4839,7 @@ ApplicationWindow {
                             anchors.topMargin: 2
                             text: {
                                 void root.revision
-                                return backendObject.taskStatus(taskRow.slot)
+                                return root.bridge.taskStatus(taskRow.slot)
                             }
                             font.pixelSize: 10
                         }
@@ -4723,7 +4855,7 @@ ApplicationWindow {
                             Rectangle {
                                 readonly property int progress: {
                                     void root.revision
-                                    return backendObject.taskProgress(taskRow.slot)
+                                    return root.bridge.taskProgress(taskRow.slot)
                                 }
                                 height: parent.height
                                 radius: 2
@@ -4770,21 +4902,21 @@ ApplicationWindow {
             // of provider.
             readonly property bool asking: {
                 void root.configTick
-                return backendObject.configActive()
+                return root.bridge.configActive()
             }
             readonly property string failure: {
                 void root.configTick
                 void root.revision
-                return backendObject.lastError
+                return root.bridge.lastError
             }
             readonly property var providers: {
                 void root.configTick
-                const total = backendObject.providerCount()
+                const total = root.bridge.providerCount()
                 const needle = root.providerQuery.toLowerCase()
                 const out = []
                 for (let i = 0; i < total; ++i) {
-                    const label = backendObject.providerLabel(i)
-                    const kind = backendObject.providerKind(i)
+                    const label = root.bridge.providerLabel(i)
+                    const kind = root.bridge.providerKind(i)
                     if (needle.length === 0
                         || label.toLowerCase().indexOf(needle) >= 0
                         || kind.toLowerCase().indexOf(needle) >= 0)
@@ -4798,49 +4930,49 @@ ApplicationWindow {
             // creation, and never again.
             readonly property string field: {
                 void root.configTick
-                return backendObject.configField()
+                return root.bridge.configField()
             }
             readonly property string help: {
                 void root.configTick
-                return backendObject.configHelp()
+                return root.bridge.configHelp()
             }
             readonly property string link: {
                 void root.configTick
-                return backendObject.configLink()
+                return root.bridge.configLink()
             }
             readonly property string fallback: {
                 void root.configTick
-                return backendObject.configDefault()
+                return root.bridge.configDefault()
             }
             readonly property bool masked: {
                 void root.configTick
-                return backendObject.configSecret()
+                return root.bridge.configSecret()
             }
             readonly property bool waiting: {
                 void root.configTick
                 void root.revision
-                return backendObject.configWaiting()
+                return root.bridge.configWaiting()
             }
             readonly property var choices: {
                 void root.configTick
-                const total = backendObject.configChoiceCount()
+                const total = root.bridge.configChoiceCount()
                 const out = []
                 for (let i = 0; i < total; ++i)
-                    out.push({ value: backendObject.configChoiceValue(i),
-                               help: backendObject.configChoiceHelp(i) })
+                    out.push({ value: root.bridge.configChoiceValue(i),
+                               help: root.bridge.configChoiceHelp(i) })
                 return out
             }
 
             function answer(text) {
-                backendObject.answerRemote(text)
+                root.bridge.answerRemote(text)
                 answerField.text = ""
                 root.configTick++
-                if (!backendObject.configActive() && backendObject.lastError.length === 0)
+                if (!root.bridge.configActive() && root.bridge.lastError.length === 0)
                     root.remoteSheetOpen = false
             }
 
             function dismiss() {
-                backendObject.cancelRemote()
+                root.bridge.cancelRemote()
                 root.remoteSheetOpen = false
                 root.configTick++
             }
@@ -4979,12 +5111,12 @@ ApplicationWindow {
                             onClicked: {
                                 if (root.remoteDraftName.length === 0)
                                     return
-                                backendObject.beginRemote(root.remoteDraftName,
+                                root.bridge.beginRemote(root.remoteDraftName,
                                                           providerRow.modelData.kind)
                                 root.configTick++
                                 // A provider that asks nothing is already done.
-                                if (!backendObject.configActive()
-                                    && backendObject.lastError.length === 0)
+                                if (!root.bridge.configActive()
+                                    && root.bridge.lastError.length === 0)
                                     root.remoteSheetOpen = false
                             }
                         }
@@ -5072,7 +5204,7 @@ ApplicationWindow {
                                 anchors.rightMargin: 8
                                 anchors.verticalCenter: parent.verticalCenter
                                 label: "Open"
-                                onActivated: backendObject.openLink(sheetCard.link)
+                                onActivated: root.bridge.openLink(sheetCard.link)
                             }
                         }
                     }
@@ -5202,7 +5334,7 @@ ApplicationWindow {
         onVisibleChanged: if (visible) remoteSheet.refresh()
 
         function refresh() {
-            backendObject.loadProviders()
+            root.bridge.loadProviders()
             root.configTick++
         }
     }
