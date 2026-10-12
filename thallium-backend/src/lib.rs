@@ -11,6 +11,8 @@ mod error;
 // Only the Qt bridge calls these; built without it, they still compile so
 // their tests run.
 #[cfg_attr(not(feature = "qt"), allow(dead_code))]
+mod apps;
+#[cfg_attr(not(feature = "qt"), allow(dead_code))]
 mod recents;
 #[cfg_attr(not(feature = "qt"), allow(dead_code))]
 mod search;

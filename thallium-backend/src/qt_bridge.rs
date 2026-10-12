@@ -11,7 +11,7 @@ use thallium_icons::{IconService, Thumbnail};
 use thallium_protocol::{BrowserStateSnapshot, DirectoryEntryRow, PathBytes, TaskInfo, TaskStatus};
 use thallium_rclone::{Remotes, authorize, config::{Provider, Session, Step}};
 
-use crate::{Backend, BackendConfig, BackendResult, recents::Recent, search::Search, storage::Measure, trash_bin, uri};
+use crate::{Backend, BackendConfig, BackendResult, apps, recents::Recent, search::Search, storage::Measure, trash_bin, uri};
 
 #[cxx_qt::bridge]
 pub mod ffi {
@@ -189,6 +189,30 @@ pub mod ffi {
 		fn trashSelected(self: Pin<&mut Self>);
 		#[qinvokable]
 		fn reveal(self: Pin<&mut Self>, target: &QString);
+		#[qinvokable]
+		#[rust_name = "offer_apps"]
+		fn offerApps(self: Pin<&mut Self>, row: i32);
+		#[qinvokable]
+		#[rust_name = "offered_count"]
+		fn offeredCount(&self) -> i32;
+		#[qinvokable]
+		#[rust_name = "offered_name"]
+		fn offeredName(&self, index: i32) -> QString;
+		#[qinvokable]
+		#[rust_name = "offered_is_default"]
+		fn offeredIsDefault(&self, index: i32) -> bool;
+		#[qinvokable]
+		#[rust_name = "offered_type"]
+		fn offeredType(&self) -> QString;
+		#[qinvokable]
+		#[rust_name = "launch_offered"]
+		fn launchOffered(self: Pin<&mut Self>, index: i32, make_default: bool);
+		#[qinvokable]
+		#[rust_name = "offer_all_apps"]
+		fn offerAllApps(self: Pin<&mut Self>);
+		#[qinvokable]
+		#[rust_name = "open_terminal_here"]
+		fn openTerminalHere(self: Pin<&mut Self>);
 		#[qinvokable]
 		#[rust_name = "refresh_trash"]
 		fn refreshTrash(self: Pin<&mut Self>);
@@ -378,6 +402,9 @@ pub struct BackendBridgeRust {
 	trash:          Vec<trash::TrashItem>,
 	/// A purge still running, collected on a later poll.
 	purge:          Option<trash_bin::Purge>,
+	/// Applications offered for the selection's type, best first, and the type.
+	offered:        Vec<apps::App>,
+	offered_type:   String,
 }
 
 /// Polls between full reconciles, at the frontend's 100ms poll interval.
@@ -427,6 +454,8 @@ impl Default for BackendBridgeRust {
 					revealing: None,
 					trash: Vec::new(),
 					purge: None,
+					offered: Vec::new(),
+					offered_type: String::new(),
 				}
 			}
 			Err(error) => Self {
@@ -451,6 +480,8 @@ impl Default for BackendBridgeRust {
 				revealing:      None,
 				trash:          Vec::new(),
 				purge:          None,
+				offered:        Vec::new(),
+				offered_type:   String::new(),
 			},
 		}
 	}
@@ -523,6 +554,71 @@ impl ffi::BackendBridge {
 		self.as_mut().rust_mut().revealing = Some(name.as_bytes().to_vec());
 		let parent = Location::local(NativePath::from(parent));
 		self.submit_detached(Command::Navigate(parent));
+	}
+
+	/// Collect the applications that open `row`'s type, for "Open with".
+	pub fn offer_apps(mut self: Pin<&mut Self>, row: i32) {
+		let Some(entry) = self.row(row) else { return };
+		let path = PathBuf::from(OsStr::from_bytes(entry.location.to_location().path.as_bytes()));
+		let mime = self.rust().icons.mime_of(&path, entry.is_directory());
+		let lineage = self.rust().icons.mime_lineage(&mime);
+		let offered = apps::for_types(&apps::installed(), &lineage);
+		self.as_mut().rust_mut().offered = offered;
+		self.as_mut().rust_mut().offered_type = mime;
+	}
+
+	/// Offer every installed application, for "Other application…". The
+	/// type stays the one the last [`Self::offer_apps`] read.
+	pub fn offer_all_apps(mut self: Pin<&mut Self>) {
+		let all = apps::installed().into_iter().filter(|app| !app.hidden).collect();
+		self.as_mut().rust_mut().offered = all;
+	}
+
+	pub fn offered_count(&self) -> i32 { count(self.rust().offered.len()) }
+
+	pub fn offered_name(&self, index: i32) -> QString {
+		self.offered(index).map_or_else(QString::default, |app| app.name.as_str().into())
+	}
+
+	pub fn offered_is_default(&self, index: i32) -> bool {
+		let Some(app) = self.offered(index) else { return false };
+		apps::default_for(&self.rust().offered_type).is_some_and(|id| id == app.id)
+	}
+
+	pub fn offered_type(&self) -> QString { self.rust().offered_type.as_str().into() }
+
+	/// Open the selected files with an offered application, optionally making
+	/// it the default for their type first.
+	pub fn launch_offered(mut self: Pin<&mut Self>, index: i32, make_default: bool) {
+		let Some(app) = self.offered(index).cloned() else { return };
+		if make_default && let Err(error) = apps::set_default(&self.rust().offered_type, &app.id) {
+			self.as_mut().set_last_error(error.into());
+			return;
+		}
+		let files: Vec<PathBuf> = self
+			.selected_locations()
+			.iter()
+			.filter(|location| location.backend == BackendId::LOCAL)
+			.map(|location| PathBuf::from(OsStr::from_bytes(location.path.as_bytes())))
+			.collect();
+		if let Err(error) = apps::launch(&app, &files) {
+			self.as_mut().set_last_error(error.into());
+		}
+	}
+
+	pub fn open_terminal_here(mut self: Pin<&mut Self>) {
+		let Some(folder) = self.current().filter(|location| location.backend == BackendId::LOCAL)
+		else {
+			return;
+		};
+		let folder = PathBuf::from(OsStr::from_bytes(folder.path.as_bytes()));
+		if let Err(error) = apps::open_terminal(&folder) {
+			self.as_mut().set_last_error(error.into());
+		}
+	}
+
+	fn offered(&self, index: i32) -> Option<&apps::App> {
+		usize::try_from(index).ok().and_then(|index| self.rust().offered.get(index))
 	}
 
 	pub fn refresh_trash(mut self: Pin<&mut Self>) {

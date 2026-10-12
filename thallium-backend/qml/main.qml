@@ -620,6 +620,10 @@ ApplicationWindow {
     MenuSurface {
         id: entryMenu
         property int row: -1
+        onAboutToShow: {
+            backendObject.offerApps(entryMenu.row)
+            root.offerTick++
+        }
         readonly property bool folder: {
             void root.revision
             return entryMenu.row >= 0 && backendObject.entryIsDirectory(entryMenu.row)
@@ -634,6 +638,29 @@ ApplicationWindow {
                 else
                     backendObject.openEntry(entryMenu.row)
             }
+        }
+        MenuSurface {
+            id: openWithMenu
+            title: "Open with"
+            Repeater {
+                model: {
+                    void root.offerTick
+                    return backendObject.offeredCount()
+                }
+                delegate: MenuLine {
+                    required property int index
+                    text: {
+                        void root.offerTick
+                        return backendObject.offeredName(index)
+                               + (backendObject.offeredIsDefault(index) ? "  (default)" : "")
+                    }
+                    onTriggered: backendObject.launchOffered(index, false)
+                }
+            }
+            MenuSeparator {
+                contentItem: Rectangle { implicitHeight: 1; color: root.line }
+            }
+            MenuLine { text: "Other application…"; onTriggered: root.pickApp() }
         }
         MenuLine {
             text: "Copy path"
@@ -701,6 +728,10 @@ ApplicationWindow {
                 }
             }
         }
+        MenuSeparator {
+            contentItem: Rectangle { implicitHeight: 1; color: root.line }
+        }
+        MenuLine { text: "Open terminal here"; onTriggered: backendObject.openTerminalHere() }
         MenuSeparator {
             contentItem: Rectangle { implicitHeight: 1; color: root.line }
         }
@@ -775,6 +806,118 @@ ApplicationWindow {
                         emptyConfirm.close()
                     }
                 }
+            }
+        }
+    }
+
+    // Bumped whenever the offered application list is re-read.
+    property int offerTick: 0
+
+    function pickApp() {
+        backendObject.offerAllApps()
+        root.offerTick++
+        appFilter.text = ""
+        appDefault.checked = false
+        appPicker.open()
+    }
+
+    // "Other application…": every installed application, filtered as you
+    // type, with the choice of making it the default for the type.
+    Popup {
+        id: appPicker
+        anchors.centerIn: Overlay.overlay
+        width: 420
+        height: 480
+        modal: true
+        focus: true
+        padding: 16
+        onOpened: appFilter.forceActiveFocus()
+        onClosed: root.release()
+        background: Rectangle {
+            color: root.raisedHigh
+            radius: 9
+            border.width: 1
+            border.color: root.line
+        }
+        readonly property var matches: {
+            void root.offerTick
+            const needle = appFilter.text.toLowerCase()
+            const out = []
+            for (let i = 0; i < backendObject.offeredCount(); i++)
+                if (backendObject.offeredName(i).toLowerCase().indexOf(needle) >= 0)
+                    out.push(i)
+            return out
+        }
+        function choose(index) {
+            backendObject.launchOffered(index, appDefault.checked)
+            close()
+        }
+
+        Column {
+            anchors.fill: parent
+            spacing: 10
+            Text {
+                text: "Open with"
+                color: root.ink
+                font.family: root.sansFamily
+                font.pixelSize: 14
+            }
+            Rectangle {
+                width: parent.width
+                height: 32
+                radius: 6
+                color: root.raised
+                border.width: 1
+                border.color: appFilter.activeFocus ? root.lineStrong : root.line
+                TextInput {
+                    id: appFilter
+                    anchors.fill: parent
+                    anchors.leftMargin: 8
+                    anchors.rightMargin: 8
+                    verticalAlignment: TextInput.AlignVCenter
+                    clip: true
+                    color: root.ink
+                    font.family: root.sansFamily
+                    font.pixelSize: 13
+                    Keys.onReturnPressed: if (appPicker.matches.length > 0) appPicker.choose(appPicker.matches[appList.currentIndex >= 0 ? appList.currentIndex : 0])
+                    Keys.onEscapePressed: appPicker.close()
+                    Keys.onDownPressed: appList.incrementCurrentIndex()
+                    Keys.onUpPressed: appList.decrementCurrentIndex()
+                }
+            }
+            ListView {
+                id: appList
+                width: parent.width
+                height: parent.height - 32 - 24 - 40 - 30
+                clip: true
+                model: appPicker.matches
+                currentIndex: 0
+                delegate: Rectangle {
+                    required property int index
+                    required property var modelData
+                    width: ListView.view.width
+                    height: 30
+                    radius: 5
+                    color: ListView.isCurrentItem ? root.hover : "transparent"
+                    Text {
+                        anchors.left: parent.left
+                        anchors.leftMargin: 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: backendObject.offeredName(modelData)
+                        color: root.ink
+                        font.family: root.sansFamily
+                        font.pixelSize: 13
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: appList.currentIndex = index
+                        onDoubleClicked: appPicker.choose(modelData)
+                    }
+                }
+            }
+            CheckBox {
+                id: appDefault
+                text: "Always use for " + backendObject.offeredType()
             }
         }
     }
@@ -1017,7 +1160,7 @@ ApplicationWindow {
     function release() { keyCatcher.forceActiveFocus() }
 
     readonly property bool typing: namePrompt.opened || pathEditor.visible || deleteConfirm.opened
-                                   || emptyConfirm.opened
+                                   || emptyConfirm.opened || appPicker.opened
 
     Shortcut { sequences: ["Down"]; enabled: !root.typing; onActivated: root.moveFocus(root.columns(), false) }
     Shortcut { sequences: ["Up"]; enabled: !root.typing; onActivated: root.moveFocus(-root.columns(), false) }
