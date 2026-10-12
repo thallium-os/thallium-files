@@ -44,7 +44,7 @@ ApplicationWindow {
     readonly property string monoFamily: Theme.family
 
     readonly property int unit: 4
-    readonly property int sidebarWidth: 292
+    readonly property int sidebarWidth: Theme.railWidth + Theme.placesWidth
     // Every control on the header line is this tall, and every band
     // in the folder bar is the next one. Mixing 30 with 34 is what
     // made the top of the window look ragged.
@@ -158,27 +158,27 @@ ApplicationWindow {
     readonly property var places: {
         const known = ["Desktop", "Documents", "Downloads", "Music", "Pictures", "Videos"]
         const seen = root.homeFolders
-        const out = [
-            { label: "Recent", folder: null, recent: true },
-            { label: "Home", folder: "" }
-        ]
+        const icons = { Desktop: "folder", Documents: "file-text", Downloads: "download",
+                        Music: "music", Pictures: "image", Videos: "video" }
+        const out = [ { label: "Home", folder: "", icon: "house", section: "Places" } ]
         for (let i = 0; i < known.length; ++i) {
             if (seen.length === 0 || seen.indexOf(known[i]) >= 0)
-                out.push({ label: known[i], folder: known[i] })
+                out.push({ label: known[i], folder: known[i], icon: icons[known[i]], section: "Places" })
         }
-        out.push({ label: "Filesystem", folder: "/" })
-        out.push({ label: "Trash", folder: null, trash: true })
+        out.push({ label: "Filesystem", folder: "/", icon: "hard-drive", section: "Places" })
         // Drives that can be mounted, mounted or not.
         void root.revision
         for (let d = 0; d < root.bridge.driveCount(); ++d)
-            out.push({ label: root.bridge.driveLabel(d), folder: null, target: root.bridge.driveMount(d), drive: d })
+            out.push({ label: root.bridge.driveLabel(d), folder: null, target: root.bridge.driveMount(d), drive: d,
+                       icon: root.bridge.driveEjectable(d) ? "usb" : "hard-drive", section: "Drives" })
         // The GTK bookmarks, less any that name a place already listed.
         void root.revision
         const listed = out.map(function (place) { return root.placePath(place.folder) })
         for (let b = 0; b < root.bridge.bookmarkCount(); ++b) {
             const path = root.bridge.bookmarkPath(b)
             if (listed.indexOf(path) < 0)
-                out.push({ label: root.bridge.bookmarkLabel(b), folder: null, target: path, bookmark: b })
+                out.push({ label: root.bridge.bookmarkLabel(b), folder: null, target: path, bookmark: b,
+                           icon: "bookmark", section: "Bookmarks" })
         }
         // Whatever rclone is configured for, listed after the local places
         // because that is the order they are reached in.
@@ -189,11 +189,13 @@ ApplicationWindow {
                 label: root.bridge.remoteName(r),
                 folder: null,
                 target: root.bridge.remoteLocation(r),
-                remote: true
+                remote: true,
+                icon: "globe",
+                section: "Network"
             })
         }
         if (root.bridge.remotesConfigurable())
-            out.push({ label: "Add a remote", folder: null, add: true })
+            out.push({ label: "Add a remote", folder: null, add: true, icon: "plus", section: "Network" })
         return out
     }
 
@@ -537,6 +539,68 @@ ApplicationWindow {
         id: inspectRevealed
         interval: 700
         onTriggered: root.showProperties(root.firstSelectedRow())
+    }
+
+    // ---- Sections ----
+    // What the rail shows as current, derived from what is on screen.
+    readonly property string section: root.trashOpen ? "trash"
+        : root.recentOpen ? "recent"
+        : root.bridge.currentPath === root.bridge.homePath ? "home"
+        : root.bridge.currentPath.startsWith("/") ? "files"
+        : "network"
+
+    function chooseSection(key) {
+        if (key === "home") {
+            root.recentOpen = false
+            root.trashOpen = false
+            root.bridge.navigate(root.bridge.homePath)
+        } else if (key === "files") {
+            root.recentOpen = false
+            root.trashOpen = false
+        } else if (key === "recent") {
+            root.showRecent()
+        } else if (key === "trash") {
+            root.showTrash()
+        } else if (key === "network") {
+            if (root.bridge.remoteCount() > 0) {
+                root.recentOpen = false
+                root.trashOpen = false
+                root.bridge.navigate(root.bridge.remoteLocation(0))
+            } else if (root.bridge.remotesConfigurable()) {
+                root.remoteDraftName = ""
+                root.providerQuery = ""
+                root.remoteSheetOpen = true
+            }
+        } else if (key === "settings") {
+            settingsMenu.popup(rail, rail.width + 6, rail.height / 2)
+        }
+    }
+
+    MenuSurface {
+        id: moreMenu
+        MenuLine { text: "New tab"; onTriggered: root.newTab(root.bridge.currentPath) }
+        MenuLine { text: "Open terminal here"; onTriggered: root.bridge.openTerminalHere() }
+        MenuLine { text: "Go to location…"; onTriggered: root.editPath() }
+    }
+
+    MenuSurface {
+        id: settingsMenu
+        property bool isDefault: true
+        onAboutToShow: isDefault = root.bridge.isDefaultManager()
+        MenuLine {
+            text: root.showHidden ? "Hide hidden files" : "Show hidden files"
+            onTriggered: root.showHidden = !root.showHidden
+        }
+        MenuLine {
+            text: root.previewOpen ? "Hide preview panel" : "Show preview panel"
+            onTriggered: root.previewOpen = !root.previewOpen
+        }
+        MenuLine { text: "Edit custom actions…"; onTriggered: root.bridge.editActions() }
+        MenuLine {
+            text: "Make Thallium Files the default"
+            enabled: !settingsMenu.isDefault
+            onTriggered: root.bridge.makeDefaultManager()
+        }
     }
 
     // ---- Tabs ----
@@ -2486,6 +2550,7 @@ ApplicationWindow {
     component NavItem: Rectangle {
         id: navItem
         property string glyph: ""
+        property string icon: ""
         property string label: ""
         property string trailing: ""
         property bool active: false
@@ -2495,23 +2560,35 @@ ApplicationWindow {
         property string dropTarget: ""
 
         width: parent ? parent.width : 0
-        implicitHeight: 30
-        radius: 7
+        implicitHeight: 34
+        radius: Theme.radiusSmall
         color: navItem.active
-               ? root.raisedHigh
-               : (navMouse.containsMouse ? root.raised : "transparent")
+               ? Theme.selected
+               : (navMouse.containsMouse ? Theme.surfaceHigh : "transparent")
         border.width: navItem.active ? 1 : 0
-        border.color: root.line
+        border.color: Theme.outline
 
-        Glyph {
+        Item {
             id: navGlyph
             anchors.left: parent.left
-            anchors.leftMargin: 9
+            anchors.leftMargin: 10
             anchors.verticalCenter: parent.verticalCenter
             width: 16
-            text: navItem.glyph
-            font.pixelSize: 13
-            color: navItem.active ? root.spectral : root.inkFaint
+            height: 16
+            Icon {
+                visible: navItem.icon.length > 0
+                anchors.centerIn: parent
+                name: navItem.icon.length > 0 ? navItem.icon : "folder"
+                size: 16
+                shade: navItem.active ? 1 : 0.55
+            }
+            Glyph {
+                visible: navItem.icon.length === 0
+                anchors.centerIn: parent
+                text: navItem.glyph
+                font.pixelSize: 13
+                color: navItem.active ? root.ink : root.inkFaint
+            }
         }
 
         Text {
@@ -2522,9 +2599,9 @@ ApplicationWindow {
             anchors.verticalCenter: parent.verticalCenter
             text: navItem.label
             elide: Text.ElideRight
-            color: navItem.active ? root.ink : root.inkMuted
-            font.family: root.sansFamily
-            font.pixelSize: 14
+            color: navItem.active ? Theme.ink : Theme.inkSoft
+            font.family: Theme.family
+            font.pixelSize: Theme.text
         }
 
         Mono {
@@ -2616,435 +2693,478 @@ ApplicationWindow {
             height: parent.height
             color: root.canvas
 
-            Rectangle {
-                anchors.right: parent.right
-                width: 1
+            Rail {
+                id: rail
                 height: parent.height
-                color: root.line
+                current: root.section
+                onChosen: function (key) { root.chooseSection(key) }
+                onMoreRequested: function (anchor) { moreMenu.popup(anchor, anchor.width + 6, 0) }
             }
 
-            // ---- Header: where you are, and the panel switch ----
+            // Places, bookmarks, drives and remotes, beside the rail.
             Item {
-                id: sidebarHead
-                anchors.left: parent.left
+                id: placesColumn
+                anchors.left: rail.right
                 anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.leftMargin: 14
-                anchors.rightMargin: 10
-                anchors.topMargin: 14
-                height: 30
+                height: parent.height
 
-                Text {
-                    anchors.left: parent.left
-                    anchors.right: headActions.left
-                    anchors.rightMargin: 8
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: root.leafName(root.bridge.currentPath)
-                    elide: Text.ElideMiddle
-                    color: root.ink
-                    font.family: root.sansFamily
-                    font.pixelSize: 15
-                    font.weight: Font.DemiBold
-                }
-
-                Row {
-                    id: headActions
+                Rectangle {
                     anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 2
-
-                    IconAction {
-                        glyph: "⟳"
-                        hint: "Refresh"
-                        onActivated: root.bridge.refresh()
-                    }
-
-                    IconAction {
-                        glyph: root.previewOpen ? "◨" : "◧"
-                        hint: root.previewOpen ? "Hide preview" : "Show preview"
-                        onActivated: root.previewOpen = !root.previewOpen
-                    }
-                }
-            }
-
-            // ---- Filter the tree, not the file list ----
-            Rectangle {
-                id: folderSearch
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: sidebarHead.bottom
-                anchors.leftMargin: 12
-                anchors.rightMargin: 12
-                anchors.topMargin: 12
-                height: 30
-                radius: 7
-                color: root.raised
-                border.width: 1
-                border.color: folderSearchInput.activeFocus ? root.lineStrong : root.line
-
-                Text {
-                    id: folderSearchGlyph
-                    anchors.left: parent.left
-                    anchors.leftMargin: 10
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: "⌕"
-                    color: root.inkFaint
-                    font.family: root.sansFamily
-                    font.pixelSize: 14
+                    width: 1
+                    height: parent.height
+                    color: root.line
                 }
 
-                TextInput {
-                    id: folderSearchInput
-                    anchors.left: folderSearchGlyph.right
-                    anchors.leftMargin: 8
-                    anchors.right: parent.right
-                    anchors.rightMargin: 10
-                    anchors.verticalCenter: parent.verticalCenter
-                    clip: true
-                    color: root.ink
-                    selectionColor: root.emberWash
-                    selectedTextColor: root.ink
-                    font.family: root.sansFamily
-                    font.pixelSize: 13
-                    text: root.folderQuery
-                    onTextChanged: root.folderQuery = text
-                    Keys.onEscapePressed: root.folderQuery = ""
-
-                    Text {
-                        anchors.verticalCenter: parent.verticalCenter
-                        visible: folderSearchInput.text.length === 0
-                        text: "Search…"
-                        color: root.inkGhost
-                        font.family: root.sansFamily
-                        font.pixelSize: 12
-                    }
-                }
-            }
-
-            // ---- Folders / Places ----
-            Rectangle {
-                id: sidebarTabs
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: folderSearch.bottom
-                anchors.leftMargin: 12
-                anchors.rightMargin: 12
-                anchors.topMargin: 12
-                height: 32
-                radius: 8
-                color: root.inset
-                border.width: 1
-                border.color: root.lineSoft
-
-                Row {
-                    anchors.fill: parent
-                    anchors.margins: 3
-                    spacing: 3
-
-                    Segment {
-                        width: (parent.width - 3) / 2
-                        height: parent.height
-                        label: "Places"
-                        key: "places"
-                    }
-
-                    Segment {
-                        width: (parent.width - 3) / 2
-                        height: parent.height
-                        label: "Tree"
-                        key: "folders"
-                    }
-                }
-            }
-
-            // ---- The tree itself ----
-            ListView {
-                id: treeView
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: sidebarTabs.bottom
-                anchors.bottom: ringPanel.top
-                anchors.leftMargin: 8
-                anchors.rightMargin: 8
-                anchors.topMargin: 10
-                anchors.bottomMargin: 10
-                clip: true
-                spacing: 1
-                visible: root.sidebarTab === "folders"
-                model: root.tree
-                boundsBehavior: Flickable.StopAtBounds
-
-                delegate: TreeRow {
-                    id: treeEntry
-                    required property var modelData
-                    width: treeView.width
-                    label: treeEntry.modelData.label
-                    badge: treeEntry.modelData.badge
-                    depth: treeEntry.modelData.depth
-                    current: treeEntry.modelData.current
-                    onActivated: root.bridge.navigate(treeEntry.modelData.path)
-                }
-            }
-
-            ListView {
-                id: placesView
-                anchors.fill: treeView
-                clip: true
-                spacing: 2
-                visible: root.sidebarTab === "places"
-                model: root.places
-                boundsBehavior: Flickable.StopAtBounds
-
-                delegate: NavItem {
-                    id: placeEntry
-                    required property var modelData
-                    readonly property bool adds: placeEntry.modelData.add === true
-                    readonly property bool remote: placeEntry.modelData.remote === true
-                    readonly property bool recent: placeEntry.modelData.recent === true
-                    readonly property bool trash: placeEntry.modelData.trash === true
-                    readonly property bool marked: placeEntry.modelData.bookmark !== undefined
-                    readonly property bool drive: placeEntry.modelData.drive !== undefined
-                    readonly property string target: placeEntry.remote || placeEntry.marked || placeEntry.drive
-                                                     ? placeEntry.modelData.target
-                                                     : root.placePath(placeEntry.modelData.folder)
-                    width: placesView.width
-                    glyph: placeEntry.adds
-                           ? "+"
-                           : (placeEntry.recent
-                              ? "◴"
-                              : placeEntry.trash
-                              ? "⌫"
-                              : placeEntry.marked
-                              ? "★"
-                              : placeEntry.drive
-                              ? (root.bridge.driveEjectable(placeEntry.modelData.drive) ? "⏏" : "◫")
-                              : placeEntry.remote
-                              ? "◈"
-                              : (placeEntry.modelData.folder === "/"
-                                 ? "◆"
-                                 : (placeEntry.modelData.folder.length === 0 ? "⌂" : "▸")))
-                    label: placeEntry.modelData.label
-                    active: placeEntry.recent
-                            ? root.recentOpen
-                            : placeEntry.trash
-                            ? root.trashOpen
-                            : (!placeEntry.adds && !root.recentOpen && !root.trashOpen
-                               && root.bridge.currentPath === placeEntry.target)
-                    dropTarget: placeEntry.recent || placeEntry.trash || placeEntry.adds || placeEntry.remote
-                                ? "" : placeEntry.target
-                    trailing: placeEntry.remote ? "remote"
-                              : placeEntry.drive && placeEntry.target.length === 0 ? "not mounted" : ""
-                    onMenuRequested: {
-                        if (placeEntry.drive) {
-                            driveMenu.index = placeEntry.modelData.drive
-                            driveMenu.popup()
-                            return
-                        }
-                        if (!placeEntry.marked)
-                            return
-                        bookmarkMenu.index = placeEntry.modelData.bookmark
-                        bookmarkMenu.popup()
-                    }
-                    onActivated: {
-                        if (placeEntry.recent) {
-                            root.showRecent()
-                        } else if (placeEntry.trash) {
-                            root.showTrash()
-                        } else if (placeEntry.drive) {
-                            root.recentOpen = false
-                            root.trashOpen = false
-                            root.bridge.openDrive(placeEntry.modelData.drive)
-                        } else if (placeEntry.adds) {
-                            root.remoteDraftName = ""
-                            root.providerQuery = ""
-                            root.remoteSheetOpen = true
-                        } else {
-                            root.recentOpen = false
-                            root.trashOpen = false
-                            root.bridge.navigate(placeEntry.target)
-                        }
-                    }
-                }
-            }
-
-            // How full the disk is. The ring earns its height here only
-            // because what this folder holds now sits beside its name.
-            Rectangle {
-                id: ringPanel
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.bottom: parent.bottom
-                anchors.margins: 12
-                height: 128
-                radius: 10
-                color: root.raised
-                border.width: 1
-                border.color: root.line
-
-                Overline {
-                    id: storageHead
-                    anchors.left: parent.left
-                    anchors.top: parent.top
-                    anchors.margins: 11
-                    text: "STORAGE"
-                }
-
+                // ---- Header: where you are, and the panel switch ----
                 Item {
-                    id: ring
+                    id: sidebarHead
                     anchors.left: parent.left
-                    anchors.leftMargin: 11
-                    anchors.top: storageHead.bottom
-                    anchors.topMargin: 8
-                    width: 62
-                    height: 62
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.leftMargin: 14
+                    anchors.rightMargin: 10
+                    anchors.topMargin: 14
+                    height: 30
 
-                    // What this folder takes of the disk it sits on. It fills
-                    // in as the count runs, so a large tree shows progress
-                    // rather than nothing.
-                    readonly property real share: {
-                        void root.revision
-                        return root.bridge.folderShare()
-                    }
-                    readonly property bool counting: {
-                        void root.revision
-                        return root.bridge.folderMeasuring()
-                    }
-
-                    Shape {
-                        anchors.fill: parent
-                        preferredRendererType: Shape.CurveRenderer
-
-                        // The whole disk.
-                        ShapePath {
-                            fillColor: "transparent"
-                            strokeColor: root.raisedHigh
-                            strokeWidth: 9
-                            capStyle: ShapePath.FlatCap
-                            PathAngleArc {
-                                centerX: ring.width / 2
-                                centerY: ring.height / 2
-                                radiusX: ring.width / 2 - 5
-                                radiusY: ring.height / 2 - 5
-                                startAngle: -90
-                                sweepAngle: 360
-                            }
-                        }
-
-                        // What is on it.
-                        ShapePath {
-                            fillColor: "transparent"
-                            strokeColor: ring.share > 0.9 ? root.ember : root.spectral
-                            strokeWidth: 9
-                            capStyle: ShapePath.FlatCap
-                            PathAngleArc {
-                                centerX: ring.width / 2
-                                centerY: ring.height / 2
-                                radiusX: ring.width / 2 - 5
-                                radiusY: ring.height / 2 - 5
-                                startAngle: -90
-                                sweepAngle: 360 * ring.share
-                            }
-                        }
+                    Text {
+                        anchors.left: parent.left
+                        anchors.right: headActions.left
+                        anchors.rightMargin: 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "Places"
+                        elide: Text.ElideMiddle
+                        color: root.ink
+                        font.family: root.sansFamily
+                        font.pixelSize: Theme.title
+                        font.weight: Font.Medium
                     }
 
-                    Mono {
-                        anchors.centerIn: parent
-                        text: {
-                            void root.revision
-                            return root.readableSize(root.bridge.folderBytes())
+                    Row {
+                        id: headActions
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 2
+
+                        IconAction {
+                            glyph: "⟳"
+                            hint: "Refresh"
+                            onActivated: root.bridge.refresh()
                         }
-                        color: ring.counting ? root.inkFaint : root.inkMuted
-                        font.pixelSize: 10
+
+                        IconAction {
+                            glyph: root.previewOpen ? "◨" : "◧"
+                            hint: root.previewOpen ? "Hide preview" : "Show preview"
+                            onActivated: root.previewOpen = !root.previewOpen
+                        }
                     }
                 }
 
-                Column {
-                    anchors.left: ring.right
-                    anchors.leftMargin: 12
+                // ---- Filter the tree, not the file list ----
+                Rectangle {
+                    id: folderSearch
+                    anchors.left: parent.left
                     anchors.right: parent.right
-                    anchors.rightMargin: 11
-                    anchors.verticalCenter: ring.verticalCenter
-                    spacing: 7
+                    anchors.top: sidebarHead.bottom
+                    anchors.leftMargin: 12
+                    anchors.rightMargin: 12
+                    anchors.topMargin: 12
+                    height: 30
+                    radius: 7
+                    color: root.raised
+                    border.width: 1
+                    border.color: folderSearchInput.activeFocus ? root.lineStrong : root.line
 
-                    Repeater {
-                        model: {
+                    Text {
+                        id: folderSearchGlyph
+                        anchors.left: parent.left
+                        anchors.leftMargin: 10
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "⌕"
+                        color: root.inkFaint
+                        font.family: root.sansFamily
+                        font.pixelSize: 14
+                    }
+
+                    TextInput {
+                        id: folderSearchInput
+                        anchors.left: folderSearchGlyph.right
+                        anchors.leftMargin: 8
+                        anchors.right: parent.right
+                        anchors.rightMargin: 10
+                        anchors.verticalCenter: parent.verticalCenter
+                        clip: true
+                        color: root.ink
+                        selectionColor: root.emberWash
+                        selectedTextColor: root.ink
+                        font.family: root.sansFamily
+                        font.pixelSize: 13
+                        text: root.folderQuery
+                        onTextChanged: root.folderQuery = text
+                        Keys.onEscapePressed: root.folderQuery = ""
+
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: folderSearchInput.text.length === 0
+                            text: "Search…"
+                            color: root.inkGhost
+                            font.family: root.sansFamily
+                            font.pixelSize: 12
+                        }
+                    }
+                }
+
+                // ---- Folders / Places ----
+                Rectangle {
+                    id: sidebarTabs
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: folderSearch.bottom
+                    anchors.leftMargin: 12
+                    anchors.rightMargin: 12
+                    anchors.topMargin: 12
+                    height: 32
+                    radius: 8
+                    color: root.inset
+                    border.width: 1
+                    border.color: root.lineSoft
+
+                    Row {
+                        anchors.fill: parent
+                        anchors.margins: 3
+                        spacing: 3
+
+                        Segment {
+                            width: (parent.width - 3) / 2
+                            height: parent.height
+                            label: "Places"
+                            key: "places"
+                        }
+
+                        Segment {
+                            width: (parent.width - 3) / 2
+                            height: parent.height
+                            label: "Tree"
+                            key: "folders"
+                        }
+                    }
+                }
+
+                // ---- The tree itself ----
+                ListView {
+                    id: treeView
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: sidebarTabs.bottom
+                    anchors.bottom: ringPanel.top
+                    anchors.leftMargin: 8
+                    anchors.rightMargin: 8
+                    anchors.topMargin: 10
+                    anchors.bottomMargin: 10
+                    clip: true
+                    spacing: 1
+                    visible: root.sidebarTab === "folders"
+                    model: root.tree
+                    boundsBehavior: Flickable.StopAtBounds
+
+                    delegate: TreeRow {
+                        id: treeEntry
+                        required property var modelData
+                        width: treeView.width
+                        label: treeEntry.modelData.label
+                        badge: treeEntry.modelData.badge
+                        depth: treeEntry.modelData.depth
+                        current: treeEntry.modelData.current
+                        onActivated: root.bridge.navigate(treeEntry.modelData.path)
+                    }
+                }
+
+                ListView {
+                    id: placesView
+                    anchors.fill: treeView
+                    clip: true
+                    spacing: 2
+                    visible: root.sidebarTab === "places"
+                    model: root.places
+                    boundsBehavior: Flickable.StopAtBounds
+                    section.property: "section"
+                    section.delegate: Item {
+                        required property string section
+                        width: placesView.width
+                        height: 40
+                        Text {
+                            anchors.left: parent.left
+                            anchors.leftMargin: 4
+                            anchors.bottom: sectionRule.top
+                            anchors.bottomMargin: 2
+                            text: parent.section.toUpperCase()
+                            color: Theme.inkFaint
+                            font.family: Theme.family
+                            font.pixelSize: 10
+                            font.weight: Font.Medium
+                            font.letterSpacing: 1
+                        }
+                        CrossRule {
+                            id: sectionRule
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.bottom: parent.bottom
+                            anchors.bottomMargin: 2
+                        }
+                    }
+
+                    delegate: NavItem {
+                        id: placeEntry
+                        required property var modelData
+                        readonly property bool adds: placeEntry.modelData.add === true
+                        readonly property bool remote: placeEntry.modelData.remote === true
+                        readonly property bool recent: placeEntry.modelData.recent === true
+                        readonly property bool trash: placeEntry.modelData.trash === true
+                        readonly property bool marked: placeEntry.modelData.bookmark !== undefined
+                        readonly property bool drive: placeEntry.modelData.drive !== undefined
+                        readonly property string target: placeEntry.remote || placeEntry.marked || placeEntry.drive
+                                                         ? placeEntry.modelData.target
+                                                         : root.placePath(placeEntry.modelData.folder)
+                        width: placesView.width
+                        icon: placeEntry.modelData.icon || ""
+                        glyph: placeEntry.adds
+                               ? "+"
+                               : (placeEntry.recent
+                                  ? "◴"
+                                  : placeEntry.trash
+                                  ? "⌫"
+                                  : placeEntry.marked
+                                  ? "★"
+                                  : placeEntry.drive
+                                  ? (root.bridge.driveEjectable(placeEntry.modelData.drive) ? "⏏" : "◫")
+                                  : placeEntry.remote
+                                  ? "◈"
+                                  : (placeEntry.modelData.folder === "/"
+                                     ? "◆"
+                                     : (placeEntry.modelData.folder.length === 0 ? "⌂" : "▸")))
+                        label: placeEntry.modelData.label
+                        active: placeEntry.recent
+                                ? root.recentOpen
+                                : placeEntry.trash
+                                ? root.trashOpen
+                                : (!placeEntry.adds && !root.recentOpen && !root.trashOpen
+                                   && root.bridge.currentPath === placeEntry.target)
+                        dropTarget: placeEntry.recent || placeEntry.trash || placeEntry.adds || placeEntry.remote
+                                    ? "" : placeEntry.target
+                        trailing: placeEntry.remote ? "remote"
+                                  : placeEntry.drive && placeEntry.target.length === 0 ? "not mounted" : ""
+                        onMenuRequested: {
+                            if (placeEntry.drive) {
+                                driveMenu.index = placeEntry.modelData.drive
+                                driveMenu.popup()
+                                return
+                            }
+                            if (!placeEntry.marked)
+                                return
+                            bookmarkMenu.index = placeEntry.modelData.bookmark
+                            bookmarkMenu.popup()
+                        }
+                        onActivated: {
+                            if (placeEntry.recent) {
+                                root.showRecent()
+                            } else if (placeEntry.trash) {
+                                root.showTrash()
+                            } else if (placeEntry.drive) {
+                                root.recentOpen = false
+                                root.trashOpen = false
+                                root.bridge.openDrive(placeEntry.modelData.drive)
+                            } else if (placeEntry.adds) {
+                                root.remoteDraftName = ""
+                                root.providerQuery = ""
+                                root.remoteSheetOpen = true
+                            } else {
+                                root.recentOpen = false
+                                root.trashOpen = false
+                                root.bridge.navigate(placeEntry.target)
+                            }
+                        }
+                    }
+                }
+
+                // How full the disk is. The ring earns its height here only
+                // because what this folder holds now sits beside its name.
+                Rectangle {
+                    id: ringPanel
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    anchors.margins: 12
+                    height: 128
+                    radius: 10
+                    color: root.raised
+                    border.width: 1
+                    border.color: root.line
+
+                    Overline {
+                        id: storageHead
+                        anchors.left: parent.left
+                        anchors.top: parent.top
+                        anchors.margins: 11
+                        text: "STORAGE"
+                    }
+
+                    Item {
+                        id: ring
+                        anchors.left: parent.left
+                        anchors.leftMargin: 11
+                        anchors.top: storageHead.bottom
+                        anchors.topMargin: 8
+                        width: 62
+                        height: 62
+
+                        // What this folder takes of the disk it sits on. It fills
+                        // in as the count runs, so a large tree shows progress
+                        // rather than nothing.
+                        readonly property real share: {
                             void root.revision
-                            if (!root.bridge.storageKnown())
-                                return []
-                            return [
-                                {
-                                    label: "This folder",
-                                    value: root.readableSize(root.bridge.folderBytes()),
-                                    shade: root.spectral
-                                },
-                                {
-                                    label: "Disk free",
-                                    value: root.readableSize(root.bridge.storageTotal()
-                                                             - root.bridge.storageUsed()),
-                                    shade: root.raisedHigh
+                            return root.bridge.folderShare()
+                        }
+                        readonly property bool counting: {
+                            void root.revision
+                            return root.bridge.folderMeasuring()
+                        }
+
+                        Shape {
+                            anchors.fill: parent
+                            preferredRendererType: Shape.CurveRenderer
+
+                            // The whole disk.
+                            ShapePath {
+                                fillColor: "transparent"
+                                strokeColor: root.raisedHigh
+                                strokeWidth: 9
+                                capStyle: ShapePath.FlatCap
+                                PathAngleArc {
+                                    centerX: ring.width / 2
+                                    centerY: ring.height / 2
+                                    radiusX: ring.width / 2 - 5
+                                    radiusY: ring.height / 2 - 5
+                                    startAngle: -90
+                                    sweepAngle: 360
                                 }
-                            ]
+                            }
+
+                            // What is on it.
+                            ShapePath {
+                                fillColor: "transparent"
+                                strokeColor: ring.share > 0.9 ? root.ember : root.spectral
+                                strokeWidth: 9
+                                capStyle: ShapePath.FlatCap
+                                PathAngleArc {
+                                    centerX: ring.width / 2
+                                    centerY: ring.height / 2
+                                    radiusX: ring.width / 2 - 5
+                                    radiusY: ring.height / 2 - 5
+                                    startAngle: -90
+                                    sweepAngle: 360 * ring.share
+                                }
+                            }
                         }
 
-                        delegate: Row {
-                            id: storageLegend
-                            required property var modelData
-                            spacing: 6
-
-                            Rectangle {
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: 6
-                                height: 6
-                                radius: 3
-                                color: storageLegend.modelData.shade
+                        Mono {
+                            anchors.centerIn: parent
+                            text: {
+                                void root.revision
+                                return root.readableSize(root.bridge.folderBytes())
                             }
-
-                            Text {
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: storageLegend.modelData.label
-                                color: root.inkFaint
-                                font.family: root.sansFamily
-                                font.pixelSize: 10
-                            }
-
-                            Mono {
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: storageLegend.modelData.value
-                                color: root.inkGhost
-                                font.pixelSize: 10
-                            }
+                            color: ring.counting ? root.inkFaint : root.inkMuted
+                            font.pixelSize: 10
                         }
                     }
 
-                    Text {
-                        visible: {
-                            void root.revision
-                            return root.bridge.storageKnown()
-                        }
-                        text: {
-                            void root.revision
-                            const files = root.bridge.folderFiles()
-                            return ring.counting
-                                   ? "counting… " + files + " files"
-                                   : files + " files in all"
-                        }
-                        color: root.inkGhost
-                        font.family: root.sansFamily
-                        font.pixelSize: 10
-                    }
+                    Column {
+                        anchors.left: ring.right
+                        anchors.leftMargin: 12
+                        anchors.right: parent.right
+                        anchors.rightMargin: 11
+                        anchors.verticalCenter: ring.verticalCenter
+                        spacing: 7
 
-                    Text {
-                        visible: {
-                            void root.revision
-                            return !root.bridge.storageKnown()
+                        Repeater {
+                            model: {
+                                void root.revision
+                                if (!root.bridge.storageKnown())
+                                    return []
+                                return [
+                                    {
+                                        label: "This folder",
+                                        value: root.readableSize(root.bridge.folderBytes()),
+                                        shade: root.spectral
+                                    },
+                                    {
+                                        label: "Disk free",
+                                        value: root.readableSize(root.bridge.storageTotal()
+                                                                 - root.bridge.storageUsed()),
+                                        shade: root.raisedHigh
+                                    }
+                                ]
+                            }
+
+                            delegate: Row {
+                                id: storageLegend
+                                required property var modelData
+                                spacing: 6
+
+                                Rectangle {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: 6
+                                    height: 6
+                                    radius: 3
+                                    color: storageLegend.modelData.shade
+                                }
+
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: storageLegend.modelData.label
+                                    color: root.inkFaint
+                                    font.family: root.sansFamily
+                                    font.pixelSize: 10
+                                }
+
+                                Mono {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: storageLegend.modelData.value
+                                    color: root.inkGhost
+                                    font.pixelSize: 10
+                                }
+                            }
                         }
-                        text: "Not this machine's disk"
-                        color: root.inkGhost
-                        font.family: root.sansFamily
-                        font.pixelSize: 10
+
+                        Text {
+                            visible: {
+                                void root.revision
+                                return root.bridge.storageKnown()
+                            }
+                            text: {
+                                void root.revision
+                                const files = root.bridge.folderFiles()
+                                return ring.counting
+                                       ? "counting… " + files + " files"
+                                       : files + " files in all"
+                            }
+                            color: root.inkGhost
+                            font.family: root.sansFamily
+                            font.pixelSize: 10
+                        }
+
+                        Text {
+                            visible: {
+                                void root.revision
+                                return !root.bridge.storageKnown()
+                            }
+                            text: "Not this machine's disk"
+                            color: root.inkGhost
+                            font.family: root.sansFamily
+                            font.pixelSize: 10
+                        }
                     }
                 }
             }
+
         }
 
         // ============================== MAIN ==============================
