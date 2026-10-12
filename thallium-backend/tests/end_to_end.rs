@@ -371,6 +371,10 @@ fn rename_moves_the_entry_and_refuses_to_replace_another() {
 	assert_eq!(task.status, TaskStatus::Succeeded);
 	assert_eq!(fs::read(root.path().join("new.txt")).expect("renamed"), b"keep");
 	assert!(!root.path().join("old.txt").exists());
+	wait_for(&mut backend, "the listing to show the new name only", |backend| {
+		let names = names(backend);
+		(names.contains(&b"new.txt".to_vec()) && !names.contains(&b"old.txt".to_vec())).then_some(())
+	});
 	backend.shutdown().expect("shutdown");
 }
 
@@ -447,5 +451,28 @@ fn names_with_a_slash_or_dots_are_refused() {
 		});
 		assert!(result.is_err(), "{name:?} must be refused");
 	}
+	backend.shutdown().expect("shutdown");
+}
+
+#[test]
+fn a_folder_left_and_reentered_is_still_watched() {
+	let root = TempDir::new().expect("root");
+	fs::create_dir(root.path().join("inner")).expect("seed inner");
+
+	let mut backend = start(root.path());
+	wait_for(&mut backend, "the first listing", |backend| {
+		names(backend).contains(&b"inner".to_vec()).then_some(())
+	});
+	backend.submit(Command::Navigate(at(&root.path().join("inner")))).expect("enter");
+	wait_for(&mut backend, "the inner listing", |backend| names(backend).is_empty().then_some(()));
+	backend.submit(Command::Navigate(at(root.path()))).expect("leave");
+	wait_for(&mut backend, "the outer listing again", |backend| {
+		names(backend).contains(&b"inner".to_vec()).then_some(())
+	});
+
+	fs::write(root.path().join("late.txt"), b"x").expect("write after return");
+	wait_for(&mut backend, "the file made after returning", |backend| {
+		names(backend).contains(&b"late.txt".to_vec()).then_some(())
+	});
 	backend.shutdown().expect("shutdown");
 }

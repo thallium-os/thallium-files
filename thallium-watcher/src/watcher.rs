@@ -101,7 +101,15 @@ impl<B: FileSystem> Watcher<B> {
 	///
 	/// New watches are installed before their baseline scan, so an event racing
 	/// with initialization remains queued for a subsequent authoritative rescan.
-	pub async fn sync_watch_set(&mut self, desired: WatchedSet) -> FsResult<WatchSetDiff> {
+	/// Their baselines take `generation`, the generation the caller's listing
+	/// is at, so the first delta is exactly one past it. Starting every watch
+	/// at a fixed generation instead made the browser drop every delta after
+	/// its first navigation.
+	pub async fn sync_watch_set(
+		&mut self,
+		desired: WatchedSet,
+		generation: ListingGeneration,
+	) -> FsResult<WatchSetDiff> {
 		if self.closed {
 			return Err(FsError::new(FsErrorCode::Cancelled, "watcher is shut down", None));
 		}
@@ -130,10 +138,7 @@ impl<B: FileSystem> Watcher<B> {
 			installed.push(location.clone());
 			match self.backend.scan(location).await {
 				Ok(entries) => {
-					baselines.insert(location.clone(), DirectorySnapshot {
-						generation: ListingGeneration(1),
-						entries,
-					});
+					baselines.insert(location.clone(), DirectorySnapshot { generation, entries });
 				}
 				Err(error) => {
 					self.rollback_installed(&installed);
@@ -167,9 +172,13 @@ impl<B: FileSystem> Watcher<B> {
 		if self.closed {
 			return None;
 		}
-		let first = self.receiver.recv().await?;
-		if let Some(batch) = self.batcher.push(first) {
-			return Some(self.complete_batch(batch));
+		// A caller that selects over this future drops it whenever a command
+		// arrives. Hints already batched must not then wait for another one.
+		if self.batcher.pending_len() == 0 {
+			let first = self.receiver.recv().await?;
+			if let Some(batch) = self.batcher.push(first) {
+				return Some(self.complete_batch(batch));
+			}
 		}
 
 		let deadline = tokio::time::sleep_until(Instant::now() + self.config.batch_window);
@@ -413,7 +422,10 @@ mod tests {
 		let directory = TempDir::new().expect("temporary directory");
 		let location = Location::local(NativePath::from(directory.path()));
 		let mut watcher = Watcher::new(Arc::new(LocalBackend::new()), config()).expect("watcher");
-		watcher.sync_watch_set(WatchedSet::single_local(location)).await.expect("install watch");
+		watcher
+			.sync_watch_set(WatchedSet::single_local(location), ListingGeneration(1))
+			.await
+			.expect("install watch");
 
 		let file = directory.path().join("created");
 		tokio::fs::write(&file, b"content").await.expect("create file");
@@ -432,7 +444,7 @@ mod tests {
 		let location = Location::local(NativePath::from(directory.path()));
 		let mut watcher = Watcher::new(Arc::new(LocalBackend::new()), config()).expect("watcher");
 		watcher
-			.sync_watch_set(WatchedSet::single_local(location.clone()))
+			.sync_watch_set(WatchedSet::single_local(location.clone()), ListingGeneration(1))
 			.await
 			.expect("install watch");
 

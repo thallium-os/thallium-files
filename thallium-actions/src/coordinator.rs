@@ -71,7 +71,11 @@ pub struct FeedbackReport {
 }
 
 enum WatcherCommand {
-	Synchronize(WatchedSet, oneshot::Sender<Result<thallium_watcher::WatchSetDiff, FsError>>),
+	Synchronize(
+		WatchedSet,
+		thallium_fs_core::ListingGeneration,
+		oneshot::Sender<Result<thallium_watcher::WatchSetDiff, FsError>>,
+	),
 	Refresh(Location, oneshot::Sender<Result<(), EffectError>>),
 	Shutdown(oneshot::Sender<Result<(), FsError>>),
 }
@@ -388,7 +392,7 @@ impl<V: FileSystem + 'static> Coordinator<V> {
 				Ok(entries) => Ok(EffectFeedback::DirectoryScanned { location, generation, entries }),
 				Err(error) => Ok(EffectFeedback::DirectoryScanFailed { location, generation, error }),
 			},
-			StateEffect::WatchLocations { locations } => {
+			StateEffect::WatchLocations { locations, generation } => {
 				// The watcher is inotify over the local filesystem. A remote has
 				// no equivalent to offer it, so those locations go unwatched and
 				// are refreshed when they are navigated to instead.
@@ -399,7 +403,7 @@ impl<V: FileSystem + 'static> Coordinator<V> {
 						.map(thallium_watcher::Watchee::local),
 				);
 				let (reply, response) = oneshot::channel();
-				self.send_watcher(WatcherCommand::Synchronize(desired, reply))?;
+				self.send_watcher(WatcherCommand::Synchronize(desired, generation, reply))?;
 				let diff = response
 					.await
 					.map_err(|_| service_stopped(EffectKind::Watcher))?
@@ -557,8 +561,8 @@ async fn run_watcher<V: FileSystem>(
 		tokio::select! {
 			biased;
 			command = commands.recv() => match command {
-				Some(WatcherCommand::Synchronize(desired, reply)) => {
-					let _ = reply.send(watcher.sync_watch_set(desired).await);
+				Some(WatcherCommand::Synchronize(desired, generation, reply)) => {
+					let _ = reply.send(watcher.sync_watch_set(desired, generation).await);
 				}
 				Some(WatcherCommand::Refresh(location, reply)) => {
 					let result = watcher.request_refresh(location.clone()).map_err(|error| EffectError {
