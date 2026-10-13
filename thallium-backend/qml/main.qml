@@ -3094,47 +3094,6 @@ ApplicationWindow {
                 anchors.bottomMargin: 4
                 clip: true
 
-                // Two fingers swept sideways on a touchpad, or a tilted
-                // wheel: right goes back, left goes forward, once per sweep.
-                Item {
-                    anchors.fill: parent
-                    z: 30
-                    WheelHandler {
-                        id: swipe
-                        target: null
-                        orientation: Qt.Horizontal
-                        property real travel: 0
-                        property bool spent: false
-                        onWheel: function (event) {
-                            const dx = event.pixelDelta.x !== 0 ? event.pixelDelta.x : event.angleDelta.x
-                            const dy = event.pixelDelta.y !== 0 ? event.pixelDelta.y : event.angleDelta.y
-                            if (Math.abs(dx) <= Math.abs(dy)) {
-                                event.accepted = false
-                                return
-                            }
-                            swipeEnd.restart()
-                            if (swipe.spent || root.settingsOpen)
-                                return
-                            swipe.travel += event.inverted ? -dx : dx
-                            if (Math.abs(swipe.travel) < 100)
-                                return
-                            swipe.spent = true
-                            if (swipe.travel > 0)
-                                root.bridge.back()
-                            else
-                                root.bridge.forward()
-                        }
-                    }
-                    Timer {
-                        id: swipeEnd
-                        interval: 300
-                        onTriggered: {
-                            swipe.travel = 0
-                            swipe.spent = false
-                        }
-                    }
-                }
-
 
                 // Selection toolbar, present only while something is held.
                 // Views anchor under this; it takes no room, so holding an
