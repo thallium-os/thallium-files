@@ -34,14 +34,16 @@ Rectangle {
         radius: Theme.radiusSmall
         color: "transparent"
         border.width: 1
-        border.color: Theme.outline
+        border.color: Theme.outlineSoft
 
+        // The element mark: brand voice, and the one place spectral green
+        // is allowed.
         Text {
             anchors.centerIn: parent
             text: "Tl"
-            color: Theme.ink
-            font.family: Theme.family
-            font.pixelSize: 15
+            color: "#43e07f"
+            font.family: "Unbounded"
+            font.pixelSize: 14
             font.weight: Font.DemiBold
         }
     }
@@ -75,16 +77,17 @@ Rectangle {
                         name: item.modelData.icon
                         size: 20
                         shade: item.active ? 1 : (itemMouse.containsMouse ? 0.8 : 0.5)
+                        tint: item.active ? Theme.accent : "transparent"
                     }
 
                     Text {
                         anchors.horizontalCenter: parent.horizontalCenter
                         text: item.modelData.label
-                        color: item.active ? Theme.ink : Theme.inkFaint
-                        font.family: Theme.family
+                        color: item.active ? Theme.accent : Theme.inkFaint
+                        font.family: Theme.mono
                         font.pixelSize: 9
                         font.weight: Font.Medium
-                        font.letterSpacing: 0.8
+                        font.letterSpacing: Theme.letterSpace
                     }
                 }
 

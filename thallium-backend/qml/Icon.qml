@@ -1,9 +1,10 @@
 import QtQuick
 import QtQuick.Effects
 
-// A Lucide outline icon from icons/. Drawn white and shaded by opacity, so
-// it takes the lightness of the ink around it, or recoloured with `tint`
-// where it has to sit dark on a light tile.
+// A Lucide outline icon from icons/, recoloured to the theme's ink and
+// shaded by opacity, or drawn in `tint` where it needs a colour of its own
+// (the accent, or the ink of a file tile). The SVGs are white, so they
+// would vanish on a light Thallium variant if drawn as shipped.
 Item {
     id: icon
     property string name: "file"
@@ -20,17 +21,18 @@ Item {
         anchors.fill: parent
         sourceSize: Qt.size(icon.size * 2, icon.size * 2)
         source: "icons/" + icon.name + ".svg"
-        opacity: icon.tinted ? 1 : icon.shade
-        visible: !icon.tinted
+        visible: false
         smooth: true
     }
 
     MultiEffect {
         anchors.fill: parent
         source: image
-        visible: icon.tinted
-        brightness: 1.0
+        // Shades were tuned for light ink on dark; dark ink on a light
+        // variant needs more of itself to read.
+        opacity: icon.tinted ? 1 : Theme.dark ? icon.shade : Math.min(1, icon.shade * 1.6)
+        brightness: 0.0
         colorization: 1.0
-        colorizationColor: icon.tint
+        colorizationColor: icon.tinted ? icon.tint : Theme.ink
     }
 }

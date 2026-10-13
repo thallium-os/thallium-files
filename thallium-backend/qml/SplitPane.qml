@@ -156,7 +156,7 @@ Rectangle {
                     return pane.timeText(pane.bridge.entryModified(row.entry))
                 }
                 color: Theme.inkDim
-                font.family: Theme.family
+                font.family: Theme.mono
                 font.pixelSize: 12
             }
 

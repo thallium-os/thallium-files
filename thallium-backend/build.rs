@@ -3,18 +3,15 @@ fn main() {
 		return;
 	}
 
-	let mut resources: Vec<String> = Vec::new();
-	for folder in ["qml/fonts", "qml/icons"] {
-		println!("cargo::rerun-if-changed={folder}");
-		let mut files: Vec<String> = std::fs::read_dir(folder)
-			.expect("asset folder")
-			.filter_map(Result::ok)
-			.map(|entry| entry.path().to_string_lossy().into_owned())
-			.filter(|path| path.ends_with(".ttf") || path.ends_with(".svg"))
-			.collect();
-		files.sort();
-		resources.extend(files);
-	}
+	let folder = "qml/icons";
+	println!("cargo::rerun-if-changed={folder}");
+	let mut resources: Vec<String> = std::fs::read_dir(folder)
+		.expect("asset folder")
+		.filter_map(Result::ok)
+		.map(|entry| entry.path().to_string_lossy().into_owned())
+		.filter(|path| path.ends_with(".svg"))
+		.collect();
+	resources.sort();
 
 	cxx_qt_build::CxxQtBuilder::new_qml_module(
 		cxx_qt_build::QmlModule::new("org.thallium.FileManager")

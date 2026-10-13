@@ -8,14 +8,15 @@ import org.thallium.FileManager 1.0
 
 // Thallium Files.
 //
-// Monochrome throughout: surfaces step in lightness, state is shown by fill
-// and a full outline, and the only ornament is the cross-ended hairline.
+// Drawn in the Thallium palette the rest of the desktop uses (see Theme):
+// surfaces step in lightness, state is an accent wash with a full accent
+// outline, and the only ornament is the cross-ended hairline.
 ApplicationWindow {
     id: root
 
     // The palette lives in Theme. These names are what the rest of this
-    // file was written against; the design is monochrome, so the old accent
-    // and warning roles all resolve to steps of grey.
+    // file was written against: the old spectral and ember roles are the
+    // Thallium accent now, and destructive is the palette's red.
     readonly property color canvas: Theme.canvas
     readonly property color raised: Theme.surface
     readonly property color raisedHigh: Theme.selected
@@ -31,17 +32,27 @@ ApplicationWindow {
     readonly property color inkFaint: Theme.inkDim
     readonly property color inkGhost: Theme.inkFaint
 
-    readonly property color spectral: Theme.ink
-    readonly property color spectralDim: "#33FFFFFF"
+    readonly property color spectral: Theme.accent
+    readonly property color spectralDim: Theme.accentWash
 
-    readonly property color ember: Theme.inkSoft
+    readonly property color ember: Theme.accent
     readonly property color emberInk: Theme.ink
-    readonly property color emberWash: Theme.selected
+    readonly property color emberWash: Theme.accentWash
     readonly property color emberEdge: Theme.outline
-    readonly property color destructive: Theme.inkSoft
+    readonly property color destructive: Theme.danger
 
     readonly property string sansFamily: Theme.family
-    readonly property string monoFamily: Theme.family
+    readonly property string monoFamily: Theme.mono
+
+    // Follow the Thallium theme picked in Settings. The file is a few bytes,
+    // so re-reading it each second is cheaper than a watcher's plumbing.
+    Timer {
+        interval: 1000
+        repeat: true
+        running: true
+        triggeredOnStart: true
+        onTriggered: Theme.conf = root.bridge.themeConf()
+    }
 
     readonly property int unit: 4
     // Below these window widths a column folds away so the file pane keeps
@@ -2240,10 +2251,10 @@ ApplicationWindow {
 
     component Overline: Text {
         color: root.inkGhost
-        font.family: root.sansFamily
-        font.pixelSize: 11
-        font.weight: Font.DemiBold
-        font.letterSpacing: 0.9
+        font.family: Theme.mono
+        font.pixelSize: 10
+        font.weight: Font.Medium
+        font.letterSpacing: Theme.letterSpace
     }
 
     component Mono: Text {
@@ -3901,7 +3912,7 @@ ApplicationWindow {
                             text: root.bridge.trashOrigin(trashRow.index)
                             elide: Text.ElideLeft
                             color: Theme.inkDim
-                            font.family: Theme.family
+                            font.family: Theme.mono
                             font.pixelSize: Theme.textSmall
                         }
 
@@ -3912,7 +3923,7 @@ ApplicationWindow {
                             anchors.verticalCenter: parent.verticalCenter
                             text: root.modifiedText(root.bridge.trashDeleted(trashRow.index))
                             color: Theme.inkDim
-                            font.family: Theme.family
+                            font.family: Theme.mono
                             font.pixelSize: Theme.textSmall
                         }
 
@@ -4026,7 +4037,7 @@ ApplicationWindow {
                             text: recentRow.where
                             elide: Text.ElideLeft
                             color: Theme.inkDim
-                            font.family: Theme.family
+                            font.family: Theme.mono
                             font.pixelSize: Theme.textSmall
                         }
 
@@ -4145,7 +4156,7 @@ ApplicationWindow {
                             text: resultRow.where
                             elide: Text.ElideLeft
                             color: Theme.inkDim
-                            font.family: Theme.family
+                            font.family: Theme.mono
                             font.pixelSize: Theme.textSmall
                         }
 
@@ -4368,7 +4379,7 @@ ApplicationWindow {
                             elide: Text.ElideRight
                             text: listRow.folder ? "Folder" : root.kindOf(listRow.name, false)
                             color: Theme.inkFaint
-                            font.family: Theme.family
+                            font.family: Theme.mono
                             font.pixelSize: 12
                         }
 
@@ -4386,7 +4397,7 @@ ApplicationWindow {
                                 return listRow.folder ? "—" : root.bridge.entryDetail(listRow.entry)
                             }
                             color: Theme.inkDim
-                            font.family: Theme.family
+                            font.family: Theme.mono
                             font.pixelSize: 12
                         }
 
@@ -4403,7 +4414,7 @@ ApplicationWindow {
                                 return root.modifiedText(root.bridge.entryModified(listRow.entry))
                             }
                             color: Theme.inkSoft
-                            font.family: Theme.family
+                            font.family: Theme.mono
                             font.pixelSize: 12
                         }
 
@@ -5077,22 +5088,22 @@ ApplicationWindow {
                         width: 104
                         height: 104
                         radius: 52
-                        color: "#D8D8DD"
+                        color: Theme.accent
                         Column {
                             anchors.centerIn: parent
                             Text {
                                 anchors.horizontalCenter: parent.horizontalCenter
                                 text: root.readableSize(storagePanel.used)
-                                color: Theme.tileInk
-                                font.family: Theme.family
+                                color: Theme.canvas
+                                font.family: Theme.mono
                                 font.pixelSize: 17
                                 font.weight: Font.DemiBold
                             }
                             Text {
                                 anchors.horizontalCenter: parent.horizontalCenter
                                 text: "USED"
-                                color: "#5A5A62"
-                                font.family: Theme.family
+                                color: Theme.wash(Theme.canvas, 0.7)
+                                font.family: Theme.mono
                                 font.pixelSize: 9
                                 font.letterSpacing: 1
                             }

@@ -365,6 +365,9 @@ pub mod ffi {
 		#[rust_name = "trash_is_dir"]
 		fn trashIsDir(&self, row: i32) -> bool;
 		#[qinvokable]
+		#[rust_name = "theme_conf"]
+		fn themeConf(&self) -> QString;
+		#[qinvokable]
 		#[rust_name = "restore_trash"]
 		fn restoreTrash(self: Pin<&mut Self>, rows: &QList_i32);
 		#[qinvokable]
@@ -1305,6 +1308,19 @@ impl ffi::BackendBridge {
 				_ => false,
 			}
 		})
+	}
+
+	/// The shared Thallium theme choice, `~/.config/thallium/theme.conf`, as
+	/// text; empty when nothing has been picked yet. The shell and Settings
+	/// read and write the same file under `$HOME`, not `$XDG_CONFIG_HOME`.
+	pub fn theme_conf(&self) -> QString {
+		std::env::var_os("HOME")
+			.and_then(|home| {
+				std::fs::read_to_string(PathBuf::from(home).join(".config/thallium/theme.conf")).ok()
+			})
+			.unwrap_or_default()
+			.as_str()
+			.into()
 	}
 
 	pub fn restore_trash(mut self: Pin<&mut Self>, rows: &ffi::QList_i32) {
