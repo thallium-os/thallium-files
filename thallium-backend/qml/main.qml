@@ -2728,15 +2728,14 @@ ApplicationWindow {
                     border.width: 1
                     border.color: folderSearchInput.activeFocus ? root.lineStrong : root.line
 
-                    Text {
+                    Icon {
                         id: folderSearchGlyph
                         anchors.left: parent.left
                         anchors.leftMargin: 10
                         anchors.verticalCenter: parent.verticalCenter
-                        text: "⌕"
-                        color: root.inkFaint
-                        font.family: root.sansFamily
-                        font.pixelSize: 14
+                        name: "search"
+                        size: 13
+                        shade: 0.45
                     }
 
                     TextInput {
@@ -2759,7 +2758,7 @@ ApplicationWindow {
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
                             visible: folderSearchInput.text.length === 0
-                            text: "Search…"
+                            text: root.sidebarTab === "places" ? "Filter places…" : "Filter folders…"
                             color: root.inkGhost
                             font.family: root.sansFamily
                             font.pixelSize: 12
@@ -2838,7 +2837,14 @@ ApplicationWindow {
                     clip: true
                     spacing: 2
                     visible: root.sidebarTab === "places"
-                    model: root.places
+                    model: {
+                        const needle = root.folderQuery.toLowerCase()
+                        if (needle.length === 0)
+                            return root.places
+                        return root.places.filter(function (place) {
+                            return place.label.toLowerCase().indexOf(needle) >= 0
+                        })
+                    }
                     boundsBehavior: Flickable.StopAtBounds
                     section.property: "section"
                     section.delegate: Item {
