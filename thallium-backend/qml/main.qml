@@ -3532,6 +3532,116 @@ ApplicationWindow {
                     height: 0
                 }
 
+                // Transfers float over the foot of the pane, above the dock, so
+                // they show whether or not the preview panel is open.
+                Rectangle {
+                    id: taskPanel
+                    z: 20
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    anchors.rightMargin: 18
+                    anchors.bottomMargin: selectionDock.visible ? 18 + selectionDock.height + 10 : 18
+                    width: Math.min(360, parent.width - 36)
+                    height: root.taskCount > 0 ? Math.min(220, 34 + root.taskCount * 48) : 0
+                    visible: root.taskCount > 0
+                    radius: Theme.radius
+                    color: Theme.surfaceHigh
+                    border.width: 1
+                    border.color: Theme.outlineSoft
+                    clip: true
+
+                    Text {
+                        id: taskHeading
+                        anchors.left: parent.left
+                        anchors.top: parent.top
+                        anchors.margins: 14
+                        text: "Transfers"
+                        color: Theme.ink
+                        font.family: Theme.family
+                        font.pixelSize: Theme.text
+                        font.weight: Font.Medium
+                    }
+
+                    ListView {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: taskHeading.bottom
+                        anchors.bottom: parent.bottom
+                        anchors.margins: 12
+                        anchors.topMargin: 8
+                        clip: true
+                        spacing: 8
+                        model: root.tasks
+                        boundsBehavior: Flickable.StopAtBounds
+
+                        delegate: Item {
+                            id: taskRow
+                            required property int modelData
+                            readonly property int slot: taskRow.modelData
+                            width: ListView.view.width
+                            height: 40
+
+                            Text {
+                                id: taskTitle
+                                anchors.left: parent.left
+                                anchors.right: taskCancel.left
+                                anchors.rightMargin: 6
+                                anchors.top: parent.top
+                                elide: Text.ElideMiddle
+                                text: {
+                                    void root.revision
+                                    return root.bridge.taskTitle(taskRow.slot)
+                                }
+                                color: Theme.inkSoft
+                                font.family: Theme.family
+                                font.pixelSize: 12
+                            }
+                            IconButton {
+                                id: taskCancel
+                                anchors.right: parent.right
+                                anchors.top: parent.top
+                                anchors.topMargin: -5
+                                implicitWidth: 24
+                                implicitHeight: 24
+                                icon: "x"
+                                iconSize: 13
+                                hint: "Cancel or dismiss"
+                                onClicked: root.bridge.cancelTask(root.bridge.taskId(taskRow.slot))
+                            }
+                            Text {
+                                anchors.left: parent.left
+                                anchors.top: taskTitle.bottom
+                                anchors.topMargin: 1
+                                text: {
+                                    void root.revision
+                                    return root.bridge.taskStatus(taskRow.slot)
+                                }
+                                color: Theme.inkFaint
+                                font.family: Theme.family
+                                font.pixelSize: 10
+                            }
+                            Rectangle {
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.bottom: parent.bottom
+                                height: 3
+                                radius: 2
+                                color: Theme.control
+                                Rectangle {
+                                    readonly property int progress: {
+                                        void root.revision
+                                        return root.bridge.taskProgress(taskRow.slot)
+                                    }
+                                    height: parent.height
+                                    radius: 2
+                                    width: parent.width * Math.max(0, Math.min(100, progress)) / 100
+                                    color: Theme.inkSoft
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // What can be done with the held entries, floating over the
                 // foot of the pane while anything is held.
                 Rectangle {
@@ -5160,113 +5270,6 @@ ApplicationWindow {
                 }
             }
 
-            // ---- Transfers ----
-            Rectangle {
-                id: taskPanel
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.bottom: parent.bottom
-                anchors.margins: 20
-                anchors.bottomMargin: root.taskCount > 0 ? 20 : 0
-                height: root.taskCount > 0 ? Math.min(220, 34 + root.taskCount * 48) : 0
-                visible: root.taskCount > 0
-                radius: Theme.radius
-                color: Theme.surfaceHigh
-                border.width: 1
-                border.color: Theme.outlineSoft
-                clip: true
-
-                Text {
-                    id: taskHeading
-                    anchors.left: parent.left
-                    anchors.top: parent.top
-                    anchors.margins: 14
-                    text: "Transfers"
-                    color: Theme.ink
-                    font.family: Theme.family
-                    font.pixelSize: Theme.text
-                    font.weight: Font.Medium
-                }
-
-                ListView {
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: taskHeading.bottom
-                    anchors.bottom: parent.bottom
-                    anchors.margins: 12
-                    anchors.topMargin: 8
-                    clip: true
-                    spacing: 8
-                    model: root.tasks
-                    boundsBehavior: Flickable.StopAtBounds
-
-                    delegate: Item {
-                        id: taskRow
-                        required property int modelData
-                        readonly property int slot: taskRow.modelData
-                        width: ListView.view.width
-                        height: 40
-
-                        Text {
-                            id: taskTitle
-                            anchors.left: parent.left
-                            anchors.right: taskCancel.left
-                            anchors.rightMargin: 6
-                            anchors.top: parent.top
-                            elide: Text.ElideMiddle
-                            text: {
-                                void root.revision
-                                return root.bridge.taskTitle(taskRow.slot)
-                            }
-                            color: Theme.inkSoft
-                            font.family: Theme.family
-                            font.pixelSize: 12
-                        }
-                        IconButton {
-                            id: taskCancel
-                            anchors.right: parent.right
-                            anchors.top: parent.top
-                            anchors.topMargin: -5
-                            implicitWidth: 24
-                            implicitHeight: 24
-                            icon: "x"
-                            iconSize: 13
-                            hint: "Cancel or dismiss"
-                            onClicked: root.bridge.cancelTask(root.bridge.taskId(taskRow.slot))
-                        }
-                        Text {
-                            anchors.left: parent.left
-                            anchors.top: taskTitle.bottom
-                            anchors.topMargin: 1
-                            text: {
-                                void root.revision
-                                return root.bridge.taskStatus(taskRow.slot)
-                            }
-                            color: Theme.inkFaint
-                            font.family: Theme.family
-                            font.pixelSize: 10
-                        }
-                        Rectangle {
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.bottom: parent.bottom
-                            height: 3
-                            radius: 2
-                            color: Theme.control
-                            Rectangle {
-                                readonly property int progress: {
-                                    void root.revision
-                                    return root.bridge.taskProgress(taskRow.slot)
-                                }
-                                height: parent.height
-                                radius: 2
-                                width: parent.width * Math.max(0, Math.min(100, progress)) / 100
-                                color: Theme.inkSoft
-                            }
-                        }
-                    }
-                }
-            }
         }
     }
 
