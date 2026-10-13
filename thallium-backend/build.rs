@@ -31,6 +31,7 @@ fn main() {
 				"qml/Sheet.qml",
 				"qml/Check.qml",
 				"qml/Chips.qml",
+				"qml/SplitPane.qml",
 			]),
 	)
 	.qrc_resources(resources)

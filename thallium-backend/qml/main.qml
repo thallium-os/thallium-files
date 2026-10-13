@@ -622,7 +622,10 @@ ApplicationWindow {
         MenuLine { text: "New tab"; onTriggered: root.newTab(root.bridge.currentPath) }
         MenuLine { text: "Open terminal here"; onTriggered: root.bridge.openTerminalHere() }
         MenuLine { text: "Go to location…"; onTriggered: root.editPath() }
+        MenuLine { text: root.splitOpen ? "Close split view" : "Split view"; onTriggered: root.toggleSplit() }
     }
+
+    Shortcut { sequences: ["F3"]; onActivated: root.toggleSplit() }
 
     MenuSurface {
         id: settingsMenu
@@ -655,6 +658,31 @@ ApplicationWindow {
     Component {
         id: bridgeFactory
         BackendBridge {}
+    }
+
+    // ---- Split view ----
+    // A second bridge shown beside the main pane, for moving files between
+    // two folders. It opens on the folder the main pane shows.
+    property BackendBridge splitBridge: null
+    readonly property bool splitOpen: root.splitBridge !== null
+
+    function toggleSplit() {
+        if (root.splitOpen) {
+            const closing = root.splitBridge
+            root.splitBridge = null
+            closing.destroy()
+            return
+        }
+        const side = bridgeFactory.createObject(root)
+        side.navigate(root.bridge.currentPath)
+        root.splitBridge = side
+    }
+
+    // Copy (or move) what is held in the main pane into the split pane's folder.
+    function sendToSplit(move) {
+        const uris = root.bridge.selectedUris()
+        if (uris.length > 0)
+            root.bridge.dropUris(uris, root.splitBridge.currentPath, move ? 2 : 1)
     }
 
     function newTab(path) {
@@ -872,6 +900,20 @@ ApplicationWindow {
         MenuLine {
             text: "Copy path"
             onTriggered: root.copyToClipboard(root.bridge.entryPath(entryMenu.row))
+        }
+        // Only with split view open; a hidden menu item still takes room
+        // unless its height goes too.
+        MenuLine {
+            text: "Copy to other pane"
+            visible: root.splitOpen
+            height: visible ? implicitHeight : 0
+            onTriggered: root.sendToSplit(false)
+        }
+        MenuLine {
+            text: "Move to other pane"
+            visible: root.splitOpen
+            height: visible ? implicitHeight : 0
+            onTriggered: root.sendToSplit(true)
         }
         MenuSeparator {
             contentItem: Rectangle { implicitHeight: 1; color: root.line }
@@ -2073,6 +2115,8 @@ ApplicationWindow {
         onTriggered: {
             for (let i = 0; i < root.tabs.length; i++)
                 root.tabs[i].poll()
+            if (root.splitOpen)
+                root.splitBridge.poll()
         }
     }
 
@@ -2953,7 +2997,7 @@ ApplicationWindow {
         // ============================== MAIN ==============================
         Item {
             id: main
-            width: parent.width - root.sidebarWidth - (root.previewOpen ? root.inspectorWidth : 0)
+            width: parent.width - root.sidebarWidth - (root.previewOpen ? root.inspectorWidth : 0) - splitPane.width
             height: parent.height
 
             // ---- Header ----
@@ -4721,6 +4765,19 @@ ApplicationWindow {
                 }
             }
         }
+        // ============================= SPLIT ==============================
+        SplitPane {
+            id: splitPane
+            width: root.splitOpen ? Math.round((parent.width - root.sidebarWidth - (root.previewOpen ? root.inspectorWidth : 0)) * 0.45) : 0
+            height: parent.height
+            visible: root.splitOpen
+            bridge: root.splitBridge
+            showHidden: root.showHidden
+            timeText: root.modifiedText
+            onCloseRequested: root.toggleSplit()
+            onDropped: function (drop, path) { root.dropInto(drop, path) }
+        }
+
         // =========================== PREVIEW =============================
         // A panel, not a fixture: it folds away and gives the width back.
         Rectangle {
