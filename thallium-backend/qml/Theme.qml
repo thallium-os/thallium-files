@@ -205,7 +205,7 @@ QtObject {
     readonly property int radius: 8
     readonly property int radiusSmall: 6
     readonly property int gap: 12
-    readonly property int placesWidth: 232
+    readonly property int railWidth: 92
     readonly property int previewWidth: 320
     readonly property int controlHeight: 34
     readonly property int rowHeight: 56

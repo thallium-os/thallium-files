@@ -57,10 +57,8 @@ ApplicationWindow {
     readonly property int unit: 4
     // Below these window widths a column folds away so the file pane keeps
     // room for names; tiled at half a screen, only the rail stays.
-    readonly property bool roomForPlaces: root.width >= 860
     readonly property bool roomForPreview: root.width >= 1240
-    // Narrow, the sidebar keeps its icons and drops its labels.
-    readonly property int sidebarWidth: root.roomForPlaces ? Theme.placesWidth : 58
+    readonly property int sidebarWidth: Theme.railWidth
     // In a narrow file pane the Kind and then the Size column give their
     // width to the name.
     readonly property bool kindColumn: main.width >= 760
@@ -88,9 +86,7 @@ ApplicationWindow {
         searchInput.forceActiveFocus()
     }
     property string query: ""
-    property string folderQuery: ""
     property bool showHidden: false
-    property string sidebarTab: "places"
     // The preview switch remembers one choice for wide windows (open by
     // default) and one for narrow ones (closed by default).
     property bool previewWide: true
@@ -220,9 +216,10 @@ ApplicationWindow {
                       { label: "Recent", folder: null, recent: true, icon: "clock", section: "" } ]
         for (let i = 0; i < known.length; ++i) {
             if (seen.length === 0 || seen.indexOf(known[i]) >= 0)
-                out.push({ label: known[i], folder: known[i], icon: icons[known[i]], section: "" })
+                out.push({ label: known[i], short: known[i] === "Documents" ? "Docs" : known[i],
+                          folder: known[i], icon: icons[known[i]], section: "" })
         }
-        out.push({ label: "Filesystem", folder: "/", icon: "hard-drive", section: "" })
+        out.push({ label: "Filesystem", short: "System", folder: "/", icon: "hard-drive", section: "" })
         out.push({ label: "Trash", folder: null, trash: true, icon: "trash-2", section: "" })
         // Drives that can be mounted, mounted or not.
         void root.revision
@@ -280,45 +277,6 @@ ApplicationWindow {
             if (root.composition[i].label === label)
                 return root.composition[i].count
         return 0
-    }
-
-    // The tree is the live path: every ancestor of the folder on screen,
-    // then the subfolders it actually contains. Nothing is invented, and
-    // nothing is read from a directory we have not opened.
-    readonly property var tree: {
-        void root.revision
-        const out = []
-        const chain = root.crumbs
-        for (let i = 0; i < chain.length; ++i) {
-            out.push({
-                label: chain[i].label === "/" ? "Filesystem" : chain[i].label,
-                path: chain[i].path,
-                depth: i,
-                current: i === chain.length - 1,
-                badge: ""
-            })
-        }
-        const needle = root.folderQuery.toLowerCase()
-        const total = root.bridge.entryCount()
-        for (let i = 0; i < total; ++i) {
-            if (!root.bridge.entryIsDirectory(i))
-                continue
-            const name = root.bridge.entryName(i)
-            if (!root.showHidden && root.isHidden(name))
-                continue
-            if (needle.length > 0 && name.toLowerCase().indexOf(needle) < 0)
-                continue
-            out.push({
-                label: name,
-                path: root.bridge.entryPath(i),
-                depth: chain.length,
-                current: false,
-                badge: ""
-            })
-        }
-        if (out.length > chain.length)
-            out[chain.length - 1].badge = String(out.length - chain.length)
-        return out
     }
 
     // Segments with nothing in them are not drawn, and a Row gives no spacing
@@ -2434,139 +2392,6 @@ ApplicationWindow {
         }
     }
 
-    // One half of the sidebar's segmented control.
-    component Segment: Rectangle {
-        id: segment
-        property string label: ""
-        property string key: ""
-
-        readonly property bool current: root.sidebarTab === segment.key
-        implicitHeight: 26
-        radius: 6
-        color: segment.current ? root.raisedHigh : "transparent"
-        border.width: segment.current ? 1 : 0
-        border.color: root.line
-
-        Text {
-            anchors.centerIn: parent
-            text: segment.label
-            color: segment.current ? root.ink : root.inkFaint
-            font.family: root.sansFamily
-            font.pixelSize: 12
-            font.weight: segment.current ? Font.DemiBold : Font.Normal
-        }
-
-        MouseArea {
-            anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
-            onClicked: root.sidebarTab = segment.key
-        }
-    }
-
-    // A row of the folder tree: indent guides, folder mark, name, count.
-    component TreeRow: Rectangle {
-        id: treeRow
-        property string label: ""
-        property string badge: ""
-        property int depth: 0
-        property bool current: false
-        signal activated
-
-        readonly property int step: 14
-
-        width: parent ? parent.width : 0
-        implicitHeight: 30
-        radius: 7
-        color: treeRow.current
-               ? root.raisedHigh
-               : (treeMouse.containsMouse ? root.raised : "transparent")
-        border.width: treeRow.current ? 1 : 0
-        border.color: root.line
-
-        // The guides that tie a child back to its parent.
-        Repeater {
-            model: treeRow.depth
-
-            delegate: Item {
-                required property int index
-                readonly property bool elbow: index === treeRow.depth - 1
-                anchors.top: parent.top
-                anchors.bottom: parent.bottom
-                x: 12 + index * treeRow.step
-                width: treeRow.step
-
-                Rectangle {
-                    anchors.top: parent.top
-                    height: parent.elbow ? parent.height / 2 : parent.height
-                    width: 1
-                    color: root.line
-                }
-
-                Rectangle {
-                    visible: parent.elbow
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 7
-                    height: 1
-                    color: root.line
-                }
-            }
-        }
-
-        Text {
-            id: treeGlyph
-            x: 12 + treeRow.depth * treeRow.step + (treeRow.depth > 0 ? 9 : 0)
-            anchors.verticalCenter: parent.verticalCenter
-            width: 15
-            text: treeRow.current ? "▼" : "▶"
-            horizontalAlignment: Text.AlignHCenter
-            color: treeRow.current ? root.spectral : root.inkGhost
-            font.family: root.sansFamily
-            font.pixelSize: 9
-        }
-
-        Text {
-            anchors.left: treeGlyph.right
-            anchors.leftMargin: 7
-            anchors.right: treeBadge.left
-            anchors.rightMargin: 8
-            anchors.verticalCenter: parent.verticalCenter
-            text: treeRow.label
-            elide: Text.ElideMiddle
-            color: treeRow.current ? root.ink : root.inkMuted
-            font.family: root.sansFamily
-            font.pixelSize: 14
-        }
-
-        Rectangle {
-            id: treeBadge
-            anchors.right: parent.right
-            anchors.rightMargin: 8
-            anchors.verticalCenter: parent.verticalCenter
-            visible: treeRow.badge.length > 0
-            width: badgeText.implicitWidth + 12
-            height: 18
-            radius: 5
-            color: root.raisedHigh
-
-            Text {
-                id: badgeText
-                anchors.centerIn: parent
-                text: treeRow.badge
-                color: root.inkFaint
-                font.family: root.monoFamily
-                font.pixelSize: 10
-            }
-        }
-
-        MouseArea {
-            id: treeMouse
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: treeRow.activated()
-        }
-    }
-
     // A labelled action in the preview panel's foot.
     component PanelAction: Item {
         id: panelAction
@@ -2612,87 +2437,79 @@ ApplicationWindow {
     }
 
 
-    // A sidebar destination: glyph, label, trailing count.
+    // A rail tile: an icon over its name, the current one filled and
+    // outlined all the way round. Long names elide; the tooltip has them.
     component NavItem: Rectangle {
         id: navItem
         property string glyph: ""
         property string icon: ""
         property string label: ""
+        // What the tile itself shows, when the label is too long for it.
+        property string caption: navItem.label
         property string trailing: ""
         property bool active: false
-        // Narrow, only the icon shows and the label is a tooltip.
-        readonly property bool compact: !root.roomForPlaces
         signal activated
         signal menuRequested
         // A folder this item names, so files can be dropped on it.
         property string dropTarget: ""
 
         width: parent ? parent.width : 0
-        implicitHeight: 34
-        radius: Theme.radiusSmall
+        implicitHeight: 58
+        radius: Theme.radius
         color: navItem.active
                ? Theme.selected
                : (navMouse.containsMouse ? Theme.surfaceHigh : "transparent")
         border.width: navItem.active ? 1 : 0
         border.color: Theme.outline
 
-        Item {
-            id: navGlyph
-            anchors.left: parent.left
-            anchors.leftMargin: navItem.compact ? (navItem.width - width) / 2 : 10
-            anchors.verticalCenter: parent.verticalCenter
-            width: 16
-            height: 16
-            Icon {
-                visible: navItem.icon.length > 0
-                anchors.centerIn: parent
-                name: navItem.icon.length > 0 ? navItem.icon : "folder"
-                size: 16
-                shade: navItem.active ? 1 : 0.55
-            }
-            Glyph {
-                visible: navItem.icon.length === 0
-                anchors.centerIn: parent
-                text: navItem.glyph
-                font.pixelSize: 13
-                color: navItem.active ? root.ink : root.inkFaint
-            }
-        }
+        Column {
+            anchors.centerIn: parent
+            width: parent.width - 8
+            spacing: 6
 
-        Text {
-            anchors.left: navGlyph.right
-            anchors.leftMargin: 9
-            anchors.right: navCount.left
-            anchors.rightMargin: 8
-            anchors.verticalCenter: parent.verticalCenter
-            visible: !navItem.compact
-            text: navItem.label
-            elide: Text.ElideRight
-            color: navItem.active ? Theme.ink : Theme.inkSoft
-            font.family: Theme.family
-            font.pixelSize: Theme.text
-        }
+            Item {
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: 20
+                height: 20
+                Icon {
+                    visible: navItem.icon.length > 0
+                    anchors.centerIn: parent
+                    name: navItem.icon.length > 0 ? navItem.icon : "folder"
+                    size: 20
+                    shade: navItem.active ? 1 : (navMouse.containsMouse ? 0.8 : 0.5)
+                    tint: navItem.active ? Theme.accent : "transparent"
+                }
+                Glyph {
+                    visible: navItem.icon.length === 0
+                    anchors.centerIn: parent
+                    text: navItem.glyph
+                    font.pixelSize: 15
+                    color: navItem.active ? Theme.accent : root.inkFaint
+                }
+            }
 
-        Mono {
-            id: navCount
-            visible: !navItem.compact
-            anchors.right: parent.right
-            anchors.rightMargin: 10
-            anchors.verticalCenter: parent.verticalCenter
-            text: navItem.trailing
-            font.pixelSize: 10
-            color: root.inkGhost
+            Text {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                text: navItem.caption.toUpperCase()
+                elide: Text.ElideRight
+                color: navItem.active ? Theme.accent : Theme.inkFaint
+                font.family: Theme.mono
+                font.pixelSize: 9
+                font.weight: Font.Medium
+                font.letterSpacing: Theme.letterSpace
+            }
         }
 
         MouseArea {
             id: navMouse
             anchors.fill: parent
             hoverEnabled: true
-            ToolTip.visible: navItem.compact && navMouse.containsMouse
-            ToolTip.text: navItem.label
-            ToolTip.delay: 400
             cursorShape: Qt.PointingHandCursor
             acceptedButtons: Qt.LeftButton | Qt.RightButton
+            ToolTip.visible: navMouse.containsMouse
+            ToolTip.text: navItem.trailing.length > 0 ? navItem.label + " (" + navItem.trailing + ")" : navItem.label
+            ToolTip.delay: 500
             onClicked: function (mouse) {
                 if (mouse.button === Qt.RightButton)
                     navItem.menuRequested()
@@ -2709,7 +2526,7 @@ ApplicationWindow {
                 anchors.fill: parent
                 visible: parent.containsDrag
                 color: "transparent"
-                radius: 7
+                radius: Theme.radius
                 border.width: 1
                 border.color: Theme.highlight
             }
@@ -2780,161 +2597,26 @@ ApplicationWindow {
                     color: root.line
                 }
 
-                // ---- Filter the tree, not the file list ----
-                Rectangle {
-                    id: folderSearch
-                    visible: root.roomForPlaces
+                ListView {
+                    id: placesView
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.top: parent.top
-                    anchors.leftMargin: 12
-                    anchors.rightMargin: 12
-                    anchors.topMargin: 16
-                    height: 30
-                    radius: 7
-                    color: root.raised
-                    border.width: 1
-                    border.color: folderSearchInput.activeFocus ? root.lineStrong : root.line
-
-                    Icon {
-                        id: folderSearchGlyph
-                        anchors.left: parent.left
-                        anchors.leftMargin: 10
-                        anchors.verticalCenter: parent.verticalCenter
-                        name: "search"
-                        size: 13
-                        shade: 0.45
-                    }
-
-                    TextInput {
-                        id: folderSearchInput
-                        anchors.left: folderSearchGlyph.right
-                        anchors.leftMargin: 8
-                        anchors.right: parent.right
-                        anchors.rightMargin: 10
-                        anchors.verticalCenter: parent.verticalCenter
-                        clip: true
-                        color: root.ink
-                        selectionColor: root.emberWash
-                        selectedTextColor: root.ink
-                        font.family: root.sansFamily
-                        font.pixelSize: 13
-                        text: root.folderQuery
-                        onTextChanged: root.folderQuery = text
-                        Keys.onEscapePressed: root.folderQuery = ""
-
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            visible: folderSearchInput.text.length === 0
-                            text: root.sidebarTab === "places" ? "Filter places…" : "Filter folders…"
-                            color: root.inkGhost
-                            font.family: root.sansFamily
-                            font.pixelSize: 12
-                        }
-                    }
-                }
-
-                // ---- Folders / Places ----
-                Rectangle {
-                    id: sidebarTabs
-                    visible: root.roomForPlaces
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: folderSearch.bottom
-                    anchors.leftMargin: 12
-                    anchors.rightMargin: 12
-                    anchors.topMargin: 12
-                    height: 32
-                    radius: 8
-                    color: root.inset
-                    border.width: 1
-                    border.color: root.lineSoft
-
-                    Row {
-                        anchors.fill: parent
-                        anchors.margins: 3
-                        spacing: 3
-
-                        Segment {
-                            width: (parent.width - 3) / 2
-                            height: parent.height
-                            label: "Places"
-                            key: "places"
-                        }
-
-                        Segment {
-                            width: (parent.width - 3) / 2
-                            height: parent.height
-                            label: "Tree"
-                            key: "folders"
-                        }
-                    }
-                }
-
-                // ---- The tree itself ----
-                ListView {
-                    id: treeView
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: root.roomForPlaces ? sidebarTabs.bottom : parent.top
                     anchors.bottom: settingsItem.top
-                    anchors.leftMargin: 8
-                    anchors.rightMargin: 8
-                    anchors.topMargin: root.roomForPlaces ? 10 : 16
-                    anchors.bottomMargin: 10
-                    clip: true
-                    spacing: 1
-                    visible: root.sidebarTab === "folders" && root.roomForPlaces
-                    model: root.tree
-                    boundsBehavior: Flickable.StopAtBounds
-
-                    delegate: TreeRow {
-                        id: treeEntry
-                        required property var modelData
-                        width: treeView.width
-                        label: treeEntry.modelData.label
-                        badge: treeEntry.modelData.badge
-                        depth: treeEntry.modelData.depth
-                        current: treeEntry.modelData.current
-                        onActivated: root.bridge.navigate(treeEntry.modelData.path)
-                    }
-                }
-
-                ListView {
-                    id: placesView
-                    anchors.fill: treeView
+                    anchors.margins: 9
+                    anchors.topMargin: 16
                     clip: true
                     spacing: 2
-                    visible: root.sidebarTab === "places" || !root.roomForPlaces
-                    model: {
-                        const needle = root.folderQuery.toLowerCase()
-                        if (needle.length === 0)
-                            return root.places
-                        return root.places.filter(function (place) {
-                            return place.label.toLowerCase().indexOf(needle) >= 0
-                        })
-                    }
+                    model: root.places
                     boundsBehavior: Flickable.StopAtBounds
                     section.property: "section"
                     section.delegate: Item {
                         required property string section
                         width: placesView.width
-                        // Unheaded in the first group; a bare rule when narrow.
-                        height: section.length === 0 ? 0 : (root.roomForPlaces ? 40 : 14)
+                        // Groups after the first are parted by a rule; the
+                        // tooltips name what is in them.
+                        height: section.length === 0 ? 0 : 14
                         visible: section.length > 0
-                        Text {
-                            visible: root.roomForPlaces
-                            anchors.left: parent.left
-                            anchors.leftMargin: 4
-                            anchors.bottom: sectionRule.top
-                            anchors.bottomMargin: 2
-                            text: parent.section.toUpperCase()
-                            color: Theme.inkFaint
-                            font.family: Theme.family
-                            font.pixelSize: 10
-                            font.weight: Font.Medium
-                            font.letterSpacing: 1
-                        }
                         CrossRule {
                             id: sectionRule
                             anchors.left: parent.left
@@ -2974,6 +2656,7 @@ ApplicationWindow {
                                      ? "◆"
                                      : (placeEntry.modelData.folder.length === 0 ? "⌂" : "▸")))
                         label: placeEntry.modelData.label
+                        caption: placeEntry.modelData.short || placeEntry.modelData.label
                         active: root.settingsOpen
                                 ? false
                                 : placeEntry.recent
@@ -3015,7 +2698,7 @@ ApplicationWindow {
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.bottom: parent.bottom
-                    anchors.margins: 8
+                    anchors.margins: 9
                     anchors.bottomMargin: 14
                     icon: "settings"
                     label: "Settings"
