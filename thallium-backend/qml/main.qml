@@ -2950,54 +2950,21 @@ ApplicationWindow {
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 10
 
-                    // How many entries are showing, in the reference's count chip.
-                    Rectangle {
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: countRow.implicitWidth + 20
-                        height: Theme.controlHeight
-                        radius: Theme.radius
-                        color: Theme.surface
-                        visible: !root.trashOpen && !root.recentOpen
-                        Row {
-                            id: countRow
-                            anchors.centerIn: parent
-                            spacing: 8
-                            Rectangle {
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: Math.max(20, countText.implicitWidth + 10)
-                                height: 20
-                                radius: 4
-                                color: Theme.controlHigh
-                                Text {
-                                    id: countText
-                                    anchors.centerIn: parent
-                                    text: root.rows.length
-                                    color: Theme.ink
-                                    font.family: Theme.family
-                                    font.pixelSize: 11
-                                    font.weight: Font.Medium
-                                }
-                            }
-                            Text {
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: root.selectedCount > 0 ? root.selectedCount + " held" : (root.showHidden ? "All, hidden too" : "Items")
-                                color: Theme.inkDim
-                                font.family: Theme.family
-                                font.pixelSize: 12
-                            }
-                        }
-                    }
 
-                    Segmented {
+                    // One button for the view: each press moves to the next one.
+                    IconButton {
+                        readonly property var views: [
+                            { key: "list", icon: "list", label: "List" },
+                            { key: "grid", icon: "layout-grid", label: "Grid" },
+                            { key: "dense", icon: "grid-3x3", label: "Compact" }
+                        ]
+                        readonly property int at: Math.max(0, views.findIndex(function (v) { return v.key === root.view }))
+                        readonly property var next: views[(at + 1) % views.length]
                         anchors.verticalCenter: parent.verticalCenter
                         visible: !root.trashOpen && !root.recentOpen
-                        options: [
-                            { key: "list", icon: "list" },
-                            { key: "grid", icon: "layout-grid" },
-                            { key: "dense", icon: "grid-3x3" }
-                        ]
-                        current: root.view
-                        onPicked: function (key) { root.view = key }
+                        icon: views[at].icon
+                        hint: views[at].label + " view; click for " + next.label
+                        onClicked: root.view = next.key
                     }
                     Row {
                         id: headerActions
@@ -3113,17 +3080,47 @@ ApplicationWindow {
                 }
             }
 
+            // ---- Status line: how many entries are showing ----
+            Item {
+                id: statusLine
+                readonly property bool shown: !root.trashOpen && !root.recentOpen
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                anchors.leftMargin: 28
+                anchors.rightMargin: 28
+                height: statusLine.shown ? 30 : 10
+                visible: statusLine.shown
+
+                CrossRule {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                }
+                Text {
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.verticalCenterOffset: 1
+                    text: root.rows.length + (root.rows.length === 1 ? " item" : " items")
+                          + (root.selectedCount > 0 ? "  ·  " + root.selectedCount + " held" : "")
+                          + (root.showHidden ? "  ·  hidden shown" : "")
+                    color: Theme.inkDim
+                    font.family: Theme.mono
+                    font.pixelSize: 11
+                }
+            }
+
             // ---- Browser ----
             Item {
                 id: browser
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.top: folderBar.bottom
-                anchors.bottom: parent.bottom
+                anchors.bottom: statusLine.top
                 anchors.leftMargin: 24
                 anchors.rightMargin: 24
                 anchors.topMargin: 10
-                anchors.bottomMargin: 14
+                anchors.bottomMargin: 4
                 clip: true
 
 
