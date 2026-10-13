@@ -6,6 +6,8 @@ Rectangle {
     id: rail
 
     property string current: "files"
+    // Without rclone there is nothing behind Network, so it is not offered.
+    property bool network: true
     signal chosen(string key)
     signal moreRequested(Item anchor)
 
@@ -51,7 +53,7 @@ Rectangle {
         spacing: 6
 
         Repeater {
-            model: rail.sections
+            model: rail.sections.filter(function (section) { return section.key !== "network" || rail.network })
             delegate: Rectangle {
                 id: item
                 required property var modelData

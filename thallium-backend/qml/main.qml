@@ -2761,6 +2761,10 @@ ApplicationWindow {
                 id: rail
                 height: parent.height
                 current: root.section
+                network: {
+                    void root.configTick
+                    return root.bridge.remoteCount() > 0 || root.bridge.remotesConfigurable()
+                }
                 onChosen: function (key) { root.chooseSection(key) }
                 onMoreRequested: function (anchor) { moreMenu.popup(anchor, anchor.width + 6, 0) }
             }
@@ -4023,51 +4027,54 @@ ApplicationWindow {
                             void root.revision
                             return root.bridge.recentFolder(recentRow.index)
                         }
-                        readonly property string kind: root.kindOf(recentRow.name, false)
 
                         width: ListView.view.width
-                        height: 44
-                        radius: 6
-                        color: recentMouse.containsMouse ? root.hover : "transparent"
+                        height: Theme.rowHeight
+                        color: "transparent"
 
-                        EntryIcon {
+                        Rectangle {
+                            anchors.fill: parent
+                            anchors.topMargin: 4
+                            anchors.bottomMargin: 4
+                            radius: Theme.radius
+                            color: recentMouse.containsMouse ? Theme.surfaceHigh : Theme.surface
+                        }
+
+                        FileTile {
                             id: recentGlyph
                             anchors.left: parent.left
-                            anchors.leftMargin: 10
+                            anchors.leftMargin: 18
                             anchors.verticalCenter: parent.verticalCenter
-                            width: 20
-                            height: 20
-                            entry: -1
-                            allowThumbnail: false
-                            kind: recentRow.kind
-                            tint: root.markTone(recentRow.kind)
-                            markSize: recentRow.kind === "Code" ? 10 : 12
+                            width: 30
+                            height: width
+                            name: recentRow.name
                         }
 
                         Text {
                             id: recentName
                             anchors.left: recentGlyph.right
-                            anchors.leftMargin: 10
+                            anchors.leftMargin: 16
                             anchors.right: parent.right
-                            anchors.rightMargin: 12
-                            anchors.top: parent.top
-                            anchors.topMargin: 6
+                            anchors.rightMargin: 20
+                            anchors.bottom: parent.verticalCenter
                             text: recentRow.name
                             elide: Text.ElideMiddle
-                            color: root.inkMuted
-                            font.family: root.sansFamily
-                            font.pixelSize: 13
+                            color: Theme.ink
+                            font.family: Theme.family
+                            font.pixelSize: Theme.text
                         }
 
-                        Mono {
+                        Text {
                             anchors.left: recentName.left
                             anchors.right: parent.right
-                            anchors.rightMargin: 12
-                            anchors.top: recentName.bottom
+                            anchors.rightMargin: 20
+                            anchors.top: parent.verticalCenter
                             anchors.topMargin: 1
                             text: recentRow.where
                             elide: Text.ElideLeft
-                            font.pixelSize: 10
+                            color: Theme.inkDim
+                            font.family: Theme.family
+                            font.pixelSize: Theme.textSmall
                         }
 
                         MouseArea {
@@ -4088,19 +4095,19 @@ ApplicationWindow {
                         spacing: 6
                         visible: recentBrowser.count === 0
 
-                        Glyph {
+                        Icon {
                             anchors.horizontalCenter: parent.horizontalCenter
-                            text: "◴"
-                            font.pixelSize: 20
-                            color: root.inkGhost
+                            name: "clock"
+                            size: 22
+                            shade: 0.4
                         }
 
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
                             text: "The desktop has no record of recent files"
-                            color: root.inkFaint
-                            font.family: root.sansFamily
-                            font.pixelSize: 13
+                            color: Theme.inkDim
+                            font.family: Theme.family
+                            font.pixelSize: Theme.text
                         }
                     }
                 }
