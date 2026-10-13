@@ -58,7 +58,9 @@ ApplicationWindow {
     // Below these window widths a column folds away so the file pane keeps
     // room for names; tiled at half a screen, only the rail stays.
     readonly property bool roomForPreview: root.width >= 1240
-    readonly property int sidebarWidth: Theme.railWidth
+    // The rail shows icons; opened, their names too.
+    property bool railOpen: false
+    readonly property int sidebarWidth: root.railOpen ? Theme.railOpenWidth : Theme.railWidth
     // In a narrow file pane the Kind and then the Size column give their
     // width to the name.
     readonly property bool kindColumn: main.width >= 760
@@ -216,10 +218,9 @@ ApplicationWindow {
                       { label: "Recent", folder: null, recent: true, icon: "clock", section: "" } ]
         for (let i = 0; i < known.length; ++i) {
             if (seen.length === 0 || seen.indexOf(known[i]) >= 0)
-                out.push({ label: known[i], short: known[i] === "Documents" ? "Docs" : known[i],
-                          folder: known[i], icon: icons[known[i]], section: "" })
+                out.push({ label: known[i], folder: known[i], icon: icons[known[i]], section: "" })
         }
-        out.push({ label: "Filesystem", short: "System", folder: "/", icon: "hard-drive", section: "" })
+        out.push({ label: "Filesystem", folder: "/", icon: "hard-drive", section: "" })
         out.push({ label: "Trash", folder: null, trash: true, icon: "trash-2", section: "" })
         // Drives that can be mounted, mounted or not.
         void root.revision
@@ -2437,15 +2438,13 @@ ApplicationWindow {
     }
 
 
-    // A rail tile: an icon over its name, the current one filled and
-    // outlined all the way round. Long names elide; the tooltip has them.
+    // A rail entry: its icon, and its name beside it while the rail is
+    // open. The current one is filled and outlined all the way round.
     component NavItem: Rectangle {
         id: navItem
         property string glyph: ""
         property string icon: ""
         property string label: ""
-        // What the tile itself shows, when the label is too long for it.
-        property string caption: navItem.label
         property string trailing: ""
         property bool active: false
         signal activated
@@ -2454,7 +2453,7 @@ ApplicationWindow {
         property string dropTarget: ""
 
         width: parent ? parent.width : 0
-        implicitHeight: 58
+        implicitHeight: 42
         radius: Theme.radius
         color: navItem.active
                ? Theme.selected
@@ -2462,43 +2461,42 @@ ApplicationWindow {
         border.width: navItem.active ? 1 : 0
         border.color: Theme.outline
 
-        Column {
-            anchors.centerIn: parent
-            width: parent.width - 8
-            spacing: 6
-
-            Item {
-                anchors.horizontalCenter: parent.horizontalCenter
-                width: 20
-                height: 20
-                Icon {
-                    visible: navItem.icon.length > 0
-                    anchors.centerIn: parent
-                    name: navItem.icon.length > 0 ? navItem.icon : "folder"
-                    size: 20
-                    shade: navItem.active ? 1 : (navMouse.containsMouse ? 0.8 : 0.5)
-                    tint: navItem.active ? Theme.accent : "transparent"
-                }
-                Glyph {
-                    visible: navItem.icon.length === 0
-                    anchors.centerIn: parent
-                    text: navItem.glyph
-                    font.pixelSize: 15
-                    color: navItem.active ? Theme.accent : root.inkFaint
-                }
+        Item {
+            id: navGlyph
+            anchors.left: parent.left
+            anchors.leftMargin: root.railOpen ? 12 : (navItem.width - width) / 2
+            anchors.verticalCenter: parent.verticalCenter
+            width: 20
+            height: 20
+            Icon {
+                visible: navItem.icon.length > 0
+                anchors.centerIn: parent
+                name: navItem.icon.length > 0 ? navItem.icon : "folder"
+                size: 20
+                shade: navItem.active ? 1 : (navMouse.containsMouse ? 0.8 : 0.5)
+                tint: navItem.active ? Theme.accent : "transparent"
             }
-
-            Text {
-                width: parent.width
-                horizontalAlignment: Text.AlignHCenter
-                text: navItem.caption.toUpperCase()
-                elide: Text.ElideRight
-                color: navItem.active ? Theme.accent : Theme.inkFaint
-                font.family: Theme.mono
-                font.pixelSize: 9
-                font.weight: Font.Medium
-                font.letterSpacing: Theme.letterSpace
+            Glyph {
+                visible: navItem.icon.length === 0
+                anchors.centerIn: parent
+                text: navItem.glyph
+                font.pixelSize: 15
+                color: navItem.active ? Theme.accent : root.inkFaint
             }
+        }
+
+        Text {
+            visible: root.railOpen
+            anchors.left: navGlyph.right
+            anchors.leftMargin: 12
+            anchors.right: parent.right
+            anchors.rightMargin: 10
+            anchors.verticalCenter: parent.verticalCenter
+            text: navItem.label
+            elide: Text.ElideRight
+            color: navItem.active ? Theme.ink : Theme.inkSoft
+            font.family: Theme.family
+            font.pixelSize: Theme.text
         }
 
         MouseArea {
@@ -2507,7 +2505,7 @@ ApplicationWindow {
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
             acceptedButtons: Qt.LeftButton | Qt.RightButton
-            ToolTip.visible: navMouse.containsMouse
+            ToolTip.visible: !root.railOpen && navMouse.containsMouse
             ToolTip.text: navItem.trailing.length > 0 ? navItem.label + " (" + navItem.trailing + ")" : navItem.label
             ToolTip.delay: 500
             onClicked: function (mouse) {
@@ -2582,6 +2580,7 @@ ApplicationWindow {
             width: root.sidebarWidth
             height: parent.height
             color: root.canvas
+            clip: true
 
             // Places, bookmarks, drives and remotes, and Settings at the foot.
             Item {
@@ -2601,10 +2600,10 @@ ApplicationWindow {
                     id: placesView
                     anchors.left: parent.left
                     anchors.right: parent.right
-                    anchors.top: parent.top
+                    anchors.top: railToggle.bottom
                     anchors.bottom: settingsItem.top
                     anchors.margins: 9
-                    anchors.topMargin: 16
+                    anchors.topMargin: 8
                     clip: true
                     spacing: 2
                     model: root.places
@@ -2656,7 +2655,6 @@ ApplicationWindow {
                                      ? "◆"
                                      : (placeEntry.modelData.folder.length === 0 ? "⌂" : "▸")))
                         label: placeEntry.modelData.label
-                        caption: placeEntry.modelData.short || placeEntry.modelData.label
                         active: root.settingsOpen
                                 ? false
                                 : placeEntry.recent
@@ -2690,6 +2688,18 @@ ApplicationWindow {
                             }
                         }
                     }
+                }
+
+                NavItem {
+                    id: railToggle
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.margins: 9
+                    anchors.topMargin: 14
+                    icon: "panel-left"
+                    label: root.railOpen ? "Collapse" : "Expand"
+                    onActivated: root.railOpen = !root.railOpen
                 }
 
                 // Settings, at the foot of the column.
