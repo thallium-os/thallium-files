@@ -2,16 +2,17 @@ pragma Singleton
 
 import QtQuick
 
-// Every colour, size and font the interface uses, in Thallium's terms.
+// Every colour, size and font the interface uses.
 //
-// The palette is Thallium's: the Everforest variants and accents of the
-// shell's ThalliumPalette, chosen in Settings and stored in
-// ~/.config/thallium/theme.conf. main.qml feeds that file's text to `conf`,
-// so a pick in Settings repaints this window too. Without the file the
-// defaults stand: Deep Space with the green accent.
+// Colours come from one of two places, as chosen in the Theme sheet:
+//  - Thallium: the Everforest variants and accents of the shell's
+//    ThalliumPalette, picked in Settings and stored in
+//    ~/.config/thallium/theme.conf (main.qml feeds that file to `conf`).
+//  - Custom: five colours the user picks (`base`); every other shade is
+//    derived from them, as in Knowledge Tree's theme editor.
 //
-// State is drawn in the accent: what is held or focused gets an accent wash
-// and a full accent outline, never a mark on one side.
+// State is drawn in the primary colour: what is held or focused gets a
+// wash and a full outline, never a mark on one side.
 QtObject {
     id: theme
 
@@ -95,43 +96,110 @@ QtObject {
         return theme.variants[0]
     }
     readonly property var pal: theme.active.pal
-    readonly property bool dark: theme.active.dark
+
+    // ---- Custom themes ----
+    // The five colours a user edits; everything else is derived from them.
+    readonly property var editable: [
+        { key: "background", label: "Background" },
+        { key: "primary", label: "Primary" },
+        { key: "secondary", label: "Secondary" },
+        { key: "highlight", label: "Highlight" },
+        { key: "text", label: "Text" }
+    ]
+    readonly property var presets: [
+        { name: "Monochrome", colors: { background: "#17151b", primary: "#c6c6cd", secondary: "#878689", highlight: "#ececf0", text: "#ececf0" } },
+        { name: "Oasis", colors: { background: "#07181b", primary: "#2dd4bf", secondary: "#5eead4", highlight: "#34d399", text: "#ecfeff" } },
+        { name: "Forest Focus", colors: { background: "#0a0f0a", primary: "#4ade80", secondary: "#86efac", highlight: "#34d399", text: "#f0fdf4" } },
+        { name: "Pastel Mocha", colors: { background: "#f9f3ed", primary: "#b07d62", secondary: "#8a9e82", highlight: "#c9a96e", text: "#3a2d23" } }
+    ]
+
+    property bool custom: false
+    property var base: theme.presets[0].colors
 
     // `c` may be a palette string; lighter(…, 1) turns it into a colour.
     function wash(c, alpha) {
         const k = Qt.lighter(c, 1.0)
         return Qt.rgba(k.r, k.g, k.b, alpha)
     }
+    // Linear blend: t = 0 gives a, t = 1 gives b.
+    function mix(a, b, t) {
+        const x = Qt.lighter(a, 1.0)
+        const y = Qt.lighter(b, 1.0)
+        return Qt.rgba(x.r + (y.r - x.r) * t, x.g + (y.g - x.g) * t, x.b + (y.b - x.b) * t, 1)
+    }
+    function luminance(c) {
+        const k = Qt.lighter(c, 1.0)
+        return 0.299 * k.r + 0.587 * k.g + 0.114 * k.b
+    }
+    function isColor(text) { return /^#[0-9a-fA-F]{6}$/.test(String(text)) }
+
+    // Surfaces step from the background toward the text, so the same
+    // recipe works on dark and light backgrounds alike.
+    function derive(b) {
+        const bg = b.background, ink = b.text
+        return {
+            dark: theme.luminance(bg) < 0.5,
+            accent: b.primary, folder: b.secondary, highlight: b.highlight,
+            danger: theme.luminance(bg) < 0.5 ? "#e67e80" : "#d64545",
+            canvas: bg, inset: bg,
+            surface: theme.mix(bg, ink, 0.05), surfaceHigh: theme.mix(bg, ink, 0.09),
+            control: theme.mix(bg, ink, 0.08), controlHigh: theme.mix(bg, ink, 0.15),
+            line: theme.mix(bg, ink, 0.08), outlineSoft: theme.mix(bg, ink, 0.18),
+            cross: theme.mix(bg, ink, 0.30),
+            ink: ink, inkSoft: theme.mix(ink, bg, 0.15),
+            inkDim: theme.mix(ink, bg, 0.40), inkFaint: theme.mix(ink, bg, 0.55),
+            tile: theme.mix(bg, ink, 0.32), tileInk: ink
+        }
+    }
+    function fromPalette(p, accentKey, dark) {
+        return {
+            dark: dark,
+            accent: p[accentKey], folder: p.bg5, highlight: p[accentKey],
+            danger: p.red,
+            canvas: p.base, inset: p.base,
+            surface: p.bg0, surfaceHigh: p.bg1,
+            control: p.bg2, controlHigh: p.bg3,
+            line: p.bg2, outlineSoft: p.bg4, cross: p.bg5,
+            ink: p.fg, inkSoft: theme.wash(p.fg, 0.82),
+            inkDim: p.grey1, inkFaint: p.grey0,
+            tile: p.bg5, tileInk: p.fg
+        }
+    }
+    readonly property var colors: theme.custom ? theme.derive(theme.base)
+                                               : theme.fromPalette(theme.pal, theme.accentKey, theme.active.dark)
+    readonly property bool dark: theme.colors.dark
 
     // ---- Accent: active, focused and held things ----
-    readonly property color accent: theme.pal[theme.accentKey]
+    readonly property color accent: theme.colors.accent
     readonly property color accentWash: theme.wash(theme.accent, 0.14)
-    readonly property color danger: theme.pal.red
+    readonly property color highlight: theme.colors.highlight
+    readonly property color danger: theme.colors.danger
 
     // ---- Surfaces, deepest to highest ----
-    readonly property color canvas: theme.pal.base
-    readonly property color surface: theme.pal.bg0
-    readonly property color surfaceHigh: theme.pal.bg1
+    readonly property color canvas: theme.colors.canvas
+    readonly property color surface: theme.colors.surface
+    readonly property color surfaceHigh: theme.colors.surfaceHigh
     readonly property color selected: theme.accentWash
-    readonly property color control: theme.pal.bg2
-    readonly property color controlHigh: theme.pal.bg3
-    readonly property color inset: theme.pal.base
+    readonly property color control: theme.colors.control
+    readonly property color controlHigh: theme.colors.controlHigh
+    readonly property color inset: theme.colors.inset
 
     // ---- Lines ----
-    readonly property color line: theme.pal.bg2
-    readonly property color cross: theme.pal.bg5
+    readonly property color line: theme.colors.line
+    readonly property color cross: theme.colors.cross
     readonly property color outline: theme.accent
-    readonly property color outlineSoft: theme.pal.bg4
+    readonly property color outlineSoft: theme.colors.outlineSoft
 
     // ---- Ink ----
-    readonly property color ink: theme.pal.fg
-    readonly property color inkSoft: theme.wash(theme.pal.fg, 0.82)
-    readonly property color inkDim: theme.pal.grey1
-    readonly property color inkFaint: theme.pal.grey0
+    readonly property color ink: theme.colors.ink
+    readonly property color inkSoft: theme.colors.inkSoft
+    readonly property color inkDim: theme.colors.inkDim
+    readonly property color inkFaint: theme.colors.inkFaint
 
-    // ---- File-type tiles ----
-    readonly property color tile: theme.pal.bg5
-    readonly property color tileInk: theme.pal.fg
+    // ---- File tiles: folders in the secondary colour ----
+    readonly property color tile: theme.colors.tile
+    readonly property color folderTile: theme.colors.folder
+    readonly property color tileInk: theme.colors.tileInk
 
     // ---- Shape ----
     readonly property int radius: 8

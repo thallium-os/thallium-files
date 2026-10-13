@@ -122,7 +122,7 @@ Rectangle {
                 radius: Theme.radiusSmall
                 color: rowMouse.containsMouse ? Theme.surfaceHigh : "transparent"
                 border.width: rowDrop.containsDrag ? 1 : 0
-                border.color: Theme.outline
+                border.color: Theme.highlight
             }
             FileTile {
                 id: tile

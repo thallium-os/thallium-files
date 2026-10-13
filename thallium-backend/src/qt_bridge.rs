@@ -11,7 +11,7 @@ use thallium_icons::{IconService, Thumbnail};
 use thallium_protocol::{BrowserStateSnapshot, DirectoryEntryRow, PathBytes, TaskInfo, TaskStatus};
 use thallium_rclone::{Remotes, authorize, config::{Provider, Session, Step}};
 
-use crate::{Backend, BackendConfig, BackendResult, apps, archive, bookmarks, bulk_rename, drives, properties, recents::Recent, search::Search, storage::Measure, trash_bin, uca, undo, uri};
+use crate::{Backend, BackendConfig, BackendResult, apps, archive, bookmarks, bulk_rename, drives, files_theme, properties, recents::Recent, search::Search, storage::Measure, trash_bin, uca, undo, uri};
 
 #[cxx_qt::bridge]
 pub mod ffi {
@@ -367,6 +367,12 @@ pub mod ffi {
 		#[qinvokable]
 		#[rust_name = "theme_conf"]
 		fn themeConf(&self) -> QString;
+		#[qinvokable]
+		#[rust_name = "files_theme"]
+		fn filesTheme(&self) -> QString;
+		#[qinvokable]
+		#[rust_name = "save_files_theme"]
+		fn saveFilesTheme(self: Pin<&mut Self>, text: &QString);
 		#[qinvokable]
 		#[rust_name = "restore_trash"]
 		fn restoreTrash(self: Pin<&mut Self>, rows: &QList_i32);
@@ -1321,6 +1327,15 @@ impl ffi::BackendBridge {
 			.unwrap_or_default()
 			.as_str()
 			.into()
+	}
+
+	/// This app's own theme choice, as the JSON the Theme sheet wrote.
+	pub fn files_theme(&self) -> QString { files_theme::read().as_str().into() }
+
+	pub fn save_files_theme(mut self: Pin<&mut Self>, text: &QString) {
+		if let Err(error) = files_theme::write(&String::from(text)) {
+			self.as_mut().set_last_error(format!("Could not save the theme: {error}").into());
+		}
 	}
 
 	pub fn restore_trash(mut self: Pin<&mut Self>, rows: &ffi::QList_i32) {

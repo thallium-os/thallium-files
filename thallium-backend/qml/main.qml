@@ -650,12 +650,88 @@ ApplicationWindow {
             text: root.previewOpen ? "Hide preview panel" : "Show preview panel"
             onTriggered: root.togglePreview()
         }
+        MenuLine { text: "Theme…"; onTriggered: themeSheet.open() }
         MenuLine { text: "Edit custom actions…"; onTriggered: root.bridge.editActions() }
         MenuLine {
             text: "Make Thallium Files the default"
             enabled: !settingsMenu.isDefault
             onTriggered: root.bridge.makeDefaultManager()
         }
+    }
+
+    // ---- Theme ----
+    // Follow Thallium, or a custom theme of five colours, plus the user's own
+    // presets. Saved shortly after the last change, so dragging in a colour
+    // picker does not write the file on every step.
+    property var userPresets: []
+
+    function validColors(c) {
+        return !!c && Theme.editable.every(function (e) { return Theme.isColor(c[e.key]) })
+    }
+    function cleanColors(c) {
+        const out = {}
+        Theme.editable.forEach(function (e) { out[e.key] = String(c[e.key]).toLowerCase() })
+        return out
+    }
+    function loadFilesTheme() {
+        let saved = {}
+        try {
+            saved = JSON.parse(root.bridge.filesTheme() || "{}")
+        } catch (error) {
+            return
+        }
+        if (root.validColors(saved.colors))
+            Theme.base = root.cleanColors(saved.colors)
+        root.userPresets = Array.isArray(saved.presets)
+                ? saved.presets.filter(function (p) { return p && typeof p.name === "string" && root.validColors(p.colors) })
+                : []
+        Theme.custom = saved.custom === true
+    }
+    function saveFilesTheme() {
+        root.bridge.saveFilesTheme(JSON.stringify({ custom: Theme.custom, colors: Theme.base, presets: root.userPresets }, null, 2))
+    }
+    Timer {
+        id: themeSave
+        interval: 400
+        onTriggered: root.saveFilesTheme()
+    }
+    function setThemeColors(colors) {
+        Theme.base = root.cleanColors(colors)
+        themeSave.restart()
+    }
+    function setThemeColor(key, value) {
+        const next = Object.assign({}, Theme.base)
+        next[key] = value
+        root.setThemeColors(next)
+    }
+    function setThemeCustom(custom) {
+        Theme.custom = custom
+        themeSave.restart()
+    }
+    // Presets are keyed "b<index>" for built-ins and "u<index>" for the user's.
+    readonly property var themePresets: {
+        const all = Theme.presets.map(function (p, i) { return { key: "b" + i, label: p.name, colors: p.colors } })
+        return all.concat(root.userPresets.map(function (p, i) { return { key: "u" + i, label: p.name, colors: p.colors } }))
+    }
+    readonly property string themePreset: {
+        const now = JSON.stringify(root.cleanColors(Theme.base))
+        for (let i = 0; i < root.themePresets.length; ++i)
+            if (JSON.stringify(root.cleanColors(root.themePresets[i].colors)) === now)
+                return root.themePresets[i].key
+        return ""
+    }
+    function saveThemePreset(name) {
+        const label = name.trim()
+        if (label.length === 0)
+            return
+        const kept = root.userPresets.filter(function (p) { return p.name !== label })
+        root.userPresets = kept.concat([{ name: label, colors: Theme.base }])
+        root.saveFilesTheme()
+    }
+    function deleteThemePreset(key) {
+        const at = Number(key.slice(1))
+        root.userPresets = root.userPresets.filter(function (p, i) { return i !== at })
+        root.saveFilesTheme()
     }
 
     // ---- Tabs ----
@@ -755,6 +831,7 @@ ApplicationWindow {
         }
         // `thallium-file-manager PATH` opens PATH, or the folder holding it.
         Component.onCompleted: {
+            root.loadFilesTheme()
             firstBridge.serveDesktop()
             const args = Qt.application.arguments
             if (args.length > 1)
@@ -1109,6 +1186,156 @@ ApplicationWindow {
                     emptyConfirm.close()
                 }
             }
+        ]
+    }
+
+    // ---- Theme ----
+    Sheet {
+        id: themeSheet
+        width: 560
+        title: "Theme"
+        icon: "eye"
+        onClosed: {
+            themeSave.stop()
+            root.saveFilesTheme()
+            root.release()
+        }
+
+        Chips {
+            width: parent.width
+            options: [{ key: "thallium", label: "Follow Thallium" }, { key: "custom", label: "Custom" }]
+            current: Theme.custom ? "custom" : "thallium"
+            onPicked: function (key) { root.setThemeCustom(key === "custom") }
+        }
+
+        Text {
+            visible: !Theme.custom
+            width: parent.width
+            wrapMode: Text.Wrap
+            text: "Colours follow the variant and accent picked in Thallium Settings, Appearance."
+            color: Theme.inkDim
+            font.family: Theme.family
+            font.pixelSize: Theme.text
+        }
+
+        Column {
+            visible: Theme.custom
+            width: parent.width
+            spacing: 12
+
+            Overline { text: "PRESETS" }
+            Chips {
+                width: parent.width
+                options: root.themePresets
+                current: root.themePreset
+                onPicked: function (key) {
+                    const preset = root.themePresets.find(function (p) { return p.key === key })
+                    root.setThemeColors(preset.colors)
+                }
+            }
+
+            CrossRule { width: parent.width }
+
+            Repeater {
+                model: Theme.editable
+                delegate: ColorField {
+                    required property var modelData
+                    width: parent.width
+                    label: modelData.label
+                    value: Theme.base[modelData.key]
+                    onEdited: function (value) { root.setThemeColor(modelData.key, value) }
+                }
+            }
+
+            CrossRule { width: parent.width }
+
+            Row {
+                width: parent.width
+                spacing: 8
+                Rectangle {
+                    width: parent.width - saveTheme.width - deleteTheme.width - 16
+                    height: Theme.controlHeight
+                    radius: Theme.radiusSmall
+                    color: Theme.inset
+                    border.width: 1
+                    border.color: presetName.activeFocus ? Theme.outline : Theme.outlineSoft
+                    TextInput {
+                        id: presetName
+                        anchors.fill: parent
+                        anchors.leftMargin: 12
+                        anchors.rightMargin: 12
+                        verticalAlignment: TextInput.AlignVCenter
+                        clip: true
+                        color: Theme.ink
+                        selectionColor: Theme.accentWash
+                        selectedTextColor: Theme.ink
+                        font.family: Theme.family
+                        font.pixelSize: Theme.text
+                        onAccepted: saveTheme.clicked()
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: presetName.text.length === 0
+                            text: "Name for preset"
+                            color: Theme.inkFaint
+                            font: presetName.font
+                        }
+                    }
+                }
+                TextButton {
+                    id: saveTheme
+                    text: "Save as preset"
+                    enabled: presetName.text.trim().length > 0
+                    onClicked: {
+                        root.saveThemePreset(presetName.text)
+                        presetName.text = ""
+                    }
+                }
+                TextButton {
+                    id: deleteTheme
+                    text: "Delete preset"
+                    enabled: root.themePreset.startsWith("u")
+                    onClicked: root.deleteThemePreset(root.themePreset)
+                }
+            }
+
+            // The theme as text, to share it or paste one in.
+            Overline { text: "THEME CODE" }
+            Rectangle {
+                width: parent.width
+                height: Theme.controlHeight
+                radius: Theme.radiusSmall
+                color: Theme.inset
+                border.width: 1
+                border.color: themeCode.activeFocus ? Theme.outline : Theme.outlineSoft
+                TextInput {
+                    id: themeCode
+                    anchors.fill: parent
+                    anchors.leftMargin: 12
+                    anchors.rightMargin: 12
+                    verticalAlignment: TextInput.AlignVCenter
+                    clip: true
+                    selectByMouse: true
+                    text: JSON.stringify(Theme.base)
+                    color: Theme.inkSoft
+                    selectionColor: Theme.accentWash
+                    selectedTextColor: Theme.ink
+                    font.family: Theme.mono
+                    font.pixelSize: 11
+                    onEditingFinished: {
+                        try {
+                            const pasted = JSON.parse(themeCode.text)
+                            if (root.validColors(pasted))
+                                root.setThemeColors(pasted)
+                        } catch (error) {
+                        }
+                        themeCode.text = Qt.binding(function () { return JSON.stringify(Theme.base) })
+                    }
+                }
+            }
+        }
+
+        buttons: [
+            TextButton { primary: true; text: "Done"; onClicked: themeSheet.close() }
         ]
     }
 
@@ -2661,7 +2888,7 @@ ApplicationWindow {
                 color: "transparent"
                 radius: 7
                 border.width: 1
-                border.color: root.spectral
+                border.color: Theme.highlight
             }
         }
     }
@@ -4291,9 +4518,9 @@ ApplicationWindow {
                         y: root.band.y
                         width: root.band.width
                         height: root.band.height
-                        color: Qt.rgba(root.spectral.r, root.spectral.g, root.spectral.b, 0.12)
+                        color: Theme.wash(Theme.highlight, 0.12)
                         border.width: 1
-                        border.color: root.spectral
+                        border.color: Theme.highlight
                         radius: 3
                     }
 
@@ -4429,7 +4656,7 @@ ApplicationWindow {
                                 color: "transparent"
                                 radius: 6
                                 border.width: 1
-                                border.color: root.spectral
+                                border.color: Theme.highlight
                             }
                         }
 
@@ -4553,9 +4780,9 @@ ApplicationWindow {
                         y: root.band.y
                         width: root.band.width
                         height: root.band.height
-                        color: Qt.rgba(root.spectral.r, root.spectral.g, root.spectral.b, 0.12)
+                        color: Theme.wash(Theme.highlight, 0.12)
                         border.width: 1
-                        border.color: root.spectral
+                        border.color: Theme.highlight
                         radius: 3
                     }
 
@@ -4697,7 +4924,7 @@ ApplicationWindow {
                                     color: "transparent"
                                     radius: 6
                                     border.width: 1
-                                    border.color: root.spectral
+                                    border.color: Theme.highlight
                                 }
                             }
 

@@ -32,7 +32,8 @@ Item {
         if (["txt", "md", "log", "conf", "ini"].indexOf(e) >= 0) return "file-text"
         return "file"
     }
-    readonly property color fill: tile.lifted ? Qt.lighter(Theme.tile, 1.12) : Theme.tile
+    readonly property color face: tile.folder ? Theme.folderTile : Theme.tile
+    readonly property color fill: tile.lifted ? Qt.lighter(tile.face, 1.12) : tile.face
     readonly property real fold: Math.round(tile.width * 0.24)
 
     implicitWidth: 36
@@ -93,10 +94,13 @@ Item {
             y: 0
             width: tile.fold
             height: tile.fold
+            // Repainted when the theme changes the tile's colour.
+            property color shade: Qt.darker(tile.fill, 1.35)
+            onShadeChanged: requestPaint()
             onPaint: {
                 const ctx = getContext("2d")
                 ctx.reset()
-                ctx.fillStyle = Qt.darker(tile.fill, 1.35)
+                ctx.fillStyle = shade
                 ctx.beginPath()
                 ctx.moveTo(0, 0)
                 ctx.lineTo(0, height)
