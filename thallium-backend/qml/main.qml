@@ -5116,7 +5116,7 @@ ApplicationWindow {
                 id: previewFoot
                 anchors.left: parent.left
                 anchors.right: parent.right
-                anchors.bottom: taskPanel.top
+                anchors.bottom: parent.bottom
                 anchors.leftMargin: 24
                 anchors.rightMargin: 24
                 anchors.bottomMargin: 14
