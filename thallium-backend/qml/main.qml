@@ -222,6 +222,7 @@ ApplicationWindow {
         }
         out.push({ label: "Filesystem", folder: "/", icon: "hard-drive", section: "" })
         out.push({ label: "Trash", folder: null, trash: true, icon: "trash-2", section: "" })
+        out.push({ label: "Settings", folder: null, settings: true, icon: "settings", section: "" })
         // Drives that can be mounted, mounted or not.
         void root.revision
         for (let d = 0; d < root.bridge.driveCount(); ++d)
@@ -571,14 +572,6 @@ ApplicationWindow {
         id: inspectRevealed
         interval: 700
         onTriggered: root.showProperties(root.firstSelectedRow())
-    }
-
-    MenuSurface {
-        id: moreMenu
-        MenuLine { text: "New tab"; onTriggered: root.newTab(root.bridge.currentPath) }
-        MenuLine { text: "Open terminal here"; onTriggered: root.bridge.openTerminalHere() }
-        MenuLine { text: "Go to location…"; onTriggered: root.editPath() }
-        MenuLine { text: root.splitOpen ? "Close split view" : "Split view"; onTriggered: root.toggleSplit() }
     }
 
     Shortcut { sequences: ["F3"]; onActivated: root.toggleSplit() }
@@ -939,10 +932,6 @@ ApplicationWindow {
             text: entryMenu.held > 1 ? "Rename " + entryMenu.held + " items…" : "Rename…"
             onTriggered: entryMenu.held > 1 ? root.beginBulkRename() : root.beginRename(entryMenu.row)
         }
-        MenuLine {
-            text: entryMenu.held > 1 ? "Make " + entryMenu.held + " links" : "Make link"
-            onTriggered: root.bridge.linkSelected(root.bridge.currentPath)
-        }
         MenuSeparator {
             contentItem: Rectangle { implicitHeight: 1; color: root.line }
         }
@@ -1000,11 +989,9 @@ ApplicationWindow {
         id: groundMenu
         property bool pasteable: false
         property bool undoable: false
-        property bool isDefault: true
         onAboutToShow: {
             pasteable = root.bridge.canPaste()
             undoable = root.bridge.canUndo()
-            isDefault = root.bridge.isDefaultManager()
         }
         MenuLine {
             text: "Paste"
@@ -1042,14 +1029,14 @@ ApplicationWindow {
             contentItem: Rectangle { implicitHeight: 1; color: root.line }
         }
         MenuLine { text: "Open terminal here"; onTriggered: root.bridge.openTerminalHere() }
-        MenuLine { text: "Edit custom actions…"; onTriggered: root.bridge.editActions() }
+        MenuLine { text: "New tab"; onTriggered: root.newTab(root.bridge.currentPath) }
+        MenuLine { text: root.splitOpen ? "Close split view" : "Split view"; onTriggered: root.toggleSplit() }
+        MenuLine { text: "Go to location…"; onTriggered: root.editPath() }
         MenuLine {
-            text: "Make Thallium Files the default file manager"
-            visible: !groundMenu.isDefault
-            height: visible ? implicitHeight : 0
-            onTriggered: root.bridge.makeDefaultManager()
+            text: root.bookmarked ? "Bookmarked" : "Bookmark this folder"
+            enabled: !root.bookmarked
+            onTriggered: root.bridge.addBookmark(root.bridge.currentPath)
         }
-        MenuLine { text: "Bookmark this folder"; onTriggered: root.bridge.addBookmark(root.bridge.currentPath) }
         MenuSeparator {
             contentItem: Rectangle { implicitHeight: 1; color: root.line }
         }
@@ -2600,10 +2587,10 @@ ApplicationWindow {
                     id: placesView
                     anchors.left: parent.left
                     anchors.right: parent.right
-                    anchors.top: railToggle.bottom
-                    anchors.bottom: settingsItem.top
+                    anchors.top: parent.top
+                    anchors.bottom: railToggle.top
                     anchors.margins: 9
-                    anchors.topMargin: 8
+                    anchors.topMargin: 14
                     clip: true
                     spacing: 2
                     model: root.places
@@ -2632,6 +2619,7 @@ ApplicationWindow {
                         readonly property bool remote: placeEntry.modelData.remote === true
                         readonly property bool recent: placeEntry.modelData.recent === true
                         readonly property bool trash: placeEntry.modelData.trash === true
+                        readonly property bool settings: placeEntry.modelData.settings === true
                         readonly property bool marked: placeEntry.modelData.bookmark !== undefined
                         readonly property bool drive: placeEntry.modelData.drive !== undefined
                         readonly property string target: placeEntry.remote || placeEntry.marked || placeEntry.drive
@@ -2653,9 +2641,11 @@ ApplicationWindow {
                                   ? "◈"
                                   : (placeEntry.modelData.folder === "/"
                                      ? "◆"
-                                     : (placeEntry.modelData.folder.length === 0 ? "⌂" : "▸")))
+                                     : (placeEntry.modelData.folder === "" ? "⌂" : "▸")))
                         label: placeEntry.modelData.label
                         active: root.settingsOpen
+                                ? placeEntry.settings
+                                : placeEntry.settings
                                 ? false
                                 : placeEntry.recent
                                 ? root.recentOpen
@@ -2663,7 +2653,7 @@ ApplicationWindow {
                                 ? root.trashOpen
                                 : (!placeEntry.adds && !root.recentOpen && !root.trashOpen
                                    && root.bridge.currentPath === placeEntry.target)
-                        dropTarget: placeEntry.recent || placeEntry.trash || placeEntry.adds || placeEntry.remote
+                        dropTarget: placeEntry.recent || placeEntry.trash || placeEntry.settings || placeEntry.adds || placeEntry.remote
                                     ? "" : placeEntry.target
                         trailing: placeEntry.remote ? "remote"
                                   : placeEntry.drive && placeEntry.target.length === 0 ? "not mounted" : ""
@@ -2679,7 +2669,9 @@ ApplicationWindow {
                             bookmarkMenu.popup()
                         }
                         onActivated: {
-                            if (placeEntry.recent) {
+                            if (placeEntry.settings) {
+                                root.openSettings()
+                            } else if (placeEntry.recent) {
                                 root.showRecent()
                             } else if (placeEntry.trash) {
                                 root.showTrash()
@@ -2690,31 +2682,19 @@ ApplicationWindow {
                     }
                 }
 
+                // Opens and closes the rail, at its foot.
                 NavItem {
                     id: railToggle
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    anchors.margins: 9
-                    anchors.topMargin: 14
-                    icon: "panel-left"
-                    label: root.railOpen ? "Collapse" : "Expand"
-                    onActivated: root.railOpen = !root.railOpen
-                }
-
-                // Settings, at the foot of the column.
-                NavItem {
-                    id: settingsItem
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.bottom: parent.bottom
                     anchors.margins: 9
                     anchors.bottomMargin: 14
-                    icon: "settings"
-                    label: "Settings"
-                    active: root.settingsOpen
-                    onActivated: root.openSettings()
+                    icon: "panel-left"
+                    label: root.railOpen ? "Collapse" : "Expand"
+                    onActivated: root.railOpen = !root.railOpen
                 }
+
             }
 
         }
@@ -3056,35 +3036,16 @@ ApplicationWindow {
                         }
 
                         IconButton {
-                            icon: "square-plus"
-                            hint: "New folder (Ctrl+Shift+N)"
-                            enabled: !root.trashOpen && !root.recentOpen
-                            onClicked: root.beginCreate("folder", "")
-                        }
-                        IconButton {
                             icon: "search"
                             hint: "Search (Ctrl+F)"
                             on: headerSearch.visible
                             onClicked: root.openSearch()
                         }
                         IconButton {
-                            icon: "star"
-                            hint: root.bookmarked ? "Bookmarked" : "Bookmark this folder (Ctrl+D)"
-                            on: root.bookmarked
-                            enabled: !root.trashOpen && !root.recentOpen
-                            onClicked: if (!root.bookmarked) root.bridge.addBookmark(root.bridge.currentPath)
-                        }
-                        IconButton {
                             icon: "panel-right"
                             hint: root.previewOpen ? "Hide preview" : "Show preview"
                             on: root.previewOpen
                             onClicked: root.togglePreview()
-                        }
-                        IconButton {
-                            id: moreButton
-                            icon: "ellipsis"
-                            hint: "More"
-                            onClicked: moreMenu.popup(moreButton, 0, moreButton.height + 4)
                         }
                     }
                 }
@@ -3132,6 +3093,47 @@ ApplicationWindow {
                 anchors.topMargin: 10
                 anchors.bottomMargin: 4
                 clip: true
+
+                // Two fingers swept sideways on a touchpad, or a tilted
+                // wheel: right goes back, left goes forward, once per sweep.
+                Item {
+                    anchors.fill: parent
+                    z: 30
+                    WheelHandler {
+                        id: swipe
+                        target: null
+                        orientation: Qt.Horizontal
+                        property real travel: 0
+                        property bool spent: false
+                        onWheel: function (event) {
+                            const dx = event.pixelDelta.x !== 0 ? event.pixelDelta.x : event.angleDelta.x
+                            const dy = event.pixelDelta.y !== 0 ? event.pixelDelta.y : event.angleDelta.y
+                            if (Math.abs(dx) <= Math.abs(dy)) {
+                                event.accepted = false
+                                return
+                            }
+                            swipeEnd.restart()
+                            if (swipe.spent || root.settingsOpen)
+                                return
+                            swipe.travel += event.inverted ? -dx : dx
+                            if (Math.abs(swipe.travel) < 100)
+                                return
+                            swipe.spent = true
+                            if (swipe.travel > 0)
+                                root.bridge.back()
+                            else
+                                root.bridge.forward()
+                        }
+                    }
+                    Timer {
+                        id: swipeEnd
+                        interval: 300
+                        onTriggered: {
+                            swipe.travel = 0
+                            swipe.spent = false
+                        }
+                    }
+                }
 
 
                 // Selection toolbar, present only while something is held.
