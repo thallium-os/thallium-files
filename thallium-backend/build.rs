@@ -20,7 +20,6 @@ fn main() {
 			.qml_files([
 				"qml/CrossRule.qml",
 				"qml/Icon.qml",
-				"qml/Rail.qml",
 				"qml/IconButton.qml",
 				"qml/Segmented.qml",
 				"qml/FileTile.qml",

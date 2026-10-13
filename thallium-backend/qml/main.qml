@@ -59,7 +59,8 @@ ApplicationWindow {
     // room for names; tiled at half a screen, only the rail stays.
     readonly property bool roomForPlaces: root.width >= 860
     readonly property bool roomForPreview: root.width >= 1240
-    readonly property int sidebarWidth: Theme.railWidth + (root.roomForPlaces ? Theme.placesWidth : 0)
+    // Narrow, the sidebar keeps its icons and drops its labels.
+    readonly property int sidebarWidth: root.roomForPlaces ? Theme.placesWidth : 58
     // In a narrow file pane the Kind and then the Size column give their
     // width to the name.
     readonly property bool kindColumn: main.width >= 760
@@ -94,7 +95,8 @@ ApplicationWindow {
     // default) and one for narrow ones (closed by default).
     property bool previewWide: true
     property bool previewNarrow: false
-    readonly property bool previewOpen: root.roomForPreview ? root.previewWide : root.previewNarrow
+    readonly property bool previewWanted: root.roomForPreview ? root.previewWide : root.previewNarrow
+    readonly property bool previewOpen: root.previewWanted && !root.settingsOpen
     function togglePreview() {
         if (root.roomForPreview)
             root.previewWide = !root.previewWide
@@ -213,12 +215,15 @@ ApplicationWindow {
         const seen = root.homeFolders
         const icons = { Desktop: "folder", Documents: "file-text", Downloads: "download",
                         Music: "music", Pictures: "image", Videos: "video" }
-        const out = [ { label: "Home", folder: "", icon: "house", section: "Places" } ]
+        // The first group has no heading: the Places tab above names it.
+        const out = [ { label: "Home", folder: "", icon: "house", section: "" },
+                      { label: "Recent", folder: null, recent: true, icon: "clock", section: "" } ]
         for (let i = 0; i < known.length; ++i) {
             if (seen.length === 0 || seen.indexOf(known[i]) >= 0)
-                out.push({ label: known[i], folder: known[i], icon: icons[known[i]], section: "Places" })
+                out.push({ label: known[i], folder: known[i], icon: icons[known[i]], section: "" })
         }
-        out.push({ label: "Filesystem", folder: "/", icon: "hard-drive", section: "Places" })
+        out.push({ label: "Filesystem", folder: "/", icon: "hard-drive", section: "" })
+        out.push({ label: "Trash", folder: null, trash: true, icon: "trash-2", section: "" })
         // Drives that can be mounted, mounted or not.
         void root.revision
         for (let d = 0; d < root.bridge.driveCount(); ++d)
@@ -357,6 +362,7 @@ ApplicationWindow {
             root.remoteSheetOpen = true
             return
         }
+        root.settingsOpen = false
         root.recentOpen = false
         root.trashOpen = false
         if (place.drive !== undefined)
@@ -387,11 +393,25 @@ ApplicationWindow {
         return (value >= 100 || at === 0 ? Math.round(value) : value.toFixed(1)) + " " + units[at]
     }
 
+    // Settings, shown in place of the folder. Going anywhere closes it.
+    property bool settingsOpen: false
+    property bool defaultManager: true
+
+    function openSettings() {
+        root.defaultManager = root.bridge.isDefaultManager()
+        root.settingsOpen = true
+    }
+    Connections {
+        target: root.bridge
+        function onCurrentPathChanged() { root.settingsOpen = false }
+    }
+
     // The desktop's recent files, shown in place of a directory.
     property bool recentOpen: false
 
     function showRecent() {
         root.endDeepSearch()
+        root.settingsOpen = false
         root.trashOpen = false
         root.recentOpen = true
         root.bridge.refreshRecents()
@@ -404,6 +424,7 @@ ApplicationWindow {
 
     function showTrash() {
         root.endDeepSearch()
+        root.settingsOpen = false
         root.recentOpen = false
         root.trashOpen = true
         root.trashPicked = []
@@ -593,41 +614,6 @@ ApplicationWindow {
         onTriggered: root.showProperties(root.firstSelectedRow())
     }
 
-    // ---- Sections ----
-    // What the rail shows as current, derived from what is on screen.
-    readonly property string section: root.trashOpen ? "trash"
-        : root.recentOpen ? "recent"
-        : root.bridge.currentPath === root.bridge.homePath ? "home"
-        : root.bridge.currentPath.startsWith("/") ? "files"
-        : "network"
-
-    function chooseSection(key) {
-        if (key === "home") {
-            root.recentOpen = false
-            root.trashOpen = false
-            root.bridge.navigate(root.bridge.homePath)
-        } else if (key === "files") {
-            root.recentOpen = false
-            root.trashOpen = false
-        } else if (key === "recent") {
-            root.showRecent()
-        } else if (key === "trash") {
-            root.showTrash()
-        } else if (key === "network") {
-            if (root.bridge.remoteCount() > 0) {
-                root.recentOpen = false
-                root.trashOpen = false
-                root.bridge.navigate(root.bridge.remoteLocation(0))
-            } else if (root.bridge.remotesConfigurable()) {
-                root.remoteDraftName = ""
-                root.providerQuery = ""
-                root.remoteSheetOpen = true
-            }
-        } else if (key === "settings") {
-            settingsMenu.popup(rail, rail.width + 6, rail.height / 2)
-        }
-    }
-
     MenuSurface {
         id: moreMenu
         MenuLine { text: "New tab"; onTriggered: root.newTab(root.bridge.currentPath) }
@@ -637,27 +623,6 @@ ApplicationWindow {
     }
 
     Shortcut { sequences: ["F3"]; onActivated: root.toggleSplit() }
-
-    MenuSurface {
-        id: settingsMenu
-        property bool isDefault: true
-        onAboutToShow: isDefault = root.bridge.isDefaultManager()
-        MenuLine {
-            text: root.showHidden ? "Hide hidden files" : "Show hidden files"
-            onTriggered: root.showHidden = !root.showHidden
-        }
-        MenuLine {
-            text: root.previewOpen ? "Hide preview panel" : "Show preview panel"
-            onTriggered: root.togglePreview()
-        }
-        MenuLine { text: "Theme…"; onTriggered: themeSheet.open() }
-        MenuLine { text: "Edit custom actions…"; onTriggered: root.bridge.editActions() }
-        MenuLine {
-            text: "Make Thallium Files the default"
-            enabled: !settingsMenu.isDefault
-            onTriggered: root.bridge.makeDefaultManager()
-        }
-    }
 
     // ---- Theme ----
     // Follow Thallium, or a custom theme of five colours, plus the user's own
@@ -1189,155 +1154,6 @@ ApplicationWindow {
         ]
     }
 
-    // ---- Theme ----
-    Sheet {
-        id: themeSheet
-        width: 560
-        title: "Theme"
-        icon: "eye"
-        onClosed: {
-            themeSave.stop()
-            root.saveFilesTheme()
-            root.release()
-        }
-
-        Chips {
-            width: parent.width
-            options: [{ key: "thallium", label: "Follow Thallium" }, { key: "custom", label: "Custom" }]
-            current: Theme.custom ? "custom" : "thallium"
-            onPicked: function (key) { root.setThemeCustom(key === "custom") }
-        }
-
-        Text {
-            visible: !Theme.custom
-            width: parent.width
-            wrapMode: Text.Wrap
-            text: "Colours follow the variant and accent picked in Thallium Settings, Appearance."
-            color: Theme.inkDim
-            font.family: Theme.family
-            font.pixelSize: Theme.text
-        }
-
-        Column {
-            visible: Theme.custom
-            width: parent.width
-            spacing: 12
-
-            Overline { text: "PRESETS" }
-            Chips {
-                width: parent.width
-                options: root.themePresets
-                current: root.themePreset
-                onPicked: function (key) {
-                    const preset = root.themePresets.find(function (p) { return p.key === key })
-                    root.setThemeColors(preset.colors)
-                }
-            }
-
-            CrossRule { width: parent.width }
-
-            Repeater {
-                model: Theme.editable
-                delegate: ColorField {
-                    required property var modelData
-                    width: parent.width
-                    label: modelData.label
-                    value: Theme.base[modelData.key]
-                    onEdited: function (value) { root.setThemeColor(modelData.key, value) }
-                }
-            }
-
-            CrossRule { width: parent.width }
-
-            Row {
-                width: parent.width
-                spacing: 8
-                Rectangle {
-                    width: parent.width - saveTheme.width - deleteTheme.width - 16
-                    height: Theme.controlHeight
-                    radius: Theme.radiusSmall
-                    color: Theme.inset
-                    border.width: 1
-                    border.color: presetName.activeFocus ? Theme.outline : Theme.outlineSoft
-                    TextInput {
-                        id: presetName
-                        anchors.fill: parent
-                        anchors.leftMargin: 12
-                        anchors.rightMargin: 12
-                        verticalAlignment: TextInput.AlignVCenter
-                        clip: true
-                        color: Theme.ink
-                        selectionColor: Theme.accentWash
-                        selectedTextColor: Theme.ink
-                        font.family: Theme.family
-                        font.pixelSize: Theme.text
-                        onAccepted: saveTheme.clicked()
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            visible: presetName.text.length === 0
-                            text: "Name for preset"
-                            color: Theme.inkFaint
-                            font: presetName.font
-                        }
-                    }
-                }
-                TextButton {
-                    id: saveTheme
-                    text: "Save as preset"
-                    enabled: presetName.text.trim().length > 0
-                    onClicked: {
-                        root.saveThemePreset(presetName.text)
-                        presetName.text = ""
-                    }
-                }
-                TextButton {
-                    id: deleteTheme
-                    text: "Delete preset"
-                    enabled: root.themePreset.startsWith("u")
-                    onClicked: root.deleteThemePreset(root.themePreset)
-                }
-            }
-
-            // The theme as text, to share it or paste one in.
-            Overline { text: "THEME CODE" }
-            Rectangle {
-                width: parent.width
-                height: Theme.controlHeight
-                radius: Theme.radiusSmall
-                color: Theme.inset
-                border.width: 1
-                border.color: themeCode.activeFocus ? Theme.outline : Theme.outlineSoft
-                TextInput {
-                    id: themeCode
-                    anchors.fill: parent
-                    anchors.leftMargin: 12
-                    anchors.rightMargin: 12
-                    verticalAlignment: TextInput.AlignVCenter
-                    clip: true
-                    selectByMouse: true
-                    text: JSON.stringify(Theme.base)
-                    color: Theme.inkSoft
-                    selectionColor: Theme.accentWash
-                    selectedTextColor: Theme.ink
-                    font.family: Theme.mono
-                    font.pixelSize: 11
-                    onEditingFinished: {
-                        try {
-                            const pasted = JSON.parse(themeCode.text)
-                            if (root.validColors(pasted))
-                                root.setThemeColors(pasted)
-                        } catch (error) {
-                        }
-                        themeCode.text = Qt.binding(function () { return JSON.stringify(Theme.base) })
-                    }
-                }
-            }
-        }
-
-        buttons: [
-            TextButton { primary: true; text: "Done"; onClicked: themeSheet.close() }
-        ]
-    }
 
     // ---- Properties ----
     property int propTick: 0
@@ -2200,7 +2016,7 @@ ApplicationWindow {
 
     function release() { keyCatcher.forceActiveFocus() }
 
-    readonly property bool typing: namePrompt.opened || pathEditor.visible || deleteConfirm.opened
+    readonly property bool typing: root.settingsOpen || namePrompt.opened || pathEditor.visible || deleteConfirm.opened
                                    || emptyConfirm.opened || appPicker.opened || propertiesSheet.opened
                                    || bulkSheet.opened
 
@@ -2804,6 +2620,8 @@ ApplicationWindow {
         property string label: ""
         property string trailing: ""
         property bool active: false
+        // Narrow, only the icon shows and the label is a tooltip.
+        readonly property bool compact: !root.roomForPlaces
         signal activated
         signal menuRequested
         // A folder this item names, so files can be dropped on it.
@@ -2821,7 +2639,7 @@ ApplicationWindow {
         Item {
             id: navGlyph
             anchors.left: parent.left
-            anchors.leftMargin: 10
+            anchors.leftMargin: navItem.compact ? (navItem.width - width) / 2 : 10
             anchors.verticalCenter: parent.verticalCenter
             width: 16
             height: 16
@@ -2847,6 +2665,7 @@ ApplicationWindow {
             anchors.right: navCount.left
             anchors.rightMargin: 8
             anchors.verticalCenter: parent.verticalCenter
+            visible: !navItem.compact
             text: navItem.label
             elide: Text.ElideRight
             color: navItem.active ? Theme.ink : Theme.inkSoft
@@ -2856,6 +2675,7 @@ ApplicationWindow {
 
         Mono {
             id: navCount
+            visible: !navItem.compact
             anchors.right: parent.right
             anchors.rightMargin: 10
             anchors.verticalCenter: parent.verticalCenter
@@ -2868,6 +2688,9 @@ ApplicationWindow {
             id: navMouse
             anchors.fill: parent
             hoverEnabled: true
+            ToolTip.visible: navItem.compact && navMouse.containsMouse
+            ToolTip.text: navItem.label
+            ToolTip.delay: 400
             cursorShape: Qt.PointingHandCursor
             acceptedButtons: Qt.LeftButton | Qt.RightButton
             onClicked: function (mouse) {
@@ -2943,23 +2766,10 @@ ApplicationWindow {
             height: parent.height
             color: root.canvas
 
-            Rail {
-                id: rail
-                height: parent.height
-                current: root.section
-                network: {
-                    void root.configTick
-                    return root.bridge.remoteCount() > 0 || root.bridge.remotesConfigurable()
-                }
-                onChosen: function (key) { root.chooseSection(key) }
-                onMoreRequested: function (anchor) { moreMenu.popup(anchor, anchor.width + 6, 0) }
-            }
-
-            // Places, bookmarks, drives and remotes, beside the rail.
+            // Places, bookmarks, drives and remotes, and Settings at the foot.
             Item {
                 id: placesColumn
-                visible: root.roomForPlaces
-                anchors.left: rail.right
+                anchors.left: parent.left
                 anchors.right: parent.right
                 height: parent.height
 
@@ -2970,40 +2780,16 @@ ApplicationWindow {
                     color: root.line
                 }
 
-                // ---- Header: where you are, and the panel switch ----
-                Item {
-                    id: sidebarHead
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    anchors.leftMargin: 14
-                    anchors.rightMargin: 10
-                    anchors.topMargin: 14
-                    height: 30
-
-                    Text {
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: "Places"
-                        elide: Text.ElideMiddle
-                        color: root.ink
-                        font.family: root.sansFamily
-                        font.pixelSize: Theme.title
-                        font.weight: Font.Medium
-                    }
-
-                }
-
                 // ---- Filter the tree, not the file list ----
                 Rectangle {
                     id: folderSearch
+                    visible: root.roomForPlaces
                     anchors.left: parent.left
                     anchors.right: parent.right
-                    anchors.top: sidebarHead.bottom
+                    anchors.top: parent.top
                     anchors.leftMargin: 12
                     anchors.rightMargin: 12
-                    anchors.topMargin: 12
+                    anchors.topMargin: 16
                     height: 30
                     radius: 7
                     color: root.raised
@@ -3051,6 +2837,7 @@ ApplicationWindow {
                 // ---- Folders / Places ----
                 Rectangle {
                     id: sidebarTabs
+                    visible: root.roomForPlaces
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.top: folderSearch.bottom
@@ -3089,15 +2876,15 @@ ApplicationWindow {
                     id: treeView
                     anchors.left: parent.left
                     anchors.right: parent.right
-                    anchors.top: sidebarTabs.bottom
-                    anchors.bottom: ringPanel.top
+                    anchors.top: root.roomForPlaces ? sidebarTabs.bottom : parent.top
+                    anchors.bottom: settingsItem.top
                     anchors.leftMargin: 8
                     anchors.rightMargin: 8
-                    anchors.topMargin: 10
+                    anchors.topMargin: root.roomForPlaces ? 10 : 16
                     anchors.bottomMargin: 10
                     clip: true
                     spacing: 1
-                    visible: root.sidebarTab === "folders"
+                    visible: root.sidebarTab === "folders" && root.roomForPlaces
                     model: root.tree
                     boundsBehavior: Flickable.StopAtBounds
 
@@ -3118,7 +2905,7 @@ ApplicationWindow {
                     anchors.fill: treeView
                     clip: true
                     spacing: 2
-                    visible: root.sidebarTab === "places"
+                    visible: root.sidebarTab === "places" || !root.roomForPlaces
                     model: {
                         const needle = root.folderQuery.toLowerCase()
                         if (needle.length === 0)
@@ -3132,8 +2919,11 @@ ApplicationWindow {
                     section.delegate: Item {
                         required property string section
                         width: placesView.width
-                        height: 40
+                        // Unheaded in the first group; a bare rule when narrow.
+                        height: section.length === 0 ? 0 : (root.roomForPlaces ? 40 : 14)
+                        visible: section.length > 0
                         Text {
+                            visible: root.roomForPlaces
                             anchors.left: parent.left
                             anchors.leftMargin: 4
                             anchors.bottom: sectionRule.top
@@ -3184,7 +2974,9 @@ ApplicationWindow {
                                      ? "◆"
                                      : (placeEntry.modelData.folder.length === 0 ? "⌂" : "▸")))
                         label: placeEntry.modelData.label
-                        active: placeEntry.recent
+                        active: root.settingsOpen
+                                ? false
+                                : placeEntry.recent
                                 ? root.recentOpen
                                 : placeEntry.trash
                                 ? root.trashOpen
@@ -3217,16 +3009,18 @@ ApplicationWindow {
                     }
                 }
 
-                // How full the disk is. The ring earns its height here only
-                // because what this folder holds now sits beside its name.
-                // Anchor for the lists above; the storage view lives in the
-                // preview panel now.
-                Item {
-                    id: ringPanel
+                // Settings, at the foot of the column.
+                NavItem {
+                    id: settingsItem
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.bottom: parent.bottom
-                    height: 0
+                    anchors.margins: 8
+                    anchors.bottomMargin: 14
+                    icon: "settings"
+                    label: "Settings"
+                    active: root.settingsOpen
+                    onActivated: root.openSettings()
                 }
             }
 
@@ -3239,39 +3033,23 @@ ApplicationWindow {
             height: parent.height
 
             // ---- Header ----
-            // The folder's name on the left, the window's actions on the right,
-            // and the tabs between them once there is more than one.
+            // The tabs, once there is more than one. The folder's name is in
+            // the crumbs and the actions are on the folder bar.
             Item {
                 id: header
+                visible: root.tabs.length > 1
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.top: parent.top
                 anchors.leftMargin: 28
                 anchors.rightMargin: 28
-                anchors.topMargin: 16
-                height: 46
-
-                Text {
-                    id: headerTitle
-                    anchors.left: parent.left
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: Math.min(implicitWidth, 260)
-                    text: root.trashOpen ? "Trash"
-                        : root.recentOpen ? "Recent"
-                        : root.crumbs[root.crumbs.length - 1].label
-                    elide: Text.ElideMiddle
-                    color: Theme.ink
-                    font.family: Theme.family
-                    font.pixelSize: Theme.title
-                    font.weight: Font.Medium
-                }
+                anchors.topMargin: root.tabs.length > 1 ? 16 : 0
+                height: root.tabs.length > 1 ? 46 : 0
 
                 Row {
                     id: tabStrip
-                    anchors.left: headerTitle.right
-                    anchors.leftMargin: 20
-                    anchors.right: headerActions.left
-                    anchors.rightMargin: 12
+                    anchors.left: parent.left
+                    anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 6
                     clip: true
@@ -3339,122 +3117,17 @@ ApplicationWindow {
                     }
                 }
 
-                Row {
-                    id: headerActions
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 6
-
-                    // Search opens in place, to the left of the buttons.
-                    Rectangle {
-                        id: headerSearch
-                        visible: root.searchShown || root.query.length > 0
-                        width: 240
-                        height: Theme.controlHeight
-                        radius: Theme.radius
-                        color: Theme.surface
-                        border.width: 1
-                        border.color: searchInput.activeFocus ? Theme.outline : Theme.outlineSoft
-
-                        Icon {
-                            id: searchMark
-                            anchors.left: parent.left
-                            anchors.leftMargin: 10
-                            anchors.verticalCenter: parent.verticalCenter
-                            name: "search"
-                            size: 15
-                            shade: root.deepSearch ? 1 : 0.5
-                        }
-
-                        TextInput {
-                            id: searchInput
-                            anchors.left: searchMark.right
-                            anchors.leftMargin: 8
-                            anchors.right: clearSearch.left
-                            anchors.rightMargin: 6
-                            anchors.verticalCenter: parent.verticalCenter
-                            clip: true
-                            color: Theme.ink
-                            selectionColor: Theme.controlHigh
-                            selectedTextColor: Theme.ink
-                            font.family: Theme.family
-                            font.pixelSize: Theme.text
-                            text: root.query
-                            onTextChanged: root.query = text
-                            onActiveFocusChanged: if (!activeFocus && text.length === 0) root.searchShown = false
-                            Keys.onEscapePressed: {
-                                if (root.deepSearch)
-                                    root.endDeepSearch()
-                                root.query = ""
-                                root.searchShown = false
-                                root.release()
-                            }
-                            Keys.onReturnPressed: root.beginDeepSearch()
-                            Keys.onEnterPressed: root.beginDeepSearch()
-
-                            Text {
-                                anchors.verticalCenter: parent.verticalCenter
-                                visible: searchInput.text.length === 0
-                                text: "Filter, or Enter to search below"
-                                color: Theme.inkFaint
-                                font.family: Theme.family
-                                font.pixelSize: 12
-                            }
-                        }
-
-                        IconButton {
-                            id: clearSearch
-                            anchors.right: parent.right
-                            anchors.rightMargin: 3
-                            anchors.verticalCenter: parent.verticalCenter
-                            visible: root.query.length > 0
-                            implicitWidth: 26
-                            implicitHeight: 26
-                            icon: "x"
-                            iconSize: 14
-                            onClicked: {
-                                root.endDeepSearch()
-                                root.query = ""
-                            }
-                        }
-                    }
-
-                    IconButton {
-                        icon: "square-plus"
-                        hint: "New folder (Ctrl+Shift+N)"
-                        enabled: !root.trashOpen && !root.recentOpen
-                        onClicked: root.beginCreate("folder", "")
-                    }
-                    IconButton {
-                        icon: "search"
-                        hint: "Search (Ctrl+F)"
-                        on: headerSearch.visible
-                        onClicked: root.openSearch()
-                    }
-                    IconButton {
-                        icon: "star"
-                        hint: root.bookmarked ? "Bookmarked" : "Bookmark this folder (Ctrl+D)"
-                        on: root.bookmarked
-                        enabled: !root.trashOpen && !root.recentOpen
-                        onClicked: if (!root.bookmarked) root.bridge.addBookmark(root.bridge.currentPath)
-                    }
-                    IconButton {
-                        icon: "panel-right"
-                        hint: root.previewOpen ? "Hide preview" : "Show preview"
-                        on: root.previewOpen
-                        onClicked: root.togglePreview()
-                    }
-                }
             }
 
             CrossRule {
                 id: headerRule
+                visible: root.tabs.length > 1
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.top: header.bottom
                 anchors.leftMargin: 24
                 anchors.rightMargin: 24
-                anchors.topMargin: 8
+                anchors.topMargin: root.tabs.length > 1 ? 8 : 0
             }
 
             // ---- Folder bar: the way back, where you are, how to look ----
@@ -3468,65 +3141,9 @@ ApplicationWindow {
                 anchors.topMargin: 16
                 height: 40
 
-                // The reference's folder button: here it lists the way up.
-                Rectangle {
-                    id: ancestry
-                    anchors.left: parent.left
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 58
-                    height: 40
-                    radius: Theme.radius
-                    color: ancestryMouse.containsMouse ? Theme.surfaceHigh : Theme.surface
-                    Row {
-                        anchors.centerIn: parent
-                        spacing: 6
-                        Icon { name: "folder"; size: 18; shade: 0.85; anchors.verticalCenter: parent.verticalCenter }
-                        Icon { name: "chevron-down"; size: 14; shade: 0.6; anchors.verticalCenter: parent.verticalCenter }
-                    }
-                    MouseArea {
-                        id: ancestryMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: ancestryMenu.popup(ancestry, 0, ancestry.height + 4)
-                    }
-                    MenuSurface {
-                        id: ancestryMenu
-                        Repeater {
-                            model: root.crumbs.slice().reverse()
-                            delegate: MenuLine {
-                                required property var modelData
-                                text: modelData.label
-                                onTriggered: {
-                                    root.recentOpen = false
-                                    root.trashOpen = false
-                                    root.bridge.navigate(modelData.path)
-                                }
-                            }
-                        }
-                        // With the places column folded away, its places
-                        // are reached from here instead.
-                        Repeater {
-                            model: root.roomForPlaces ? 0 : 1
-                            delegate: MenuSeparator {
-                                contentItem: Rectangle { implicitHeight: 1; color: root.line }
-                            }
-                        }
-                        Repeater {
-                            model: root.roomForPlaces ? [] : root.places.filter(function (place) { return place.add !== true })
-                            delegate: MenuLine {
-                                required property var modelData
-                                text: modelData.label
-                                onTriggered: root.openPlace(modelData)
-                            }
-                        }
-                    }
-                }
-
                 Row {
                     id: headerNav
-                    anchors.left: ancestry.right
-                    anchors.leftMargin: 10
+                    anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 2
                     IconButton { icon: "arrow-left"; hint: "Back (Alt+Left)"; iconSize: 16; onClicked: root.bridge.back() }
@@ -3698,6 +3315,117 @@ ApplicationWindow {
                         ]
                         current: root.view
                         onPicked: function (key) { root.view = key }
+                    }
+                    Row {
+                        id: headerActions
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 6
+
+                        // Search opens in place, to the left of the buttons.
+                        Rectangle {
+                            id: headerSearch
+                            visible: root.searchShown || root.query.length > 0
+                            width: 240
+                            height: Theme.controlHeight
+                            radius: Theme.radius
+                            color: Theme.surface
+                            border.width: 1
+                            border.color: searchInput.activeFocus ? Theme.outline : Theme.outlineSoft
+
+                            Icon {
+                                id: searchMark
+                                anchors.left: parent.left
+                                anchors.leftMargin: 10
+                                anchors.verticalCenter: parent.verticalCenter
+                                name: "search"
+                                size: 15
+                                shade: root.deepSearch ? 1 : 0.5
+                            }
+
+                            TextInput {
+                                id: searchInput
+                                anchors.left: searchMark.right
+                                anchors.leftMargin: 8
+                                anchors.right: clearSearch.left
+                                anchors.rightMargin: 6
+                                anchors.verticalCenter: parent.verticalCenter
+                                clip: true
+                                color: Theme.ink
+                                selectionColor: Theme.controlHigh
+                                selectedTextColor: Theme.ink
+                                font.family: Theme.family
+                                font.pixelSize: Theme.text
+                                text: root.query
+                                onTextChanged: root.query = text
+                                onActiveFocusChanged: if (!activeFocus && text.length === 0) root.searchShown = false
+                                Keys.onEscapePressed: {
+                                    if (root.deepSearch)
+                                        root.endDeepSearch()
+                                    root.query = ""
+                                    root.searchShown = false
+                                    root.release()
+                                }
+                                Keys.onReturnPressed: root.beginDeepSearch()
+                                Keys.onEnterPressed: root.beginDeepSearch()
+
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    visible: searchInput.text.length === 0
+                                    text: "Filter, or Enter to search below"
+                                    color: Theme.inkFaint
+                                    font.family: Theme.family
+                                    font.pixelSize: 12
+                                }
+                            }
+
+                            IconButton {
+                                id: clearSearch
+                                anchors.right: parent.right
+                                anchors.rightMargin: 3
+                                anchors.verticalCenter: parent.verticalCenter
+                                visible: root.query.length > 0
+                                implicitWidth: 26
+                                implicitHeight: 26
+                                icon: "x"
+                                iconSize: 14
+                                onClicked: {
+                                    root.endDeepSearch()
+                                    root.query = ""
+                                }
+                            }
+                        }
+
+                        IconButton {
+                            icon: "square-plus"
+                            hint: "New folder (Ctrl+Shift+N)"
+                            enabled: !root.trashOpen && !root.recentOpen
+                            onClicked: root.beginCreate("folder", "")
+                        }
+                        IconButton {
+                            icon: "search"
+                            hint: "Search (Ctrl+F)"
+                            on: headerSearch.visible
+                            onClicked: root.openSearch()
+                        }
+                        IconButton {
+                            icon: "star"
+                            hint: root.bookmarked ? "Bookmarked" : "Bookmark this folder (Ctrl+D)"
+                            on: root.bookmarked
+                            enabled: !root.trashOpen && !root.recentOpen
+                            onClicked: if (!root.bookmarked) root.bridge.addBookmark(root.bridge.currentPath)
+                        }
+                        IconButton {
+                            icon: "panel-right"
+                            hint: root.previewOpen ? "Hide preview" : "Show preview"
+                            on: root.previewOpen
+                            onClicked: root.togglePreview()
+                        }
+                        IconButton {
+                            id: moreButton
+                            icon: "ellipsis"
+                            hint: "More"
+                            onClicked: moreMenu.popup(moreButton, 0, moreButton.height + 4)
+                        }
                     }
                 }
             }
@@ -4998,6 +4726,215 @@ ApplicationWindow {
                             iconSize: 15
                             hint: "More"
                             onClicked: root.openEntryMenu(tileHost.entry)
+                        }
+                    }
+                }
+            }
+
+            // ---- Settings ----
+            // A page in place of the folder: view options, the theme, and
+            // how Thallium Files sits in the system.
+            Rectangle {
+                id: settingsPage
+                anchors.fill: parent
+                visible: root.settingsOpen
+                color: Theme.canvas
+
+                // Nothing under the page takes clicks while it is up.
+                MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons }
+
+                Flickable {
+                    anchors.fill: parent
+                    contentHeight: settingsBody.implicitHeight + 64
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
+
+                    Column {
+                        id: settingsBody
+                        x: 40
+                        y: 28
+                        width: Math.min(settingsPage.width - 80, 640)
+                        spacing: 14
+
+                        Text {
+                            text: "Settings"
+                            color: Theme.ink
+                            font.family: Theme.family
+                            font.pixelSize: Theme.title
+                            font.weight: Font.Medium
+                        }
+                        CrossRule { width: parent.width }
+
+                        Overline { text: "VIEW" }
+                        Check {
+                            text: "Show hidden files (Ctrl+H)"
+                            checked: root.showHidden
+                            onToggled: function (on) {
+                                root.showHidden = on
+                                checked = Qt.binding(function () { return root.showHidden })
+                            }
+                        }
+                        Check {
+                            text: "Show the preview panel"
+                            checked: root.previewWanted
+                            onToggled: function (on) {
+                                root.togglePreview()
+                                checked = Qt.binding(function () { return root.previewWanted })
+                            }
+                        }
+
+                        CrossRule { width: parent.width }
+                        Overline { text: "THEME" }
+                    Chips {
+                        width: parent.width
+                        options: [{ key: "thallium", label: "Follow Thallium" }, { key: "custom", label: "Custom" }]
+                        current: Theme.custom ? "custom" : "thallium"
+                        onPicked: function (key) { root.setThemeCustom(key === "custom") }
+                    }
+
+                    Text {
+                        visible: !Theme.custom
+                        width: parent.width
+                        wrapMode: Text.Wrap
+                        text: "Colours follow the variant and accent picked in Thallium Settings, Appearance."
+                        color: Theme.inkDim
+                        font.family: Theme.family
+                        font.pixelSize: Theme.text
+                    }
+
+                    Column {
+                        visible: Theme.custom
+                        width: parent.width
+                        spacing: 12
+
+                        Overline { text: "PRESETS" }
+                        Chips {
+                            width: parent.width
+                            options: root.themePresets
+                            current: root.themePreset
+                            onPicked: function (key) {
+                                const preset = root.themePresets.find(function (p) { return p.key === key })
+                                root.setThemeColors(preset.colors)
+                            }
+                        }
+
+                        CrossRule { width: parent.width }
+
+                        Repeater {
+                            model: Theme.editable
+                            delegate: ColorField {
+                                required property var modelData
+                                width: parent.width
+                                label: modelData.label
+                                value: Theme.base[modelData.key]
+                                onEdited: function (value) { root.setThemeColor(modelData.key, value) }
+                            }
+                        }
+
+                        CrossRule { width: parent.width }
+
+                        Row {
+                            width: parent.width
+                            spacing: 8
+                            Rectangle {
+                                width: parent.width - saveTheme.width - deleteTheme.width - 16
+                                height: Theme.controlHeight
+                                radius: Theme.radiusSmall
+                                color: Theme.inset
+                                border.width: 1
+                                border.color: presetName.activeFocus ? Theme.outline : Theme.outlineSoft
+                                TextInput {
+                                    id: presetName
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 12
+                                    anchors.rightMargin: 12
+                                    verticalAlignment: TextInput.AlignVCenter
+                                    clip: true
+                                    color: Theme.ink
+                                    selectionColor: Theme.accentWash
+                                    selectedTextColor: Theme.ink
+                                    font.family: Theme.family
+                                    font.pixelSize: Theme.text
+                                    onAccepted: saveTheme.clicked()
+                                    Text {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        visible: presetName.text.length === 0
+                                        text: "Name for preset"
+                                        color: Theme.inkFaint
+                                        font: presetName.font
+                                    }
+                                }
+                            }
+                            TextButton {
+                                id: saveTheme
+                                text: "Save as preset"
+                                enabled: presetName.text.trim().length > 0
+                                onClicked: {
+                                    root.saveThemePreset(presetName.text)
+                                    presetName.text = ""
+                                }
+                            }
+                            TextButton {
+                                id: deleteTheme
+                                text: "Delete preset"
+                                enabled: root.themePreset.startsWith("u")
+                                onClicked: root.deleteThemePreset(root.themePreset)
+                            }
+                        }
+
+                        // The theme as text, to share it or paste one in.
+                        Overline { text: "THEME CODE" }
+                        Rectangle {
+                            width: parent.width
+                            height: Theme.controlHeight
+                            radius: Theme.radiusSmall
+                            color: Theme.inset
+                            border.width: 1
+                            border.color: themeCode.activeFocus ? Theme.outline : Theme.outlineSoft
+                            TextInput {
+                                id: themeCode
+                                anchors.fill: parent
+                                anchors.leftMargin: 12
+                                anchors.rightMargin: 12
+                                verticalAlignment: TextInput.AlignVCenter
+                                clip: true
+                                selectByMouse: true
+                                text: JSON.stringify(Theme.base)
+                                color: Theme.inkSoft
+                                selectionColor: Theme.accentWash
+                                selectedTextColor: Theme.ink
+                                font.family: Theme.mono
+                                font.pixelSize: 11
+                                onEditingFinished: {
+                                    try {
+                                        const pasted = JSON.parse(themeCode.text)
+                                        if (root.validColors(pasted))
+                                            root.setThemeColors(pasted)
+                                    } catch (error) {
+                                    }
+                                    themeCode.text = Qt.binding(function () { return JSON.stringify(Theme.base) })
+                                }
+                            }
+                        }
+                    }
+
+                        CrossRule { width: parent.width }
+                        Overline { text: "SYSTEM" }
+                        Flow {
+                            width: parent.width
+                            spacing: 8
+                            TextButton {
+                                text: "Edit custom actions…"
+                                onClicked: root.bridge.editActions()
+                            }
+                            TextButton {
+                                text: root.defaultManager ? "Thallium Files is the default" : "Make Thallium Files the default"
+                                enabled: !root.defaultManager
+                                onClicked: {
+                                    root.bridge.makeDefaultManager()
+                                    root.defaultManager = root.bridge.isDefaultManager()
+                                }
+                            }
                         }
                     }
                 }

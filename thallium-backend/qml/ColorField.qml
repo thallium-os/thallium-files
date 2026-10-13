@@ -93,6 +93,7 @@ Item {
 
     Popup {
         id: picker
+        focus: true
         y: field.height + 4
         x: swatch.x
         padding: 12
