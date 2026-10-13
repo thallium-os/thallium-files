@@ -29,6 +29,7 @@ fn main() {
 				"qml/Chips.qml",
 				"qml/SplitPane.qml",
 				"qml/ColorField.qml",
+				"qml/Donut.qml",
 			]),
 	)
 	.qrc_resources(resources)

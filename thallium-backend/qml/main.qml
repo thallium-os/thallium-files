@@ -266,36 +266,12 @@ ApplicationWindow {
             buckets[root.kindOf(root.bridge.entryName(at), root.bridge.entryIsDirectory(at))] += 1
         }
         return [
-            { label: "Folders", count: buckets.Folders, shade: root.ink },
-            { label: "Code", count: buckets.Code, shade: root.inkMuted },
-            { label: "Documents", count: buckets.Documents, shade: root.inkFaint },
-            { label: "Media", count: buckets.Media, shade: root.emberInk },
-            { label: "Other", count: buckets.Other + buckets.Archives, shade: root.inkGhost }
+            { label: "Folders", count: buckets.Folders },
+            { label: "Code", count: buckets.Code },
+            { label: "Documents", count: buckets.Documents },
+            { label: "Media", count: buckets.Media },
+            { label: "Other", count: buckets.Other + buckets.Archives }
         ]
-    }
-
-    function countOf(label) {
-        for (let i = 0; i < root.composition.length; ++i)
-            if (root.composition[i].label === label)
-                return root.composition[i].count
-        return 0
-    }
-
-    // Segments with nothing in them are not drawn, and a Row gives no spacing
-    // to what it does not lay out, so the bar has to know how many there are.
-    readonly property int compositionShown: {
-        let shown = 0
-        for (let i = 0; i < root.composition.length; ++i)
-            if (root.composition[i].count > 0)
-                shown += 1
-        return shown
-    }
-
-    readonly property int compositionTotal: {
-        let sum = 0
-        for (let i = 0; i < root.composition.length; ++i)
-            sum += root.composition[i].count
-        return sum
     }
 
     width: 1480
@@ -2236,6 +2212,36 @@ ApplicationWindow {
         font.pixelSize: 17
         font.weight: Font.DemiBold
         font.letterSpacing: -0.2
+    }
+
+    // A chart key: swatch, name, and the figure at the right.
+    component Legend: Row {
+        required property var modelData
+        spacing: 8
+        Rectangle {
+            anchors.verticalCenter: parent.verticalCenter
+            width: 10
+            height: 10
+            radius: 3
+            color: parent.modelData.color
+            border.width: 1
+            border.color: Theme.outlineSoft
+        }
+        Text {
+            anchors.verticalCenter: parent.verticalCenter
+            width: 76
+            text: parent.modelData.label
+            color: Theme.inkSoft
+            font.family: Theme.family
+            font.pixelSize: 12
+        }
+        Text {
+            anchors.verticalCenter: parent.verticalCenter
+            text: parent.modelData.value
+            color: Theme.ink
+            font.family: Theme.mono
+            font.pixelSize: 11
+        }
     }
 
     component Overline: Text {
@@ -4848,147 +4854,53 @@ ApplicationWindow {
                     return root.bridge.storageUsed()
                 }
 
-                // The reference's dial: a ticked ring round a solid disc.
-                Item {
-                    id: dial
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    width: 200
-                    height: 190
-                    readonly property real share: storagePanel.total > 0 ? storagePanel.used / storagePanel.total : 0
-
-                    Repeater {
-                        model: 13
-                        delegate: Rectangle {
-                            required property int index
-                            readonly property real angle: (-225 + index * 22.5) * Math.PI / 180
-                            x: dial.width / 2 + Math.cos(angle) * 88 - width / 2
-                            y: 98 + Math.sin(angle) * 88 - height / 2
-                            width: 1
-                            height: 7
-                            rotation: -225 + index * 22.5 + 90
-                            color: Theme.cross
-                        }
+                // The disk, used against free.
+                Overline { text: "DISK" }
+                Row {
+                    spacing: 20
+                    Donut {
+                        id: diskRing
+                        readonly property real share: storagePanel.total > 0 ? storagePanel.used / storagePanel.total : 0
+                        segments: [
+                            { value: storagePanel.used, color: Theme.chart[0] },
+                            { value: Math.max(0, storagePanel.total - storagePanel.used), color: Theme.control }
+                        ]
+                        figure: Math.round(diskRing.share * 100) + "%"
+                        caption: "USED"
                     }
-
-                    Shape {
-                        anchors.fill: parent
-                        preferredRendererType: Shape.CurveRenderer
-                        ShapePath {
-                            fillColor: "transparent"
-                            strokeColor: Theme.control
-                            strokeWidth: 10
-                            capStyle: ShapePath.RoundCap
-                            PathAngleArc {
-                                centerX: dial.width / 2; centerY: 98
-                                radiusX: 70; radiusY: 70
-                                startAngle: 135; sweepAngle: 270
-                            }
+                    Column {
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 10
+                        Repeater {
+                            model: [
+                                { label: "Used", value: root.readableSize(storagePanel.used), color: Theme.chart[0] },
+                                { label: "Free", value: root.readableSize(Math.max(0, storagePanel.total - storagePanel.used)), color: Theme.control },
+                                { label: "Total", value: root.readableSize(storagePanel.total), color: "transparent" }
+                            ]
+                            delegate: Legend {}
                         }
-                        ShapePath {
-                            fillColor: "transparent"
-                            strokeColor: Theme.inkSoft
-                            strokeWidth: 10
-                            capStyle: ShapePath.RoundCap
-                            PathAngleArc {
-                                centerX: dial.width / 2; centerY: 98
-                                radiusX: 70; radiusY: 70
-                                startAngle: 135; sweepAngle: 270 * Math.max(0.01, dial.share)
-                            }
-                        }
-                    }
-
-                    Rectangle {
-                        x: dial.width / 2 - width / 2
-                        y: 98 - height / 2
-                        width: 104
-                        height: 104
-                        radius: 52
-                        color: Theme.accent
-                        Column {
-                            anchors.centerIn: parent
-                            Text {
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                text: root.readableSize(storagePanel.used)
-                                color: Theme.canvas
-                                font.family: Theme.mono
-                                font.pixelSize: 17
-                                font.weight: Font.DemiBold
-                            }
-                            Text {
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                text: "USED"
-                                color: Theme.wash(Theme.canvas, 0.7)
-                                font.family: Theme.mono
-                                font.pixelSize: 9
-                                font.letterSpacing: 1
-                            }
-                        }
-                    }
-                }
-
-                Column {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    spacing: 2
-                    Text {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        text: root.readableSize(Math.max(0, storagePanel.total - storagePanel.used))
-                        color: Theme.ink
-                        font.family: Theme.family
-                        font.pixelSize: Theme.textLarge
-                        font.weight: Font.DemiBold
-                    }
-                    Text {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        text: "Free on this disk"
-                        color: Theme.inkDim
-                        font.family: Theme.family
-                        font.pixelSize: 12
                     }
                 }
 
                 CrossRule { width: parent.width }
 
-                // What this folder is made of, as the reference's tiles.
-                Grid {
-                    columns: 2
-                    columnSpacing: 12
-                    rowSpacing: 12
-                    Repeater {
-                        model: [
-                            { label: "Folders", icon: "folder", count: root.countOf("Folders") },
-                            { label: "Documents", icon: "file-text", count: root.countOf("Documents") },
-                            { label: "Media", icon: "image", count: root.countOf("Media") },
-                            { label: "Other", icon: "file", count: root.countOf("Other") + root.countOf("Code") }
-                        ]
-                        delegate: Rectangle {
-                            id: kindTile
-                            required property var modelData
-                            width: (storagePanel.width - 12) / 2
-                            height: 96
-                            radius: Theme.radius
-                            color: Theme.surfaceHigh
-                            border.width: 1
-                            border.color: Theme.outlineSoft
-                            Column {
-                                anchors.left: parent.left
-                                anchors.verticalCenter: parent.verticalCenter
-                                anchors.leftMargin: 16
-                                spacing: 6
-                                Icon { name: kindTile.modelData.icon; size: 18; shade: 0.7 }
-                                Text {
-                                    text: kindTile.modelData.label
-                                    color: Theme.ink
-                                    font.family: Theme.family
-                                    font.pixelSize: Theme.text
-                                    font.weight: Font.Medium
-                                }
-                                Text {
-                                    text: kindTile.modelData.count + (kindTile.modelData.count === 1 ? " item" : " items")
-                                    color: Theme.inkDim
-                                    font.family: Theme.family
-                                    font.pixelSize: 11
-                                }
-                            }
+                // What this folder holds, by kind.
+                Overline { text: "THIS FOLDER" }
+                Row {
+                    spacing: 20
+                    Donut {
+                        segments: root.composition.map(function (kind, i) { return { value: kind.count, color: Theme.chart[i] } })
+                        figure: root.rows.length
+                        caption: root.rows.length === 1 ? "ITEM" : "ITEMS"
+                    }
+                    Column {
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 10
+                        Repeater {
+                            model: root.composition.map(function (kind, i) {
+                                return { label: kind.label, value: String(kind.count), color: Theme.chart[i] }
+                            }).filter(function (row) { return row.value !== "0" })
+                            delegate: Legend {}
                         }
                     }
                 }

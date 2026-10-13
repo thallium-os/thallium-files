@@ -148,8 +148,21 @@ QtObject {
             cross: theme.mix(bg, ink, 0.30),
             ink: ink, inkSoft: theme.mix(ink, bg, 0.15),
             inkDim: theme.mix(ink, bg, 0.40), inkFaint: theme.mix(ink, bg, 0.55),
-            tile: theme.mix(bg, ink, 0.32), tileInk: ink
+            tile: theme.mix(bg, ink, 0.32), tileInk: ink,
+            chart: [b.primary, b.secondary, b.highlight, theme.mix(b.primary, bg, 0.45), theme.mix(ink, bg, 0.55)]
         }
+    }
+    // The accent, then the palette's other hues, then grey: one colour per
+    // chart segment, each far enough from its neighbours to tell apart.
+    function chartHues(p, accentKey) {
+        // Hues too close to the accent to sit beside it.
+        const kin = { green: ["aqua"], aqua: ["green", "blue"], blue: ["aqua"],
+                      yellow: ["orange"], orange: ["yellow", "red"], red: ["orange", "purple"],
+                      purple: ["red"] }
+        const near = [accentKey].concat(kin[accentKey] || [])
+        const rest = ["purple", "yellow", "blue", "green", "red", "orange", "aqua"]
+                .filter(function (k) { return near.indexOf(k) < 0 })
+        return [p[accentKey], p[rest[0]], p[rest[1]], p[rest[2]], p.grey1]
     }
     function fromPalette(p, accentKey, dark) {
         return {
@@ -162,7 +175,8 @@ QtObject {
             line: p.bg2, outlineSoft: p.bg4, cross: p.bg5,
             ink: p.fg, inkSoft: theme.wash(p.fg, 0.82),
             inkDim: p.grey1, inkFaint: p.grey0,
-            tile: p.bg5, tileInk: p.fg
+            tile: p.bg5, tileInk: p.fg,
+            chart: theme.chartHues(p, accentKey)
         }
     }
     readonly property var colors: theme.custom ? theme.derive(theme.base)
@@ -200,6 +214,9 @@ QtObject {
     readonly property color tile: theme.colors.tile
     readonly property color folderTile: theme.colors.folder
     readonly property color tileInk: theme.colors.tileInk
+
+    // ---- Charts: one colour per segment ----
+    readonly property var chart: theme.colors.chart
 
     // ---- Shape ----
     readonly property int radius: 8
