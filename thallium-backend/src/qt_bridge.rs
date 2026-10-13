@@ -362,6 +362,9 @@ pub mod ffi {
 		#[rust_name = "trash_deleted"]
 		fn trashDeleted(&self, row: i32) -> f64;
 		#[qinvokable]
+		#[rust_name = "trash_is_dir"]
+		fn trashIsDir(&self, row: i32) -> bool;
+		#[qinvokable]
 		#[rust_name = "restore_trash"]
 		fn restoreTrash(self: Pin<&mut Self>, rows: &QList_i32);
 		#[qinvokable]
@@ -1290,6 +1293,18 @@ impl ffi::BackendBridge {
 	/// When the item was trashed, in seconds since the epoch.
 	pub fn trash_deleted(&self, row: i32) -> f64 {
 		self.trashed(row).map_or(0.0, |item| item.time_deleted as f64)
+	}
+
+	/// Whether the trashed item is a folder. The freedesktop id is the
+	/// `.trashinfo` path; the item itself sits under `files/` beside `info/`.
+	pub fn trash_is_dir(&self, row: i32) -> bool {
+		self.trashed(row).is_some_and(|item| {
+			let info = std::path::Path::new(&item.id);
+			match (info.parent().and_then(std::path::Path::parent), info.file_stem()) {
+				(Some(bin), Some(stem)) => bin.join("files").join(stem).is_dir(),
+				_ => false,
+			}
+		})
 	}
 
 	pub fn restore_trash(mut self: Pin<&mut Self>, rows: &ffi::QList_i32) {

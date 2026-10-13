@@ -3735,61 +3735,75 @@ ApplicationWindow {
                             return root.bridge.trashName(trashRow.index)
                         }
                         readonly property bool picked: root.trashPicked.indexOf(trashRow.index) >= 0
-                        readonly property string kind: root.kindOf(trashRow.name, false)
+                        readonly property bool folder: {
+                            void root.revision
+                            return root.bridge.trashIsDir(trashRow.index)
+                        }
 
                         width: ListView.view.width
-                        height: 44
-                        radius: 6
-                        color: trashRow.picked ? root.spectralDim
-                               : trashMouse.containsMouse ? root.hover : "transparent"
+                        height: Theme.rowHeight
+                        color: "transparent"
 
-                        EntryIcon {
+                        // A card per item, filled and outlined all round when picked.
+                        Rectangle {
+                            anchors.fill: parent
+                            anchors.topMargin: 4
+                            anchors.bottomMargin: 4
+                            radius: Theme.radius
+                            color: trashRow.picked ? Theme.selected
+                                 : trashMouse.containsMouse ? Theme.surfaceHigh : Theme.surface
+                            border.width: trashRow.picked ? 1 : 0
+                            border.color: Theme.outline
+                        }
+
+                        FileTile {
                             id: trashGlyph
                             anchors.left: parent.left
-                            anchors.leftMargin: 10
+                            anchors.leftMargin: 18
                             anchors.verticalCenter: parent.verticalCenter
-                            width: 20
-                            height: 20
-                            entry: -1
-                            allowThumbnail: false
-                            kind: trashRow.kind
-                            tint: root.markTone(trashRow.kind)
-                            markSize: trashRow.kind === "Code" ? 10 : 12
+                            width: 30
+                            height: width
+                            name: trashRow.name
+                            folder: trashRow.folder
+                            lifted: trashRow.picked
                         }
 
                         Text {
                             id: trashName
                             anchors.left: trashGlyph.right
-                            anchors.leftMargin: 10
+                            anchors.leftMargin: 16
                             anchors.right: trashWhen.left
-                            anchors.rightMargin: 12
-                            anchors.top: parent.top
-                            anchors.topMargin: 6
+                            anchors.rightMargin: 16
+                            anchors.bottom: parent.verticalCenter
                             text: trashRow.name
                             elide: Text.ElideMiddle
-                            color: root.ink
-                            font.family: root.sansFamily
-                            font.pixelSize: 13
+                            color: Theme.ink
+                            font.family: Theme.family
+                            font.pixelSize: Theme.text
                         }
 
-                        Mono {
+                        Text {
                             anchors.left: trashName.left
                             anchors.right: trashWhen.left
-                            anchors.rightMargin: 12
-                            anchors.top: trashName.bottom
+                            anchors.rightMargin: 16
+                            anchors.top: parent.verticalCenter
                             anchors.topMargin: 1
                             text: root.bridge.trashOrigin(trashRow.index)
                             elide: Text.ElideLeft
-                            font.pixelSize: 10
+                            color: Theme.inkDim
+                            font.family: Theme.family
+                            font.pixelSize: Theme.textSmall
                         }
 
-                        Mono {
+                        Text {
                             id: trashWhen
                             anchors.right: parent.right
-                            anchors.rightMargin: 12
+                            anchors.rightMargin: 20
                             anchors.verticalCenter: parent.verticalCenter
                             text: root.modifiedText(root.bridge.trashDeleted(trashRow.index))
-                            font.pixelSize: 11
+                            color: Theme.inkDim
+                            font.family: Theme.family
+                            font.pixelSize: Theme.textSmall
                         }
 
                         MouseArea {
@@ -3813,18 +3827,18 @@ ApplicationWindow {
                         anchors.centerIn: parent
                         spacing: 6
                         visible: trashBrowser.count === 0
-                        Glyph {
+                        Icon {
                             anchors.horizontalCenter: parent.horizontalCenter
-                            text: "⌫"
-                            font.pixelSize: 20
-                            color: root.inkGhost
+                            name: "trash-2"
+                            size: 22
+                            shade: 0.4
                         }
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
                             text: "The trash is empty"
-                            color: root.inkMuted
-                            font.family: root.sansFamily
-                            font.pixelSize: 13
+                            color: Theme.inkDim
+                            font.family: Theme.family
+                            font.pixelSize: Theme.text
                         }
                     }
                 }
