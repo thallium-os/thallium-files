@@ -428,30 +428,6 @@ ApplicationWindow {
         return "Other"
     }
 
-    // A mark per kind. The triangle is a claim that something can be played,
-    // so only media is allowed to wear it.
-    function markFor(kind) {
-        if (kind === "Folders")
-            return "▣"
-        if (kind === "Code")
-            return "{ }"
-        if (kind === "Documents")
-            return "▤"
-        if (kind === "Media")
-            return "▶"
-        if (kind === "Archives")
-            return "⧉"
-        return "·"
-    }
-
-    function markTone(kind) {
-        if (kind === "Folders")
-            return root.ink
-        if (kind === "Other")
-            return root.inkGhost
-        return root.inkFaint
-    }
-
     function modifiedText(seconds) {
         if (seconds <= 0)
             return "—"
@@ -1973,6 +1949,11 @@ ApplicationWindow {
         sequences: ["Escape"]
         enabled: !root.typing
         onActivated: {
+            // A filter left behind after focus moved on is still cleared.
+            if (root.deepSearch)
+                root.endDeepSearch()
+            root.query = ""
+            root.searchShown = false
             root.bridge.clearSelection()
             root.typed = ""
             root.release()
@@ -2121,83 +2102,6 @@ ApplicationWindow {
         font.pixelSize: 15
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
-    }
-
-    // A directory entry's face. The icon comes from the desktop's icon theme,
-    // so a Rust file looks like a Rust file here and in every other
-    // application; once a thumbnail has been generated it takes the icon's
-    // place. Symbolic icons ship as black glyphs and are recoloured to the
-    // palette; a full-colour icon is left as its designer drew it. If no
-    // installed theme answers for the type at all, the typographic mark that
-    // preceded icons is still there underneath.
-    component EntryIcon: Item {
-        id: entryIcon
-
-        property int entry: -1
-        property string kind: "Other"
-        property color tint: root.markTone(entryIcon.kind)
-        property int glyphSize: 16
-        property int markSize: 12
-        property bool allowThumbnail: true
-
-        readonly property string iconSource: {
-            void root.revision
-            return entryIcon.entry >= 0 ? root.bridge.entryIcon(entryIcon.entry) : ""
-        }
-        readonly property string thumbnailSource: {
-            void root.revision
-            return entryIcon.allowThumbnail && entryIcon.entry >= 0
-                   ? root.bridge.entryThumbnail(entryIcon.entry)
-                   : ""
-        }
-        readonly property bool symbolic: entryIcon.iconSource.indexOf("symbolic") >= 0
-        readonly property bool thumbnailShown: thumbnail.status === Image.Ready
-        readonly property bool iconShown: !entryIcon.thumbnailShown && icon.status === Image.Ready
-
-        Image {
-            id: thumbnail
-            anchors.fill: parent
-            visible: entryIcon.thumbnailShown
-            source: entryIcon.thumbnailSource
-            fillMode: Image.PreserveAspectCrop
-            sourceSize.width: Math.max(2, Math.round(entryIcon.width))
-            sourceSize.height: Math.max(2, Math.round(entryIcon.height))
-            asynchronous: true
-            smooth: true
-            mipmap: true
-        }
-
-        Image {
-            id: icon
-            anchors.centerIn: parent
-            width: entryIcon.glyphSize
-            height: entryIcon.glyphSize
-            // Kept off-screen when it needs tinting: the effect below draws it.
-            visible: entryIcon.iconShown && !entryIcon.symbolic
-            source: entryIcon.iconSource
-            sourceSize.width: entryIcon.glyphSize * 2
-            sourceSize.height: entryIcon.glyphSize * 2
-            asynchronous: true
-            smooth: true
-        }
-
-        MultiEffect {
-            anchors.fill: icon
-            source: icon
-            visible: entryIcon.iconShown && entryIcon.symbolic
-            brightness: 1.0
-            colorization: 1.0
-            colorizationColor: entryIcon.tint
-        }
-
-        Text {
-            anchors.centerIn: parent
-            visible: !entryIcon.thumbnailShown && !entryIcon.iconShown
-            text: root.markFor(entryIcon.kind)
-            color: entryIcon.tint
-            font.family: entryIcon.kind === "Code" ? root.monoFamily : root.sansFamily
-            font.pixelSize: entryIcon.markSize
-        }
     }
 
     // A bordered single-line input, used by the remote sheet.
@@ -3193,8 +3097,7 @@ ApplicationWindow {
                             Keys.onEscapePressed: {
                                 if (root.deepSearch)
                                     root.endDeepSearch()
-                                else
-                                    root.query = ""
+                                root.query = ""
                                 root.searchShown = false
                                 root.release()
                             }
@@ -3808,11 +3711,11 @@ ApplicationWindow {
                     spacing: 6
                     visible: !root.deepSearch && !root.recentOpen && !root.trashOpen && !root.bridge.loading && root.rows.length === 0
 
-                    Glyph {
+                    Icon {
                         anchors.horizontalCenter: parent.horizontalCenter
-                        text: root.query.length > 0 ? "⌕" : "∅"
-                        font.pixelSize: 20
-                        color: root.inkGhost
+                        name: root.query.length > 0 ? "search" : "folder-open"
+                        size: 22
+                        shade: 0.4
                     }
 
                     Text {
@@ -4144,54 +4047,56 @@ ApplicationWindow {
                             void root.revision
                             return root.bridge.searchIsDirectory(resultRow.index)
                         }
-                        readonly property string kind: root.kindOf(resultRow.name, resultRow.folder)
 
                         width: ListView.view.width
-                        height: 44
-                        radius: 6
-                        color: resultMouse.containsMouse ? root.hover : "transparent"
+                        height: Theme.rowHeight
+                        color: "transparent"
 
-                        EntryIcon {
+                        Rectangle {
+                            anchors.fill: parent
+                            anchors.topMargin: 4
+                            anchors.bottomMargin: 4
+                            radius: Theme.radius
+                            color: resultMouse.containsMouse ? Theme.surfaceHigh : Theme.surface
+                        }
+
+                        FileTile {
                             id: resultGlyph
                             anchors.left: parent.left
-                            anchors.leftMargin: 10
+                            anchors.leftMargin: 18
                             anchors.verticalCenter: parent.verticalCenter
-                            width: 20
-                            height: 20
-                            // A result is not a row of the open directory, so
-                            // there is no entry to read a thumbnail from.
-                            entry: -1
-                            allowThumbnail: false
-                            kind: resultRow.kind
-                            tint: resultRow.folder ? root.ink : root.markTone(resultRow.kind)
-                            markSize: resultRow.kind === "Code" ? 10 : 12
+                            width: 30
+                            height: width
+                            name: resultRow.name
+                            folder: resultRow.folder
                         }
 
                         Text {
                             id: resultName
                             anchors.left: resultGlyph.right
-                            anchors.leftMargin: 10
+                            anchors.leftMargin: 16
                             anchors.right: parent.right
-                            anchors.rightMargin: 12
-                            anchors.top: parent.top
-                            anchors.topMargin: 6
+                            anchors.rightMargin: 20
+                            anchors.bottom: parent.verticalCenter
                             text: resultRow.name
                             elide: Text.ElideMiddle
-                            color: resultRow.folder ? root.ink : root.inkMuted
-                            font.family: root.sansFamily
-                            font.pixelSize: 13
+                            color: Theme.ink
+                            font.family: Theme.family
+                            font.pixelSize: Theme.text
                             font.weight: resultRow.folder ? Font.Medium : Font.Normal
                         }
 
-                        Mono {
+                        Text {
                             anchors.left: resultName.left
                             anchors.right: parent.right
-                            anchors.rightMargin: 12
-                            anchors.top: resultName.bottom
+                            anchors.rightMargin: 20
+                            anchors.top: parent.verticalCenter
                             anchors.topMargin: 1
                             text: resultRow.where
                             elide: Text.ElideLeft
-                            font.pixelSize: 10
+                            color: Theme.inkDim
+                            font.family: Theme.family
+                            font.pixelSize: Theme.textSmall
                         }
 
                         MouseArea {
@@ -4238,7 +4143,7 @@ ApplicationWindow {
                                 return "Searching…  " + found + " found"
                             if (found === 0)
                                 return "Nothing beneath this folder matches “" + root.query + "”"
-                            return found + (capped ? "+ matches (showing the first " + found + ")" : " matches")
+                            return found + (capped ? "+ matches (showing the first " + found + ")" : found === 1 ? " match" : " matches")
                         }
                         color: root.inkFaint
                         font.family: root.sansFamily
