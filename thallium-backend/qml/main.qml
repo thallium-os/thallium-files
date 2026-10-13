@@ -44,7 +44,15 @@ ApplicationWindow {
     readonly property string monoFamily: Theme.family
 
     readonly property int unit: 4
-    readonly property int sidebarWidth: Theme.railWidth + Theme.placesWidth
+    // Below these window widths a column folds away so the file pane keeps
+    // room for names; tiled at half a screen, only the rail stays.
+    readonly property bool roomForPlaces: root.width >= 860
+    readonly property bool roomForPreview: root.width >= 1240
+    readonly property int sidebarWidth: Theme.railWidth + (root.roomForPlaces ? Theme.placesWidth : 0)
+    // In a narrow file pane the Kind and then the Size column give their
+    // width to the name.
+    readonly property bool kindColumn: main.width >= 760
+    readonly property bool sizeColumn: main.width >= 520
     // Every control on the header line is this tall, and every band
     // in the folder bar is the next one. Mixing 30 with 34 is what
     // made the top of the window look ragged.
@@ -71,7 +79,17 @@ ApplicationWindow {
     property string folderQuery: ""
     property bool showHidden: false
     property string sidebarTab: "places"
-    property bool previewOpen: true
+    // The preview switch remembers one choice for wide windows (open by
+    // default) and one for narrow ones (closed by default).
+    property bool previewWide: true
+    property bool previewNarrow: false
+    readonly property bool previewOpen: root.roomForPreview ? root.previewWide : root.previewNarrow
+    function togglePreview() {
+        if (root.roomForPreview)
+            root.previewWide = !root.previewWide
+        else
+            root.previewNarrow = !root.previewNarrow
+    }
     property string sortKey: "name"
     property bool sortAscending: true
     property int focusRow: -1
@@ -306,7 +324,7 @@ ApplicationWindow {
 
     width: 1480
     height: 920
-    minimumWidth: 1080
+    minimumWidth: 560
     minimumHeight: 640
     visible: true
     color: canvas
@@ -318,6 +336,22 @@ ApplicationWindow {
         const clean = path.endsWith("/") ? path.slice(0, -1) : path
         const parts = clean.split("/")
         return parts[parts.length - 1] || "/"
+    }
+
+    // Go to an entry of `places`: a folder, drive, bookmark or remote.
+    function openPlace(place) {
+        if (place.add === true) {
+            root.remoteDraftName = ""
+            root.providerQuery = ""
+            root.remoteSheetOpen = true
+            return
+        }
+        root.recentOpen = false
+        root.trashOpen = false
+        if (place.drive !== undefined)
+            root.bridge.openDrive(place.drive)
+        else
+            root.bridge.navigate(place.folder === null ? place.target : root.placePath(place.folder))
     }
 
     function placePath(folder) {
@@ -624,7 +658,7 @@ ApplicationWindow {
         }
         MenuLine {
             text: root.previewOpen ? "Hide preview panel" : "Show preview panel"
-            onTriggered: root.previewOpen = !root.previewOpen
+            onTriggered: root.togglePreview()
         }
         MenuLine { text: "Edit custom actions…"; onTriggered: root.bridge.editActions() }
         MenuLine {
@@ -775,6 +809,7 @@ ApplicationWindow {
             leftPadding: 10
             rightPadding: 18
             text: menuLine.text
+            elide: Text.ElideMiddle
             color: menuLine.enabled ? root.ink : root.inkGhost
             font.family: root.sansFamily
             font.pixelSize: 13
@@ -2733,6 +2768,7 @@ ApplicationWindow {
             // Places, bookmarks, drives and remotes, beside the rail.
             Item {
                 id: placesColumn
+                visible: root.roomForPlaces
                 anchors.left: rail.right
                 anchors.right: parent.right
                 height: parent.height
@@ -2978,18 +3014,8 @@ ApplicationWindow {
                                 root.showRecent()
                             } else if (placeEntry.trash) {
                                 root.showTrash()
-                            } else if (placeEntry.drive) {
-                                root.recentOpen = false
-                                root.trashOpen = false
-                                root.bridge.openDrive(placeEntry.modelData.drive)
-                            } else if (placeEntry.adds) {
-                                root.remoteDraftName = ""
-                                root.providerQuery = ""
-                                root.remoteSheetOpen = true
                             } else {
-                                root.recentOpen = false
-                                root.trashOpen = false
-                                root.bridge.navigate(placeEntry.target)
+                                root.openPlace(placeEntry.modelData)
                             }
                         }
                     }
@@ -3221,7 +3247,7 @@ ApplicationWindow {
                         icon: "panel-right"
                         hint: root.previewOpen ? "Hide preview" : "Show preview"
                         on: root.previewOpen
-                        onClicked: root.previewOpen = !root.previewOpen
+                        onClicked: root.togglePreview()
                     }
                 }
             }
@@ -3281,6 +3307,22 @@ ApplicationWindow {
                                     root.trashOpen = false
                                     root.bridge.navigate(modelData.path)
                                 }
+                            }
+                        }
+                        // With the places column folded away, its places
+                        // are reached from here instead.
+                        Repeater {
+                            model: root.roomForPlaces ? 0 : 1
+                            delegate: MenuSeparator {
+                                contentItem: Rectangle { implicitHeight: 1; color: root.line }
+                            }
+                        }
+                        Repeater {
+                            model: root.roomForPlaces ? [] : root.places.filter(function (place) { return place.add !== true })
+                            delegate: MenuLine {
+                                required property var modelData
+                                text: modelData.label
+                                onTriggered: root.openPlace(modelData)
                             }
                         }
                     }
@@ -3555,7 +3597,7 @@ ApplicationWindow {
                     }
                     SortHead {
                         id: kindHead
-                        visible: columnHeads.dense
+                        visible: columnHeads.dense && root.kindColumn
                         anchors.right: sizeHead.left
                         anchors.rightMargin: 16
                         anchors.verticalCenter: parent.verticalCenter
@@ -3566,10 +3608,11 @@ ApplicationWindow {
                     }
                     Overline {
                         id: sizeHead
+                        visible: root.sizeColumn
                         anchors.right: modifiedHead.left
-                        anchors.rightMargin: 16
+                        anchors.rightMargin: root.sizeColumn ? 16 : 0
                         anchors.verticalCenter: parent.verticalCenter
-                        width: 80
+                        width: root.sizeColumn ? 80 : 0
                         horizontalAlignment: Text.AlignRight
                         text: "SIZE"
                     }
@@ -4231,7 +4274,7 @@ ApplicationWindow {
                             opacity: listRow.dim
                             anchors.left: rowTile.right
                             anchors.leftMargin: listRow.dense ? 10 : 16
-                            anchors.right: listRow.dense ? rowKind.left : rowSize.left
+                            anchors.right: listRow.dense && root.kindColumn ? rowKind.left : rowSize.left
                             anchors.rightMargin: 16
                             anchors.verticalCenter: parent.verticalCenter
                             text: listRow.name
@@ -4244,7 +4287,7 @@ ApplicationWindow {
 
                         Text {
                             id: rowKind
-                            visible: listRow.dense
+                            visible: listRow.dense && root.kindColumn
                             opacity: listRow.dim
                             anchors.right: rowSize.left
                             anchors.rightMargin: 16
@@ -4259,11 +4302,12 @@ ApplicationWindow {
 
                         Text {
                             id: rowSize
+                            visible: root.sizeColumn
                             opacity: listRow.dim
                             anchors.right: rowModified.left
-                            anchors.rightMargin: 16
+                            anchors.rightMargin: root.sizeColumn ? 16 : 0
                             anchors.verticalCenter: parent.verticalCenter
-                            width: 80
+                            width: root.sizeColumn ? 80 : 0
                             horizontalAlignment: Text.AlignRight
                             text: {
                                 void root.revision
