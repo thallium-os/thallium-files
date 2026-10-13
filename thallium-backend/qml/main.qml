@@ -1018,49 +1018,34 @@ ApplicationWindow {
         }
     }
 
-    Popup {
+    Sheet {
         id: emptyConfirm
-        anchors.centerIn: Overlay.overlay
-        width: 380
-        modal: true
-        focus: true
-        padding: 16
+        width: 440
+        title: "Empty the Trash?"
+        icon: "trash-2"
         onClosed: root.release()
-        background: Rectangle {
-            color: root.raisedHigh
-            radius: 9
-            border.width: 1
-            border.color: root.line
-        }
-        Column {
+
+        Text {
             width: parent.width
-            spacing: 12
-            Text {
-                text: "Empty the trash?"
-                color: root.ink
-                font.family: root.sansFamily
-                font.pixelSize: 14
-            }
-            Text {
-                text: "Everything in it is deleted permanently."
-                color: root.inkMuted
-                font.family: root.sansFamily
-                font.pixelSize: 12
-            }
-            Row {
-                anchors.right: parent.right
-                spacing: 8
-                Button { text: "Cancel"; onClicked: emptyConfirm.close() }
-                Button {
-                    text: "Empty Trash"
-                    onClicked: {
-                        root.bridge.emptyTrash()
-                        root.trashPicked = []
-                        emptyConfirm.close()
-                    }
+            wrapMode: Text.Wrap
+            text: "Everything in the Trash is deleted permanently."
+            color: Theme.inkSoft
+            font.family: Theme.family
+            font.pixelSize: Theme.text
+        }
+
+        buttons: [
+            TextButton { text: "Cancel"; onClicked: emptyConfirm.close() },
+            TextButton {
+                primary: true
+                text: "Empty Trash"
+                onClicked: {
+                    root.bridge.emptyTrash()
+                    root.trashPicked = []
+                    emptyConfirm.close()
                 }
             }
-        }
+        ]
     }
 
     // ---- Properties ----
@@ -1080,20 +1065,12 @@ ApplicationWindow {
         onActivated: root.showProperties(root.firstSelectedRow())
     }
 
-    Popup {
+    Sheet {
         id: propertiesSheet
-        anchors.centerIn: Overlay.overlay
-        width: 440
-        modal: true
-        focus: true
-        padding: 18
+        width: 480
+        title: propertiesSheet.text("name")
+        icon: propertiesSheet.number("directory") === 1 ? "folder" : "file"
         onClosed: root.release()
-        background: Rectangle {
-            color: root.raisedHigh
-            radius: 9
-            border.width: 1
-            border.color: root.line
-        }
         function text(field) {
             void root.propTick
             void root.revision
@@ -1107,118 +1084,127 @@ ApplicationWindow {
         readonly property int mode: number("mode")
         readonly property bool owned: number("owned") === 1
 
-        Column {
-            width: parent.width
-            spacing: 12
-            Text {
-                width: parent.width
-                text: propertiesSheet.text("name")
-                elide: Text.ElideMiddle
-                color: root.ink
-                font.family: root.sansFamily
-                font.pixelSize: 16
-            }
-            Grid {
-                columns: 2
-                columnSpacing: 14
-                rowSpacing: 6
-                Repeater {
-                    model: [
-                        ["Type", propertiesSheet.text("type")],
-                        ["Size", propertiesSheet.number("directory") === 1
-                            ? root.readableSize(propertiesSheet.number("size")) + ", "
-                              + propertiesSheet.number("files")
-                              + (propertiesSheet.number("files") === 1 ? " file" : " files")
-                              + (propertiesSheet.number("measuring") === 1 ? " (counting…)" : "")
-                            : root.readableSize(propertiesSheet.number("size"))],
-                        ["Location", propertiesSheet.text("folder")],
-                        ["Link to", propertiesSheet.text("link")],
-                        ["Modified", root.modifiedText(propertiesSheet.number("modified"))],
-                        ["Accessed", root.modifiedText(propertiesSheet.number("accessed"))],
-                        ["Created", root.modifiedText(propertiesSheet.number("created"))],
-                        ["Owner", propertiesSheet.text("owner") + " : " + propertiesSheet.text("group")],
-                        ["Permissions", propertiesSheet.text("mode")]
-                    ].filter(function (pair) { return pair[1].length > 0 })
-                    delegate: Repeater {
-                        required property var modelData
-                        model: [modelData[0], modelData[1]]
-                        delegate: Text {
-                            required property var modelData
-                            required property int index
-                            width: index === 0 ? 90 : 300
-                            text: modelData
-                            wrapMode: Text.WrapAnywhere
-                            color: index === 0 ? root.inkMuted : root.ink
-                            font.family: index === 0 ? root.sansFamily : root.monoFamily
-                            font.pixelSize: 12
-                        }
-                    }
+        Repeater {
+            model: [
+                ["Type", propertiesSheet.text("type")],
+                ["Size", propertiesSheet.number("directory") === 1
+                    ? root.readableSize(propertiesSheet.number("size")) + " in "
+                      + propertiesSheet.number("files")
+                      + (propertiesSheet.number("files") === 1 ? " file" : " files")
+                      + (propertiesSheet.number("measuring") === 1 ? " (counting…)" : "")
+                    : root.readableSize(propertiesSheet.number("size"))],
+                ["Location", propertiesSheet.text("folder")],
+                ["Links to", propertiesSheet.text("link")],
+                ["Modified", root.modifiedText(propertiesSheet.number("modified"))],
+                ["Accessed", root.modifiedText(propertiesSheet.number("accessed"))],
+                ["Created", root.modifiedText(propertiesSheet.number("created"))],
+                ["Owner", propertiesSheet.text("owner") + " : " + propertiesSheet.text("group")]
+            ].filter(function (pair) { return pair[1].length > 0 })
+            delegate: Row {
+                id: propRow
+                required property var modelData
+                spacing: 14
+                Text {
+                    width: 90
+                    text: propRow.modelData[0]
+                    color: Theme.inkDim
+                    font.family: Theme.family
+                    font.pixelSize: 12
                 }
-            }
-            // Read, write and run for the owner, the group and everyone else,
-            // applied as they are ticked.
-            Grid {
-                columns: 4
-                columnSpacing: 12
-                rowSpacing: 2
-                enabled: propertiesSheet.owned
-                Repeater {
-                    model: ["", "Read", "Write", propertiesSheet.number("directory") === 1 ? "Enter" : "Run"]
-                    delegate: Text {
-                        required property var modelData
-                        width: modelData.length === 0 ? 70 : 60
-                        text: modelData
-                        color: root.inkMuted
-                        font.family: root.sansFamily
-                        font.pixelSize: 11
-                    }
+                Text {
+                    width: 310
+                    text: propRow.modelData[1]
+                    wrapMode: Text.WrapAnywhere
+                    color: Theme.ink
+                    font.family: Theme.family
+                    font.pixelSize: 12
                 }
-                Repeater {
-                    model: [["Owner", 6], ["Group", 3], ["Others", 0]]
-                    delegate: Repeater {
-                        id: permRow
-                        required property var modelData
-                        readonly property string who: modelData[0]
-                        readonly property int shift: modelData[1]
-                        model: 4
-                        delegate: Item {
-                            id: permCell
-                            required property int index
-                            width: index === 0 ? 70 : 60
-                            height: 26
-                            readonly property int bit: index === 0 ? 0 : (4 >> (index - 1)) << permRow.shift
-                            Text {
-                                visible: permCell.index === 0
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: permRow.who
-                                color: root.ink
-                                font.family: root.sansFamily
-                                font.pixelSize: 12
-                            }
-                            CheckBox {
-                                visible: permCell.index > 0
-                                anchors.verticalCenter: parent.verticalCenter
-                                checked: (propertiesSheet.mode & permCell.bit) !== 0
-                                onToggled: root.bridge.setMode(checked ? propertiesSheet.mode | permCell.bit
-                                                                         : propertiesSheet.mode & ~permCell.bit)
-                            }
-                        }
-                    }
-                }
-            }
-            Text {
-                visible: !propertiesSheet.owned
-                text: "Only the owner can change permissions."
-                color: root.inkMuted
-                font.family: root.sansFamily
-                font.pixelSize: 11
-            }
-            Button {
-                anchors.right: parent.right
-                text: "Close"
-                onClicked: propertiesSheet.close()
             }
         }
+
+        CrossRule { width: parent.width }
+
+        Row {
+            spacing: 14
+            Text {
+                width: 90
+                text: "Access"
+                color: Theme.inkDim
+                font.family: Theme.family
+                font.pixelSize: 12
+            }
+            Text {
+                text: propertiesSheet.text("mode")
+                color: Theme.ink
+                font.family: Theme.family
+                font.pixelSize: 12
+            }
+        }
+
+        // Read, write and run for the owner, the group and everyone else,
+        // applied as they are ticked.
+        Grid {
+            columns: 4
+            columnSpacing: 10
+            rowSpacing: 8
+            enabled: propertiesSheet.owned
+            Repeater {
+                model: ["", "Read", "Write", propertiesSheet.number("directory") === 1 ? "Enter" : "Run"]
+                delegate: Text {
+                    required property var modelData
+                    width: modelData.length === 0 ? 94 : 70
+                    text: modelData
+                    color: Theme.inkDim
+                    font.family: Theme.family
+                    font.pixelSize: 11
+                }
+            }
+            Repeater {
+                model: [["Owner", 6], ["Group", 3], ["Others", 0]]
+                delegate: Repeater {
+                    id: permRow
+                    required property var modelData
+                    readonly property string who: modelData[0]
+                    readonly property int shift: modelData[1]
+                    model: 4
+                    delegate: Item {
+                        id: permCell
+                        required property int index
+                        width: index === 0 ? 94 : 70
+                        height: 24
+                        readonly property int bit: index === 0 ? 0 : (4 >> (index - 1)) << permRow.shift
+                        Text {
+                            visible: permCell.index === 0
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: permRow.who
+                            color: Theme.ink
+                            font.family: Theme.family
+                            font.pixelSize: 12
+                        }
+                        Check {
+                            visible: permCell.index > 0
+                            anchors.verticalCenter: parent.verticalCenter
+                            checked: (propertiesSheet.mode & permCell.bit) !== 0
+                            onToggled: function (checked) {
+                                root.bridge.setMode(checked ? propertiesSheet.mode | permCell.bit
+                                                            : propertiesSheet.mode & ~permCell.bit)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Text {
+            visible: !propertiesSheet.owned
+            text: "Only the owner can change permissions."
+            color: Theme.inkDim
+            font.family: Theme.family
+            font.pixelSize: 11
+        }
+
+        buttons: [
+            TextButton { primary: true; text: "Close"; onClicked: propertiesSheet.close() }
+        ]
     }
 
     // ---- Drives ----
@@ -1273,196 +1259,207 @@ ApplicationWindow {
     property int bulkTick: 0
 
     function beginBulkRename() {
-        bulkMode.currentIndex = 0
+        bulkSheet.modeKey = "replace"
+        bulkSheet.start = 1
         bulkFirst.text = ""
         bulkSecond.text = ""
         bulkSheet.update()
         bulkSheet.open()
     }
 
-    Popup {
+    Sheet {
         id: bulkSheet
-        anchors.centerIn: Overlay.overlay
-        width: 560
-        height: 520
-        modal: true
-        focus: true
-        padding: 16
+        width: 600
+        title: "Rename " + root.selectedCount + " items"
+        icon: "pencil"
         onOpened: bulkFirst.forceActiveFocus()
         onClosed: root.release()
-        background: Rectangle {
-            color: root.raisedHigh
-            radius: 9
-            border.width: 1
-            border.color: root.line
-        }
+        property string modeKey: "replace"
+        property int start: 1
         readonly property var modes: [
             { key: "replace", label: "Replace text", first: "Find", second: "Replace with" },
-            { key: "number", label: "Number", first: "Name pattern (### is the number)", second: "" },
+            { key: "number", label: "Number", first: "Name pattern, ### is the number", second: "" },
             { key: "affix", label: "Add text", first: "Before the name", second: "After the name" },
             { key: "lower", label: "lowercase", first: "", second: "" },
             { key: "upper", label: "UPPERCASE", first: "", second: "" },
             { key: "title", label: "Title Case", first: "", second: "" }
         ]
-        readonly property var mode: modes[Math.max(0, bulkMode.currentIndex)]
+        readonly property var mode: {
+            for (let i = 0; i < modes.length; ++i)
+                if (modes[i].key === bulkSheet.modeKey)
+                    return modes[i]
+            return modes[0]
+        }
         readonly property string error: {
             void root.bulkTick
             return root.bridge.bulkError()
         }
         function update() {
-            root.bridge.bulkRule(mode.key, bulkFirst.text, bulkSecond.text, bulkStart.value, bulkCase.checked)
+            root.bridge.bulkRule(bulkSheet.modeKey, bulkFirst.text, bulkSecond.text, bulkSheet.start, bulkCase.checked)
             root.bulkTick++
         }
 
-        Column {
-            anchors.fill: parent
-            spacing: 10
-            Text {
-                text: "Rename " + root.selectedCount + " items"
-                color: root.ink
-                font.family: root.sansFamily
-                font.pixelSize: 14
+        Chips {
+            width: parent.width
+            options: bulkSheet.modes
+            current: bulkSheet.modeKey
+            onPicked: function (key) {
+                bulkSheet.modeKey = key
+                bulkSheet.update()
             }
-            ComboBox {
-                id: bulkMode
-                width: 220
-                model: bulkSheet.modes.map(function (mode) { return mode.label })
-                onCurrentIndexChanged: bulkSheet.update()
-            }
-            Row {
-                spacing: 8
-                visible: bulkSheet.mode.first.length > 0
-                Rectangle {
-                    width: bulkSheet.mode.second.length > 0 ? 256 : 380
-                    height: 32
-                    radius: 6
-                    color: root.raised
-                    border.width: 1
-                    border.color: bulkFirst.activeFocus ? root.lineStrong : root.line
-                    TextInput {
-                        id: bulkFirst
-                        anchors.fill: parent
-                        anchors.leftMargin: 8
-                        anchors.rightMargin: 8
-                        verticalAlignment: TextInput.AlignVCenter
-                        clip: true
-                        color: root.ink
-                        font.family: root.sansFamily
-                        font.pixelSize: 13
-                        onTextChanged: bulkSheet.update()
-                        Keys.onEscapePressed: bulkSheet.close()
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            visible: parent.text.length === 0
-                            text: bulkSheet.mode.first
-                            color: root.inkGhost
-                            font: parent.font
-                        }
-                    }
-                }
-                Rectangle {
-                    visible: bulkSheet.mode.second.length > 0
-                    width: 256
-                    height: 32
-                    radius: 6
-                    color: root.raised
-                    border.width: 1
-                    border.color: bulkSecond.activeFocus ? root.lineStrong : root.line
-                    TextInput {
-                        id: bulkSecond
-                        anchors.fill: parent
-                        anchors.leftMargin: 8
-                        anchors.rightMargin: 8
-                        verticalAlignment: TextInput.AlignVCenter
-                        clip: true
-                        color: root.ink
-                        font.family: root.sansFamily
-                        font.pixelSize: 13
-                        onTextChanged: bulkSheet.update()
-                        Keys.onEscapePressed: bulkSheet.close()
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            visible: parent.text.length === 0
-                            text: bulkSheet.mode.second
-                            color: root.inkGhost
-                            font: parent.font
-                        }
-                    }
-                }
-                SpinBox {
-                    id: bulkStart
-                    visible: bulkSheet.mode.key === "number"
-                    from: 0
-                    to: 999999
-                    value: 1
-                    onValueChanged: bulkSheet.update()
-                }
-            }
-            CheckBox {
-                id: bulkCase
-                visible: bulkSheet.mode.key === "replace"
-                text: "Ignore case"
-                onCheckedChanged: bulkSheet.update()
-            }
-            ListView {
-                width: parent.width
-                height: parent.height - 220
-                clip: true
-                model: {
-                    void root.bulkTick
-                    return root.bridge.bulkCount()
-                }
-                delegate: Row {
-                    required property int index
-                    spacing: 10
+        }
+
+        Row {
+            spacing: 8
+            visible: bulkSheet.mode.first.length > 0
+            Rectangle {
+                width: bulkSheet.mode.second.length > 0 ? 268 : (bulkSheet.modeKey === "number" ? 420 : 544)
+                height: 40
+                radius: Theme.radiusSmall
+                color: Theme.surface
+                border.width: 1
+                border.color: bulkFirst.activeFocus ? Theme.outline : Theme.outlineSoft
+                TextInput {
+                    id: bulkFirst
+                    anchors.fill: parent
+                    anchors.leftMargin: 12
+                    anchors.rightMargin: 12
+                    verticalAlignment: TextInput.AlignVCenter
+                    clip: true
+                    color: Theme.ink
+                    selectionColor: Theme.controlHigh
+                    font.family: Theme.family
+                    font.pixelSize: Theme.text
+                    onTextChanged: bulkSheet.update()
+                    Keys.onEscapePressed: bulkSheet.close()
                     Text {
-                        width: 250
-                        elide: Text.ElideMiddle
-                        text: {
-                            void root.bulkTick
-                            return root.bridge.bulkOld(index)
-                        }
-                        color: root.inkMuted
-                        font.family: root.monoFamily
-                        font.pixelSize: 12
-                    }
-                    Text { text: "→"; color: root.inkGhost; font.pixelSize: 12 }
-                    Text {
-                        width: 250
-                        elide: Text.ElideMiddle
-                        text: {
-                            void root.bulkTick
-                            return root.bridge.bulkNew(index)
-                        }
-                        color: root.ink
-                        font.family: root.monoFamily
-                        font.pixelSize: 12
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: parent.text.length === 0
+                        text: bulkSheet.mode.first
+                        color: Theme.inkFaint
+                        font: parent.font
                     }
                 }
             }
-            Text {
-                width: parent.width
-                visible: bulkSheet.error.length > 0
-                text: bulkSheet.error
-                wrapMode: Text.Wrap
-                color: root.destructive
-                font.family: root.sansFamily
-                font.pixelSize: 12
-            }
-            Row {
-                anchors.right: parent.right
-                spacing: 8
-                Button { text: "Cancel"; onClicked: bulkSheet.close() }
-                Button {
-                    text: "Rename"
-                    enabled: bulkSheet.error.length === 0
-                    onClicked: {
-                        root.bridge.bulkApply()
-                        bulkSheet.close()
+            Rectangle {
+                visible: bulkSheet.mode.second.length > 0
+                width: 268
+                height: 40
+                radius: Theme.radiusSmall
+                color: Theme.surface
+                border.width: 1
+                border.color: bulkSecond.activeFocus ? Theme.outline : Theme.outlineSoft
+                TextInput {
+                    id: bulkSecond
+                    anchors.fill: parent
+                    anchors.leftMargin: 12
+                    anchors.rightMargin: 12
+                    verticalAlignment: TextInput.AlignVCenter
+                    clip: true
+                    color: Theme.ink
+                    selectionColor: Theme.controlHigh
+                    font.family: Theme.family
+                    font.pixelSize: Theme.text
+                    onTextChanged: bulkSheet.update()
+                    Keys.onEscapePressed: bulkSheet.close()
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: parent.text.length === 0
+                        text: bulkSheet.mode.second
+                        color: Theme.inkFaint
+                        font: parent.font
                     }
+                }
+            }
+            // The first number, for numbering.
+            Row {
+                visible: bulkSheet.modeKey === "number"
+                spacing: 4
+                anchors.verticalCenter: parent.verticalCenter
+                IconButton { icon: "chevron-left"; iconSize: 14; onClicked: { bulkSheet.start = Math.max(0, bulkSheet.start - 1); bulkSheet.update() } }
+                Text {
+                    width: 52
+                    anchors.verticalCenter: parent.verticalCenter
+                    horizontalAlignment: Text.AlignHCenter
+                    text: "from " + bulkSheet.start
+                    color: Theme.ink
+                    font.family: Theme.family
+                    font.pixelSize: 12
+                }
+                IconButton { icon: "chevron-right"; iconSize: 14; onClicked: { bulkSheet.start += 1; bulkSheet.update() } }
+            }
+        }
+
+        Check {
+            id: bulkCase
+            visible: bulkSheet.modeKey === "replace"
+            text: "Ignore case"
+            onToggled: bulkSheet.update()
+        }
+
+        CrossRule { width: parent.width }
+
+        ListView {
+            width: parent.width
+            height: 220
+            clip: true
+            spacing: 4
+            boundsBehavior: Flickable.StopAtBounds
+            model: {
+                void root.bulkTick
+                return root.bridge.bulkCount()
+            }
+            delegate: Row {
+                required property int index
+                spacing: 12
+                Text {
+                    width: 250
+                    elide: Text.ElideMiddle
+                    text: {
+                        void root.bulkTick
+                        return root.bridge.bulkOld(index)
+                    }
+                    color: Theme.inkDim
+                    font.family: Theme.family
+                    font.pixelSize: 12
+                }
+                Icon { name: "arrow-right"; size: 13; shade: 0.4 }
+                Text {
+                    width: 250
+                    elide: Text.ElideMiddle
+                    text: {
+                        void root.bulkTick
+                        return root.bridge.bulkNew(index)
+                    }
+                    color: Theme.ink
+                    font.family: Theme.family
+                    font.pixelSize: 12
                 }
             }
         }
+
+        Text {
+            width: parent.width
+            visible: bulkSheet.error.length > 0
+            text: bulkSheet.error
+            wrapMode: Text.Wrap
+            color: Theme.inkSoft
+            font.family: Theme.family
+            font.pixelSize: 12
+        }
+
+        buttons: [
+            TextButton { text: "Cancel"; onClicked: bulkSheet.close() },
+            TextButton {
+                primary: true
+                text: "Rename"
+                enabled: bulkSheet.error.length === 0
+                onClicked: {
+                    root.bridge.bulkApply()
+                    bulkSheet.close()
+                }
+            }
+        ]
     }
 
     // Bumped whenever the offered application list is re-read.
@@ -1478,22 +1475,15 @@ ApplicationWindow {
 
     // "Other application…": every installed application, filtered as you
     // type, with the choice of making it the default for the type.
-    Popup {
+    // "Other application…": every installed application, filtered as you
+    // type, with the choice of making it the default for the type.
+    Sheet {
         id: appPicker
-        anchors.centerIn: Overlay.overlay
-        width: 420
-        height: 480
-        modal: true
-        focus: true
-        padding: 16
+        width: 460
+        title: "Open with"
+        icon: "external-link"
         onOpened: appFilter.forceActiveFocus()
         onClosed: root.release()
-        background: Rectangle {
-            color: root.raisedHigh
-            radius: 9
-            border.width: 1
-            border.color: root.line
-        }
         readonly property var matches: {
             void root.offerTick
             const needle = appFilter.text.toLowerCase()
@@ -1508,73 +1498,91 @@ ApplicationWindow {
             close()
         }
 
-        Column {
-            anchors.fill: parent
-            spacing: 10
-            Text {
-                text: "Open with"
-                color: root.ink
-                font.family: root.sansFamily
-                font.pixelSize: 14
-            }
-            Rectangle {
-                width: parent.width
-                height: 32
-                radius: 6
-                color: root.raised
-                border.width: 1
-                border.color: appFilter.activeFocus ? root.lineStrong : root.line
-                TextInput {
-                    id: appFilter
-                    anchors.fill: parent
-                    anchors.leftMargin: 8
-                    anchors.rightMargin: 8
-                    verticalAlignment: TextInput.AlignVCenter
-                    clip: true
-                    color: root.ink
-                    font.family: root.sansFamily
-                    font.pixelSize: 13
-                    Keys.onReturnPressed: if (appPicker.matches.length > 0) appPicker.choose(appPicker.matches[appList.currentIndex >= 0 ? appList.currentIndex : 0])
-                    Keys.onEscapePressed: appPicker.close()
-                    Keys.onDownPressed: appList.incrementCurrentIndex()
-                    Keys.onUpPressed: appList.decrementCurrentIndex()
-                }
-            }
-            ListView {
-                id: appList
-                width: parent.width
-                height: parent.height - 32 - 24 - 40 - 30
+        Rectangle {
+            width: parent.width
+            height: 40
+            radius: Theme.radiusSmall
+            color: Theme.surface
+            border.width: 1
+            border.color: appFilter.activeFocus ? Theme.outline : Theme.outlineSoft
+            TextInput {
+                id: appFilter
+                anchors.fill: parent
+                anchors.leftMargin: 12
+                anchors.rightMargin: 12
+                verticalAlignment: TextInput.AlignVCenter
                 clip: true
-                model: appPicker.matches
-                currentIndex: 0
-                delegate: Rectangle {
-                    required property int index
-                    required property var modelData
-                    width: ListView.view.width
-                    height: 30
-                    radius: 5
-                    color: ListView.isCurrentItem ? root.hover : "transparent"
-                    Text {
-                        anchors.left: parent.left
-                        anchors.leftMargin: 8
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: root.bridge.offeredName(modelData)
-                        color: root.ink
-                        font.family: root.sansFamily
-                        font.pixelSize: 13
-                    }
-                    MouseArea {
-                        anchors.fill: parent
-                        onClicked: appList.currentIndex = index
-                        onDoubleClicked: appPicker.choose(modelData)
-                    }
+                color: Theme.ink
+                selectionColor: Theme.controlHigh
+                selectedTextColor: Theme.ink
+                font.family: Theme.family
+                font.pixelSize: Theme.text
+                Keys.onReturnPressed: if (appPicker.matches.length > 0) appPicker.choose(appPicker.matches[Math.max(0, appList.currentIndex)])
+                Keys.onEnterPressed: if (appPicker.matches.length > 0) appPicker.choose(appPicker.matches[Math.max(0, appList.currentIndex)])
+                Keys.onEscapePressed: appPicker.close()
+                Keys.onDownPressed: appList.incrementCurrentIndex()
+                Keys.onUpPressed: appList.decrementCurrentIndex()
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: parent.text.length === 0
+                    text: "Find an application"
+                    color: Theme.inkFaint
+                    font: parent.font
                 }
-            }
-            CheckBox {
-                id: appDefault
-                text: "Always use for " + root.bridge.offeredType()
             }
         }
+
+        ListView {
+            id: appList
+            width: parent.width
+            height: 300
+            clip: true
+            spacing: 2
+            model: appPicker.matches
+            currentIndex: 0
+            boundsBehavior: Flickable.StopAtBounds
+            delegate: Rectangle {
+                id: appRow
+                required property int index
+                required property var modelData
+                width: ListView.view.width
+                height: 38
+                radius: Theme.radiusSmall
+                color: ListView.isCurrentItem ? Theme.selected : (appMouse.containsMouse ? Theme.surfaceHigh : "transparent")
+                border.width: ListView.isCurrentItem ? 1 : 0
+                border.color: Theme.outline
+                Text {
+                    anchors.left: parent.left
+                    anchors.leftMargin: 12
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: root.bridge.offeredName(appRow.modelData)
+                    color: Theme.ink
+                    font.family: Theme.family
+                    font.pixelSize: Theme.text
+                }
+                MouseArea {
+                    id: appMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    onClicked: appList.currentIndex = appRow.index
+                    onDoubleClicked: appPicker.choose(appRow.modelData)
+                }
+            }
+        }
+        Check {
+            id: appDefault
+            text: "Always use for " + root.bridge.offeredType()
+        }
+
+        buttons: [
+            TextButton { text: "Cancel"; onClicked: appPicker.close() },
+            TextButton {
+                primary: true
+                text: "Open"
+                enabled: appPicker.matches.length > 0
+                onClicked: appPicker.choose(appPicker.matches[Math.max(0, appList.currentIndex)])
+            }
+        ]
     }
 
     // One prompt names things: a rename, a new folder, a new file. `mode` says
@@ -1644,28 +1652,26 @@ ApplicationWindow {
         return -1
     }
 
-    Popup {
+    Sheet {
         id: namePrompt
         property string mode: "rename"
         property int row: -1
         property string template: ""
-        anchors.centerIn: Overlay.overlay
-        width: 380
-        modal: true
-        focus: true
-        padding: 16
+        width: 440
+        title: namePrompt.mode === "rename" ? "Rename"
+             : namePrompt.mode === "bookmark" ? "Bookmark name"
+             : namePrompt.mode === "compress" ? "Compress"
+             : namePrompt.mode === "folder" ? "New folder" : "New file"
+        icon: namePrompt.mode === "rename" ? "pencil"
+            : namePrompt.mode === "bookmark" ? "bookmark"
+            : namePrompt.mode === "compress" ? "file-archive"
+            : namePrompt.mode === "folder" ? "folder-plus" : "file-plus"
         onOpened: promptField.forceActiveFocus()
         onClosed: root.release()
-        background: Rectangle {
-            color: root.raisedHigh
-            radius: 9
-            border.width: 1
-            border.color: root.line
-        }
 
         function accept() {
             const name = promptField.text.trim()
-            if (name.length === 0)
+            if (name.length === 0 || name.indexOf("/") >= 0)
                 return
             if (mode === "rename")
                 root.bridge.renameRow(row, name)
@@ -1680,50 +1686,55 @@ ApplicationWindow {
             close()
         }
 
-        Column {
+        Text {
+            visible: namePrompt.mode === "compress"
+            text: "The ending picks the format: .zip, .tar.gz, .tar.xz or .tar.zst"
+            color: Theme.inkDim
+            font.family: Theme.family
+            font.pixelSize: 12
+        }
+        Rectangle {
             width: parent.width
-            spacing: 10
-            Text {
-                text: namePrompt.mode === "rename" ? "Rename"
-                    : namePrompt.mode === "bookmark" ? "Bookmark name"
-                    : namePrompt.mode === "compress" ? "Compress to (.zip, .tar.gz, .tar.xz, .tar.zst)"
-                    : namePrompt.mode === "folder" ? "New folder" : "New file"
-                color: root.ink
-                font.family: root.sansFamily
-                font.pixelSize: 14
-            }
-            Rectangle {
-                width: parent.width
-                height: 32
-                radius: 6
-                color: root.raised
-                border.width: 1
-                border.color: promptField.activeFocus ? root.lineStrong : root.line
-                TextInput {
-                    id: promptField
-                    anchors.fill: parent
-                    anchors.leftMargin: 8
-                    anchors.rightMargin: 8
-                    verticalAlignment: TextInput.AlignVCenter
-                    clip: true
-                    color: root.ink
-                    selectionColor: root.spectralDim
-                    selectedTextColor: root.ink
-                    font.family: root.sansFamily
-                    font.pixelSize: 13
-                    Keys.onReturnPressed: namePrompt.accept()
-                    Keys.onEnterPressed: namePrompt.accept()
-                    Keys.onEscapePressed: namePrompt.close()
-                }
-            }
-            Text {
-                visible: promptField.text.indexOf("/") >= 0
-                text: "A name cannot contain “/”."
-                color: root.inkMuted
-                font.family: root.sansFamily
-                font.pixelSize: 11
+            height: 40
+            radius: Theme.radiusSmall
+            color: Theme.surface
+            border.width: 1
+            border.color: promptField.activeFocus ? Theme.outline : Theme.outlineSoft
+            TextInput {
+                id: promptField
+                anchors.fill: parent
+                anchors.leftMargin: 12
+                anchors.rightMargin: 12
+                verticalAlignment: TextInput.AlignVCenter
+                clip: true
+                color: Theme.ink
+                selectionColor: Theme.controlHigh
+                selectedTextColor: Theme.ink
+                font.family: Theme.family
+                font.pixelSize: Theme.text
+                Keys.onReturnPressed: namePrompt.accept()
+                Keys.onEnterPressed: namePrompt.accept()
+                Keys.onEscapePressed: namePrompt.close()
             }
         }
+        Text {
+            visible: promptField.text.indexOf("/") >= 0
+            text: "A name cannot contain “/”."
+            color: Theme.inkSoft
+            font.family: Theme.family
+            font.pixelSize: 12
+        }
+
+        buttons: [
+            TextButton { text: "Cancel"; onClicked: namePrompt.close() },
+            TextButton {
+                primary: true
+                enabled: promptField.text.trim().length > 0 && promptField.text.indexOf("/") < 0
+                text: namePrompt.mode === "rename" || namePrompt.mode === "bookmark" ? "Rename"
+                    : namePrompt.mode === "compress" ? "Compress" : "Create"
+                onClicked: namePrompt.accept()
+            }
+        ]
     }
 
     Shortcut {
@@ -1957,61 +1968,48 @@ ApplicationWindow {
     Shortcut { sequences: ["Ctrl+2"]; onActivated: root.view = "grid" }
 
     // Permanent deletion cannot be undone, so it always asks.
-    Popup {
+    Sheet {
         id: deleteConfirm
-        anchors.centerIn: Overlay.overlay
-        width: 380
-        modal: true
-        focus: true
-        padding: 16
+        width: 440
+        title: "Delete permanently?"
+        icon: "trash-2"
         onOpened: deleteYes.forceActiveFocus()
         onClosed: root.release()
-        background: Rectangle {
-            color: root.raisedHigh
-            radius: 9
-            border.width: 1
-            border.color: root.line
-        }
-        Column {
+
+        Text {
             width: parent.width
-            spacing: 12
-            Text {
-                width: parent.width
-                wrapMode: Text.Wrap
-                text: root.selectedCount === 1
-                    ? "Permanently delete “" + root.bridge.entryName(root.firstSelectedRow()) + "”?"
-                    : "Permanently delete " + root.selectedCount + " items?"
-                color: root.ink
-                font.family: root.sansFamily
-                font.pixelSize: 14
-            }
-            Text {
-                text: "This cannot be undone."
-                color: root.inkMuted
-                font.family: root.sansFamily
-                font.pixelSize: 12
-            }
-            Row {
-                anchors.right: parent.right
-                spacing: 8
-                Button {
-                    text: "Cancel"
-                    onClicked: deleteConfirm.close()
-                    Keys.onEscapePressed: deleteConfirm.close()
-                }
-                Button {
-                    id: deleteYes
-                    text: "Delete"
-                    onClicked: {
-                        root.bridge.deleteSelected()
-                        deleteConfirm.close()
-                    }
-                    Keys.onReturnPressed: clicked()
-                    Keys.onEnterPressed: clicked()
-                    Keys.onEscapePressed: deleteConfirm.close()
-                }
-            }
+            wrapMode: Text.Wrap
+            text: root.selectedCount === 1
+                ? "“" + root.bridge.entryName(root.firstSelectedRow()) + "” will be deleted, not moved to the Trash."
+                : root.selectedCount + " items will be deleted, not moved to the Trash."
+            color: Theme.inkSoft
+            font.family: Theme.family
+            font.pixelSize: Theme.text
         }
+        Text {
+            text: "This cannot be undone."
+            color: Theme.inkDim
+            font.family: Theme.family
+            font.pixelSize: 12
+        }
+
+        buttons: [
+            TextButton {
+                text: "Cancel"
+                onClicked: deleteConfirm.close()
+                Keys.onEscapePressed: deleteConfirm.close()
+            },
+            TextButton {
+                id: deleteYes
+                primary: true
+                text: "Delete"
+                onClicked: {
+                    root.bridge.deleteSelected()
+                    deleteConfirm.close()
+                }
+                Keys.onEscapePressed: deleteConfirm.close()
+            }
+        ]
     }
 
     // Text fields claim these keys first, so copying from the search box
@@ -3688,7 +3686,7 @@ ApplicationWindow {
                         text: root.bridge.trashBusy() ? "Deleting…" : ""
                         font.pixelSize: 11
                     }
-                    Button {
+                    TextButton {
                         text: "Restore"
                         enabled: root.trashPicked.length > 0
                         onClicked: {
@@ -3696,7 +3694,7 @@ ApplicationWindow {
                             root.trashPicked = []
                         }
                     }
-                    Button {
+                    TextButton {
                         text: "Delete permanently"
                         enabled: root.trashPicked.length > 0 && !root.bridge.trashBusy()
                         onClicked: {
@@ -3704,7 +3702,7 @@ ApplicationWindow {
                             root.trashPicked = []
                         }
                     }
-                    Button {
+                    TextButton {
                         text: "Empty Trash"
                         enabled: trashBrowser.count > 0 && !root.bridge.trashBusy()
                         onClicked: emptyConfirm.open()
