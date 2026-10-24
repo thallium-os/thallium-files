@@ -40,6 +40,14 @@ pub mod ffi {
 		fn serve_file_manager(bridge: Pin<&mut BackendBridge>) -> bool;
 	}
 
+	#[namespace = "thallium"]
+	unsafe extern "C++" {
+		include!("thallium-backend/filechooser.h");
+		/// Answer xdg-desktop-portal's FileChooser for the whole desktop.
+		#[cxx_name = "servePortal"]
+		fn serve_portal() -> bool;
+	}
+
 	extern "RustQt" {
 		#[qobject]
 		#[qml_element]
@@ -60,6 +68,12 @@ pub mod ffi {
 		#[qinvokable]
 		#[rust_name = "serve_desktop"]
 		fn serveDesktop(self: Pin<&mut BackendBridge>) -> bool;
+
+		/// Hand the picked `file://` URIs, newline separated, to whoever ran
+		/// `--pick`.
+		#[qinvokable]
+		#[rust_name = "pick_done"]
+		fn pickDone(self: &BackendBridge, uris: &QString);
 
 		#[qinvokable]
 		fn poll(self: Pin<&mut Self>);
@@ -1010,6 +1024,13 @@ impl ffi::BackendBridge {
 
 	/// Offer this window as the desktop's file manager over D-Bus.
 	pub fn serve_desktop(self: Pin<&mut Self>) -> bool { ffi::serve_file_manager(self) }
+
+	pub fn pick_done(&self, uris: &QString) {
+		use std::io::Write;
+		let mut out = std::io::stdout().lock();
+		let _ = writeln!(out, "{uris}");
+		let _ = out.flush();
+	}
 
 	pub fn drive_count(&self) -> i32 { count(self.rust().drives.len()) }
 

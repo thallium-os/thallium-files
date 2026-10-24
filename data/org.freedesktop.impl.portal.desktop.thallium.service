@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.freedesktop.impl.portal.desktop.thallium
+Exec=/usr/bin/thallium-file-manager --portal

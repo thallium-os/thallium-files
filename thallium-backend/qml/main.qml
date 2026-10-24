@@ -221,8 +221,11 @@ ApplicationWindow {
                 out.push({ label: known[i], folder: known[i], icon: icons[known[i]], section: "" })
         }
         out.push({ label: "Filesystem", folder: "/", icon: "hard-drive", section: "" })
-        out.push({ label: "Trash", folder: null, trash: true, icon: "trash-2", section: "" })
-        out.push({ label: "Settings", folder: null, settings: true, icon: "settings", section: "" })
+        // A file dialog only needs places to pick from.
+        if (!root.picking) {
+            out.push({ label: "Trash", folder: null, trash: true, icon: "trash-2", section: "" })
+            out.push({ label: "Settings", folder: null, settings: true, icon: "settings", section: "" })
+        }
         // Drives that can be mounted, mounted or not.
         void root.revision
         for (let d = 0; d < root.bridge.driveCount(); ++d)
@@ -280,7 +283,104 @@ ApplicationWindow {
     minimumHeight: 640
     visible: true
     color: canvas
-    title: leafName(root.bridge.currentPath) + " — Thallium Files"
+    title: root.picking ? root.pickTitle : leafName(root.bridge.currentPath) + " — Thallium Files"
+
+    // ---- Picking ----
+    // `--pick open|open-multiple|folder|save` turns the window into a file
+    // dialog for the portal: what is chosen goes to stdout and the app quits.
+    property string pickMode: ""
+    property string pickTitle: ""
+    property string pickAccept: ""
+    readonly property bool picking: root.pickMode !== ""
+    readonly property bool pickSaving: root.pickMode === "save"
+    readonly property bool pickReplaces: {
+        void root.revision
+        return root.pickSaving && root.rowNamed(pickName.text) >= 0
+                && !root.bridge.entryIsDirectory(root.rowNamed(pickName.text))
+    }
+
+    function readPickArgs(args) {
+        const value = function (flag) {
+            const at = args.indexOf(flag)
+            return at > 0 && at + 1 < args.length ? args[at + 1] : ""
+        }
+        root.pickMode = value("--pick")
+        if (!root.picking)
+            return false
+        root.pickAccept = value("--pick-accept")
+        root.pickTitle = value("--pick-title") || ({ "save": "Save", "folder": "Choose a folder" })[root.pickMode] || "Open"
+        pickName.text = value("--pick-name")
+        root.width = 1080
+        root.height = 720
+        root.bridge.navigate(value("--pick-folder") || root.bridge.homePath)
+        if (root.pickSaving)
+            pickName.focusInput()
+        return true
+    }
+
+    function rowNamed(name) {
+        if (name.length === 0)
+            return -1
+        for (let row = 0; row < root.bridge.entryCount(); row++)
+            if (root.bridge.entryName(row) === name)
+                return row
+        return -1
+    }
+
+    function fileUri(path) {
+        return "file://" + path.split("/").map(encodeURIComponent).join("/")
+    }
+
+    function finishPick(uris) {
+        root.bridge.pickDone(uris.join("\n"))
+        Qt.quit()
+    }
+
+    function selectedFiles() {
+        const out = []
+        for (let row = 0; row < root.bridge.entryCount(); row++)
+            if (root.bridge.entrySelected(row) && !root.bridge.entryIsDirectory(row))
+                out.push(root.fileUri(root.bridge.entryPath(row)))
+        return out
+    }
+
+    // The accept button, or Enter on the name. A lone selected folder is
+    // entered rather than chosen, except when choosing folders.
+    function acceptPick() {
+        const row = root.selectedCount === 1 ? root.firstSelectedRow() : -1
+        if (root.pickSaving) {
+            const name = pickName.text.trim()
+            const existing = root.rowNamed(name)
+            if (name.length === 0)
+                return
+            if (existing >= 0 && root.bridge.entryIsDirectory(existing)) {
+                root.bridge.navigateRow(existing)
+                pickName.text = ""
+                return
+            }
+            const dir = root.bridge.currentPath
+            root.finishPick([root.fileUri((dir.endsWith("/") ? dir : dir + "/") + name)])
+        } else if (root.pickMode === "folder") {
+            root.finishPick([root.fileUri(row >= 0 && root.bridge.entryIsDirectory(row)
+                                          ? root.bridge.entryPath(row) : root.bridge.currentPath)])
+        } else if (row >= 0 && root.bridge.entryIsDirectory(row)) {
+            root.bridge.navigateRow(row)
+        } else {
+            const files = root.selectedFiles()
+            if (files.length > 0)
+                root.finishPick(root.pickMode === "open" ? files.slice(0, 1) : files)
+        }
+    }
+
+    // Choosing a file: Save takes its name, Open takes the file.
+    function pickRow(row) {
+        if (root.pickSaving) {
+            pickName.text = root.bridge.entryName(row)
+            pickName.focusInput()
+        } else if (root.pickMode !== "folder") {
+            root.finishPick([root.fileUri(root.bridge.entryPath(row))])
+        }
+    }
 
     function leafName(path) {
         if (!path || path === "/")
@@ -725,8 +825,10 @@ ApplicationWindow {
         // `thallium-file-manager PATH` opens PATH, or the folder holding it.
         Component.onCompleted: {
             root.loadFilesTheme()
-            firstBridge.serveDesktop()
             const args = Qt.application.arguments
+            if (root.readPickArgs(args))
+                return
+            firstBridge.serveDesktop()
             if (args.length > 1)
                 root.openTarget(args[args.length - 1])
         }
@@ -1832,6 +1934,8 @@ ApplicationWindow {
     function activateRow(row) {
         if (root.bridge.entryIsDirectory(row))
             root.bridge.navigateRow(row)
+        else if (root.picking)
+            root.pickRow(row)
         else
             root.bridge.openEntry(row)
     }
@@ -1892,8 +1996,14 @@ ApplicationWindow {
                 return
             if (root.bridge.entryIsDirectory(row))
                 root.bridge.navigateRow(row)
+            else if (root.picking)
+                root.pickRow(row)
             else
                 root.bridge.openEntry(row)
+            return
+        }
+        if (root.picking) {
+            root.acceptPick()
             return
         }
         for (let i = 0; i < root.rows.length; i++) {
@@ -1940,7 +2050,7 @@ ApplicationWindow {
 
     readonly property bool typing: root.settingsOpen || namePrompt.opened || pathEditor.visible || deleteConfirm.opened
                                    || emptyConfirm.opened || appPicker.opened || propertiesSheet.opened
-                                   || bulkSheet.opened
+                                   || bulkSheet.opened || pickName.editing
 
     Shortcut { sequences: ["Down"]; enabled: !root.typing; onActivated: root.moveFocus(root.columns(), false) }
     Shortcut { sequences: ["Up"]; enabled: !root.typing; onActivated: root.moveFocus(-root.columns(), false) }
@@ -1967,6 +2077,11 @@ ApplicationWindow {
         sequences: ["Escape"]
         enabled: !root.typing
         onActivated: {
+            // A file dialog with nothing left to clear is cancelled.
+            if (root.picking && root.selectedCount === 0 && root.query === "" && !root.searchShown) {
+                Qt.quit()
+                return
+            }
             // A filter left behind after focus moved on is still cleared.
             if (root.deepSearch)
                 root.endDeepSearch()
@@ -2131,6 +2246,12 @@ ApplicationWindow {
         property string placeholder: ""
         property bool masked: false
         signal accepted
+        readonly property bool editing: fieldInput.activeFocus
+
+        function focusInput() {
+            fieldInput.forceActiveFocus()
+            fieldInput.selectAll()
+        }
 
         implicitHeight: 32
         radius: 7
@@ -2563,8 +2684,155 @@ ApplicationWindow {
 
     // ---- Layout ---------------------------------------------------------
 
+    // The file dialog's head: says what is being asked for, so the window
+    // is not mistaken for a plain Files window.
+    Rectangle {
+        id: pickHead
+        visible: root.picking
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        height: root.picking ? 64 : 0
+        color: root.raised
+        z: 2
+
+        CrossRule { anchors.bottom: parent.bottom; width: parent.width }
+
+        Rectangle {
+            id: pickBadge
+            anchors.left: parent.left
+            anchors.leftMargin: 20
+            anchors.verticalCenter: parent.verticalCenter
+            width: 36
+            height: 36
+            radius: Theme.radiusSmall
+            color: root.emberWash
+            border.width: 1
+            border.color: Theme.wash(Theme.accent, 0.6)
+
+            Icon {
+                anchors.centerIn: parent
+                name: root.pickSaving ? "download" : root.pickMode === "folder" ? "folder-open" : "file"
+                size: 18
+                shade: 1
+            }
+        }
+
+        Column {
+            anchors.left: pickBadge.right
+            anchors.right: parent.right
+            anchors.leftMargin: 14
+            anchors.rightMargin: 24
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 3
+
+            Text {
+                width: parent.width
+                elide: Text.ElideRight
+                text: root.pickTitle
+                color: root.ink
+                font.family: root.sansFamily
+                font.pixelSize: 17
+                font.weight: Font.Medium
+            }
+            Text {
+                text: (root.pickSaving ? "SAVE A FILE" : root.pickMode === "folder" ? "CHOOSE A FOLDER"
+                       : root.pickMode === "open" ? "CHOOSE A FILE" : "CHOOSE FILES") + "  ·  FILE PICKER"
+                color: root.inkMuted
+                font.family: root.monoFamily
+                font.pixelSize: 10
+                font.letterSpacing: 1.5
+            }
+        }
+    }
+
+    // A dialog, not a window of its own: the whole edge carries the accent.
+    Rectangle {
+        visible: root.picking
+        anchors.fill: parent
+        color: "transparent"
+        border.width: 1
+        border.color: Theme.accent
+        z: 3
+    }
+
+    // The file dialog's foot, only while picking.
+    Rectangle {
+        id: pickBar
+        visible: root.picking
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        height: root.picking ? 64 : 0
+        color: root.raised
+        z: 2
+
+        CrossRule { anchors.top: parent.top; width: parent.width }
+
+        Text {
+            id: pickLabel
+            visible: root.pickSaving
+            anchors.left: parent.left
+            anchors.leftMargin: 24
+            anchors.verticalCenter: parent.verticalCenter
+            text: "NAME"
+            color: root.inkMuted
+            font.family: root.monoFamily
+            font.pixelSize: 11
+            font.letterSpacing: 1.5
+        }
+
+        Field {
+            id: pickName
+            visible: root.pickSaving
+            anchors.left: pickLabel.right
+            anchors.right: pickButtons.left
+            anchors.leftMargin: 14
+            anchors.rightMargin: 18
+            anchors.verticalCenter: parent.verticalCenter
+            placeholder: "File name"
+            onAccepted: root.acceptPick()
+            Keys.onEscapePressed: Qt.quit()
+        }
+
+        Text {
+            visible: !root.pickSaving
+            anchors.left: parent.left
+            anchors.right: pickButtons.left
+            anchors.leftMargin: 24
+            anchors.rightMargin: 18
+            anchors.verticalCenter: parent.verticalCenter
+            elide: Text.ElideMiddle
+            text: root.pickMode === "folder" ? root.bridge.currentPath
+                : root.selectedCount === 0 ? "Choose " + (root.pickMode === "open" ? "a file" : "files")
+                : root.selectedCount + " selected"
+            color: root.inkMuted
+            font.family: root.sansFamily
+            font.pixelSize: 13
+        }
+
+        Row {
+            id: pickButtons
+            anchors.right: parent.right
+            anchors.rightMargin: 24
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 10
+
+            TextButton { text: "Cancel"; onClicked: Qt.quit() }
+            TextButton {
+                primary: true
+                text: root.pickReplaces ? "Replace" : root.pickAccept || (root.pickSaving ? "Save" : root.pickMode === "folder" ? "Choose" : "Open")
+                enabled: root.pickSaving ? pickName.text.trim().length > 0
+                       : root.pickMode === "folder" || root.selectedCount > 0
+                onClicked: root.acceptPick()
+            }
+        }
+    }
+
     Row {
         anchors.fill: parent
+        anchors.bottomMargin: pickBar.height
+        anchors.topMargin: pickHead.height
         spacing: 0
 
         // ============================ SIDEBAR ============================

@@ -20,12 +20,16 @@ cargo build --release -p thallium-backend --features qt --bin thallium-file-mana
 
 rm -rf "$pkg_dir"
 mkdir -p "$pkg_dir/DEBIAN" "$pkg_dir/usr/bin" "$pkg_dir/usr/share/applications" \
-	"$pkg_dir/usr/share/dbus-1/services" "$pkg_dir/usr/share/doc/$pkg"
+	"$pkg_dir/usr/share/dbus-1/services" "$pkg_dir/usr/share/doc/$pkg" \
+	"$pkg_dir/usr/share/xdg-desktop-portal/portals"
 
 install -m 0755 target/release/thallium-file-manager "$pkg_dir/usr/bin/thallium-file-manager"
 install -m 0644 data/io.thallium.Files.desktop "$pkg_dir/usr/share/applications/io.thallium.Files.desktop"
 install -m 0644 data/io.thallium.Files.FileManager1.service \
 	"$pkg_dir/usr/share/dbus-1/services/io.thallium.Files.FileManager1.service"
+install -m 0644 data/org.freedesktop.impl.portal.desktop.thallium.service \
+	"$pkg_dir/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.thallium.service"
+install -m 0644 data/thallium.portal "$pkg_dir/usr/share/xdg-desktop-portal/portals/thallium.portal"
 install -m 0644 README.md "$pkg_dir/usr/share/doc/$pkg/README.md"
 install -m 0644 LICENSE "$pkg_dir/usr/share/doc/$pkg/copyright"
 

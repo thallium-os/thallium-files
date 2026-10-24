@@ -39,5 +39,7 @@ fn main() {
 	.cpp_file("cpp/clipboard.cpp")
 	.cpp_file("cpp/filemanager1.h")
 	.cpp_file("cpp/filemanager1.cpp")
+	.cpp_file("cpp/filechooser.h")
+	.cpp_file("cpp/filechooser.cpp")
 	.build();
 }
