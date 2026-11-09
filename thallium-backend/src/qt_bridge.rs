@@ -550,6 +550,25 @@ pub mod ffi {
 		#[qinvokable]
 		#[rust_name = "cancel_task"]
 		fn cancelTask(self: Pin<&mut Self>, id: u64);
+		/// Bytes a transfer has written so far.
+		#[qinvokable]
+		#[rust_name = "task_bytes_done"]
+		fn taskBytesDone(&self, row: i32) -> f64;
+		/// Bytes a transfer will write in all, or -1 while still counting.
+		#[qinvokable]
+		#[rust_name = "task_bytes_total"]
+		fn taskBytesTotal(&self, row: i32) -> f64;
+		/// Average bytes per second since the transfer was queued.
+		#[qinvokable]
+		#[rust_name = "task_rate"]
+		fn taskRate(&self, row: i32) -> f64;
+		/// Hold or release every running transfer.
+		#[qinvokable]
+		#[rust_name = "set_tasks_paused"]
+		fn setTasksPaused(self: Pin<&mut Self>, paused: bool);
+		#[qinvokable]
+		#[rust_name = "tasks_paused"]
+		fn tasksPaused(&self) -> bool;
 	}
 }
 
@@ -563,6 +582,8 @@ pub struct BackendBridgeRust {
 	/// Whether a recursive search is still walking.
 	searching:      bool,
 	backend:        Option<Backend>,
+	/// Whether the transfers were last told to hold.
+	tasks_paused:   bool,
 	snapshot:       BrowserStateSnapshot,
 	icons:          IconService,
 	/// Storage systems rclone offers, read once when the panel is opened.
@@ -646,6 +667,7 @@ impl Default for BackendBridgeRust {
 					last_error: QString::default(),
 					model_revision: snapshot.revision.0,
 					backend: Some(backend),
+					tasks_paused: false,
 					snapshot,
 					icons: IconService::new(),
 					providers: Vec::new(),
@@ -681,6 +703,7 @@ impl Default for BackendBridgeRust {
 				last_error:     error.to_string().into(),
 				model_revision: 0,
 				backend:        None,
+				tasks_paused:   false,
 				snapshot:       BrowserStateSnapshot::default(),
 				icons:          IconService::new(),
 				providers:      Vec::new(),
@@ -2152,6 +2175,25 @@ impl ffi::BackendBridge {
 		self.submit(Command::CancelTask(thallium_protocol::TaskId(id)));
 	}
 
+	#[allow(clippy::cast_precision_loss)]
+	pub fn task_bytes_done(&self, row: i32) -> f64 {
+		self.task(row).map_or(0.0, |task| task.progress.bytes_completed as f64)
+	}
+
+	#[allow(clippy::cast_precision_loss)]
+	pub fn task_bytes_total(&self, row: i32) -> f64 {
+		self.task(row).and_then(|task| task.progress.bytes_total).map_or(-1.0, |total| total as f64)
+	}
+
+	pub fn task_rate(&self, row: i32) -> f64 { self.task(row).map_or(0.0, transfer_rate) }
+
+	pub fn set_tasks_paused(mut self: Pin<&mut Self>, paused: bool) {
+		self.as_mut().rust_mut().tasks_paused = paused;
+		self.submit_recorded(Command::PauseTasks(paused), false);
+	}
+
+	pub fn tasks_paused(&self) -> bool { self.rust().tasks_paused }
+
 	/// Read a location written by the frontend, which may name a remote.
 	fn location(&self, path: &QString) -> Location {
 		let text = String::from(path);
@@ -2527,6 +2569,17 @@ fn format_size(bytes: u64) -> String {
 	if unit == 0 { format!("{bytes} B") } else { format!("{value:.1} {}", UNITS[unit]) }
 }
 
+/// Average throughput of a transfer in bytes per second, from when it was
+/// queued to its latest progress report. Zero until it has moved a byte.
+#[allow(clippy::cast_precision_loss)]
+fn transfer_rate(task: &TaskInfo) -> f64 {
+	let elapsed = task.updated_at_ms.saturating_sub(task.created_at_ms);
+	if elapsed == 0 || task.progress.bytes_completed == 0 {
+		return 0.0;
+	}
+	task.progress.bytes_completed as f64 * 1000.0 / elapsed as f64
+}
+
 fn status_text(status: TaskStatus) -> &'static str {
 	match status {
 		TaskStatus::Pending => "Pending",
@@ -2542,13 +2595,33 @@ fn status_text(status: TaskStatus) -> &'static str {
 mod tests {
 	use thallium_protocol::TaskStatus;
 
-	use super::{count, format_size, head_lines, status_text, subfolder_listing};
+	use super::{count, format_size, head_lines, status_text, subfolder_listing, transfer_rate};
 
 	#[test]
 	fn presentation_helpers_are_stable() {
 		assert_eq!(count(3), 3);
 		assert_eq!(format_size(1536), "1.5 KiB");
 		assert_eq!(status_text(TaskStatus::Succeeded), "Complete");
+	}
+
+	#[test]
+	fn transfer_rate_averages_over_the_elapsed_time() {
+		let mut task = thallium_protocol::TaskInfo {
+			id:            thallium_protocol::TaskId(1),
+			revision:      thallium_protocol::TaskRevision(1),
+			kind:          thallium_protocol::TaskKind::Copy,
+			status:        TaskStatus::Started,
+			title:         String::new(),
+			progress:      thallium_protocol::TaskProgress::default(),
+			current_item:  None,
+			issue:         None,
+			created_at_ms: 1_000,
+			updated_at_ms: 1_000,
+		};
+		assert!(transfer_rate(&task).abs() < f64::EPSILON);
+		task.progress.bytes_completed = 4_000;
+		task.updated_at_ms = 3_000;
+		assert!((transfer_rate(&task) - 2_000.0).abs() < f64::EPSILON);
 	}
 
 	#[test]

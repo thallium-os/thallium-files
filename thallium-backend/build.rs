@@ -37,6 +37,9 @@ fn main() {
 				"qml/TypeTag.qml",
 				"qml/Kbd.qml",
 				"qml/Tab.qml",
+				"qml/StorageGauge.qml",
+				"qml/CompositionCard.qml",
+				"qml/TransfersCard.qml",
 			]),
 	)
 	.qrc_resources(resources)

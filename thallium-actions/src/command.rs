@@ -64,4 +64,6 @@ pub enum Command {
 	},
 	CancelTask(TaskId),
 	DismissTask(TaskId),
+	/// Hold (`true`) or release (`false`) every running transfer.
+	PauseTasks(bool),
 }

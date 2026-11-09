@@ -159,6 +159,7 @@ impl<V: FileSystem + 'static> Coordinator<V> {
 			Action::CancelTask(id) => {
 				self.scheduler.cancel(id).await.map_err(scheduler_error)?;
 			}
+			Action::PauseTasks(paused) => self.scheduler.set_paused(paused),
 			Action::DismissTask(id) => {
 				self.scheduler.dismiss(id).await.map_err(scheduler_error)?;
 				self.accept_feedback(EffectFeedback::TaskDismissed(id), &mut report);
@@ -310,6 +311,7 @@ impl<V: FileSystem + 'static> Coordinator<V> {
 				}
 				Action::CancelTask(*id)
 			}
+			Command::PauseTasks(paused) => Action::PauseTasks(*paused),
 			Command::DismissTask(id) => {
 				let task = self.state.tasks.get(id).ok_or(ValidationError::UnknownTask(*id))?;
 				if !task.status.is_terminal() {

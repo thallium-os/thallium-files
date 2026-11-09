@@ -172,15 +172,6 @@ ApplicationWindow {
         return -1
     }
 
-    readonly property var tasks: {
-        void root.revision
-        const out = []
-        const total = root.bridge.taskCount()
-        for (let i = 0; i < total; ++i)
-            out.push(i)
-        return out
-    }
-
     // The path as crumbs. Under home it starts at Home rather than at the
     // root, which is how people think of their own files.
     readonly property var crumbs: {
@@ -328,22 +319,54 @@ ApplicationWindow {
         return root.bridge.storageShare()
     }
 
-    // What this folder is made of, by entry count. Measured, never guessed:
-    // the ring only ever describes the directory currently on screen.
+    // What this folder is made of, by entry count, in the four types the
+    // list tags entries with. Measured, never guessed: it only ever
+    // describes the directory currently on screen.
     readonly property var composition: {
         void root.revision
-        const buckets = { Folders: 0, Code: 0, Documents: 0, Media: 0, Archives: 0, Other: 0 }
+        const counts = { DIR: 0, CODE: 0, DOC: 0, TXT: 0 }
         for (let i = 0; i < root.rows.length; ++i) {
             const at = root.rows[i]
-            buckets[root.kindOf(root.bridge.entryName(at), root.bridge.entryIsDirectory(at))] += 1
+            counts[root.tagOf(root.bridge.entryName(at), root.bridge.entryIsDirectory(at))] += 1
         }
         return [
-            { label: "Folders", count: buckets.Folders },
-            { label: "Code", count: buckets.Code },
-            { label: "Documents", count: buckets.Documents },
-            { label: "Media", count: buckets.Media },
-            { label: "Other", count: buckets.Other + buckets.Archives }
+            { tag: "DIR", label: "Folders", short: "Folders", sym: "Fd", count: counts.DIR, color: Theme.tDir },
+            { tag: "CODE", label: "Code", short: "Code", sym: "Cd", count: counts.CODE, color: Theme.tCode },
+            { tag: "DOC", label: "Documents", short: "Docs", sym: "Dc", count: counts.DOC, color: Theme.tDoc },
+            { tag: "TXT", label: "Text", short: "Text", sym: "Tx", count: counts.TXT, color: Theme.tText }
         ]
+    }
+
+    // Transfers still running, with the figures the Transfers card shows.
+    // Finished rows stay in the bridge's list but never reach the card.
+    readonly property var transfers: {
+        void root.revision
+        const out = []
+        const total = root.bridge.taskCount()
+        for (let i = 0; i < total; ++i) {
+            if (!root.bridge.taskActive(i))
+                continue
+            out.push({
+                id: root.bridge.taskId(i),
+                title: root.bridge.taskTitle(i),
+                progress: root.bridge.taskProgress(i) / 100,
+                done: root.bridge.taskBytesDone(i),
+                total: root.bridge.taskBytesTotal(i),
+                rate: root.bridge.taskRate(i)
+            })
+        }
+        return out
+    }
+    property bool transfersPaused: false
+    function setTransfersPaused(paused) {
+        root.bridge.setTasksPaused(paused)
+        root.transfersPaused = paused
+    }
+    // A pause outlives nothing: once the last transfer ends, the next one
+    // starts running rather than inheriting a hold nobody can see.
+    onTransfersChanged: {
+        if (root.transfers.length === 0 && root.transfersPaused)
+            root.setTransfersPaused(false)
     }
 
     width: 1480
@@ -3938,113 +3961,22 @@ ApplicationWindow {
                 }
 
                 // Transfers float over the foot of the pane, above the dock, so
-                // they show whether or not the preview panel is open.
-                Rectangle {
+                // they show whether or not the preview panel is open. The card
+                // exists only while something is running.
+                TransfersCard {
                     id: taskPanel
                     z: 20
                     anchors.right: parent.right
                     anchors.bottom: parent.bottom
-                    anchors.rightMargin: 18
-                    anchors.bottomMargin: selectionDock.visible ? 18 + selectionDock.height + 10 : 18
-                    width: Math.min(360, parent.width - 36)
-                    height: root.taskCount > 0 ? Math.min(220, 34 + root.taskCount * 48) : 0
-                    visible: root.taskCount > 0
-                    radius: Theme.radius
-                    color: Theme.surfaceHigh
-                    border.width: 1
-                    border.color: Theme.outlineSoft
-                    clip: true
-
-                    Text {
-                        id: taskHeading
-                        anchors.left: parent.left
-                        anchors.top: parent.top
-                        anchors.margins: 14
-                        text: "Transfers"
-                        color: Theme.ink
-                        font.family: Theme.family
-                        font.pixelSize: Theme.text
-                        font.weight: Font.Medium
-                    }
-
-                    ListView {
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.top: taskHeading.bottom
-                        anchors.bottom: parent.bottom
-                        anchors.margins: 12
-                        anchors.topMargin: 8
-                        clip: true
-                        spacing: 8
-                        model: root.tasks
-                        boundsBehavior: Flickable.StopAtBounds
-
-                        delegate: Item {
-                            id: taskRow
-                            required property int modelData
-                            readonly property int slot: taskRow.modelData
-                            width: ListView.view.width
-                            height: 40
-
-                            Text {
-                                id: taskTitle
-                                anchors.left: parent.left
-                                anchors.right: taskCancel.left
-                                anchors.rightMargin: 6
-                                anchors.top: parent.top
-                                elide: Text.ElideMiddle
-                                text: {
-                                    void root.revision
-                                    return root.bridge.taskTitle(taskRow.slot)
-                                }
-                                color: Theme.inkSoft
-                                font.family: Theme.family
-                                font.pixelSize: 12
-                            }
-                            IconButton {
-                                id: taskCancel
-                                anchors.right: parent.right
-                                anchors.top: parent.top
-                                anchors.topMargin: -5
-                                implicitWidth: 24
-                                implicitHeight: 24
-                                icon: "x"
-                                iconSize: 13
-                                hint: "Cancel or dismiss"
-                                onClicked: root.bridge.cancelTask(root.bridge.taskId(taskRow.slot))
-                            }
-                            Text {
-                                anchors.left: parent.left
-                                anchors.top: taskTitle.bottom
-                                anchors.topMargin: 1
-                                text: {
-                                    void root.revision
-                                    return root.bridge.taskStatus(taskRow.slot)
-                                }
-                                color: Theme.inkFaint
-                                font.family: Theme.family
-                                font.pixelSize: 10
-                            }
-                            Rectangle {
-                                anchors.left: parent.left
-                                anchors.right: parent.right
-                                anchors.bottom: parent.bottom
-                                height: 3
-                                radius: 0
-                                color: Theme.control
-                                Rectangle {
-                                    readonly property int progress: {
-                                        void root.revision
-                                        return root.bridge.taskProgress(taskRow.slot)
-                                    }
-                                    height: parent.height
-                                    radius: 0
-                                    width: parent.width * Math.max(0, Math.min(100, progress)) / 100
-                                    color: Theme.inkSoft
-                                }
-                            }
-                        }
-                    }
+                    anchors.bottomMargin: selectionDock.visible ? selectionDock.height + 10 : 0
+                    width: Math.min(400, parent.width)
+                    height: visible ? implicitHeight : 0
+                    visible: root.transfers.length > 0
+                    jobs: root.transfers
+                    paused: root.transfersPaused
+                    format: root.readableSize
+                    onPauseToggled: root.setTransfersPaused(!root.transfersPaused)
+                    onCancelled: function (id) { root.bridge.cancelTask(id) }
                 }
 
                 // What can be done with the held entries, floating over the
@@ -5794,8 +5726,12 @@ ApplicationWindow {
                         id: storagePanel
                         width: parent.width
                         spacing: 16
-                        visible: storagePanel.total > 0
+                        visible: storagePanel.known && storagePanel.total > 0
 
+                        readonly property bool known: {
+                            void root.revision
+                            return root.bridge.storageKnown()
+                        }
                         readonly property real total: {
                             void root.revision
                             return root.bridge.storageTotal()
@@ -5805,31 +5741,18 @@ ApplicationWindow {
                             return root.bridge.storageUsed()
                         }
 
-                        HudHeader { width: parent.width; title: "Storage"; sub: "/" }
-                        Row {
-                            spacing: 20
-                            Donut {
-                                id: diskRing
-                                readonly property real share: storagePanel.total > 0 ? storagePanel.used / storagePanel.total : 0
-                                segments: [
-                                    { value: storagePanel.used, color: Theme.cGreen },
-                                    { value: Math.max(0, storagePanel.total - storagePanel.used), color: Theme.cDead }
-                                ]
-                                figure: Math.round(diskRing.share * 100) + "%"
-                                caption: "USED"
-                            }
-                            Column {
-                                anchors.verticalCenter: parent.verticalCenter
-                                spacing: 10
-                                Repeater {
-                                    model: [
-                                        { label: "Used", value: root.readableSize(storagePanel.used), color: Theme.cGreen },
-                                        { label: "Free", value: root.readableSize(Math.max(0, storagePanel.total - storagePanel.used)), color: Theme.cDead },
-                                        { label: "Total", value: root.readableSize(storagePanel.total), color: "transparent" }
-                                    ]
-                                    delegate: Legend {}
-                                }
-                            }
+                        HudHeader {
+                            width: parent.width
+                            title: "Storage"
+                            sub: "/"
+                            trailing: "■ ONLINE"
+                            trailingColor: Theme.cGreen
+                        }
+                        StorageGauge {
+                            width: parent.width
+                            used: storagePanel.used
+                            total: storagePanel.total
+                            format: root.readableSize
                         }
                     }
 
@@ -5839,23 +5762,10 @@ ApplicationWindow {
                         spacing: 16
                         visible: !root.trashOpen && !root.recentOpen
                         HudHeader { width: parent.width; title: "This folder"; sub: "composition" }
-                        Row {
-                            spacing: 20
-                            Donut {
-                                segments: root.composition.map(function (kind, i) { return { value: kind.count, color: Theme.chart[i] } })
-                                figure: root.pad2(root.rows.length)
-                                caption: root.rows.length === 1 ? "ITEM" : "ITEMS"
-                            }
-                            Column {
-                                anchors.verticalCenter: parent.verticalCenter
-                                spacing: 10
-                                Repeater {
-                                    model: root.composition.map(function (kind, i) {
-                                        return { label: kind.label, value: String(kind.count), color: Theme.chart[i] }
-                                    }).filter(function (row) { return row.value !== "0" })
-                                    delegate: Legend {}
-                                }
-                            }
+                        CompositionCard {
+                            width: parent.width
+                            kinds: root.composition
+                            focusTag: inspector.single ? inspector.entryTag : ""
                         }
                     }
 

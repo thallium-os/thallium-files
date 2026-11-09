@@ -483,3 +483,36 @@ fn a_folder_left_and_reentered_is_still_watched() {
 	});
 	backend.shutdown().expect("shutdown");
 }
+
+#[test]
+fn paused_transfers_hold_until_resumed() {
+	let root = TempDir::new().expect("root");
+	let source = root.path().join("large.bin");
+	let target = root.path().join("target");
+	fs::write(&source, vec![4_u8; 4 * 1024 * 1024]).expect("seed");
+	fs::create_dir(&target).expect("target");
+
+	let mut backend = start(root.path());
+	backend.submit(Command::PauseTasks(true)).expect("pause");
+	backend
+		.submit(Command::Copy {
+			sources:         vec![at(&source)],
+			destination:     at(&target),
+			conflict_policy: ConflictPolicy::Overwrite,
+		})
+		.expect("submit copy");
+
+	std::thread::sleep(std::time::Duration::from_millis(400));
+	let held = backend.snapshot().expect("snapshot");
+	assert!(
+		held.tasks.iter().any(|task| task.kind == TaskKind::Copy && !task.status.is_terminal()),
+		"the paused copy should still be running"
+	);
+	assert!(!target.join("large.bin").exists());
+
+	backend.submit(Command::PauseTasks(false)).expect("resume");
+	let task = settle_task(&mut backend, TaskKind::Copy);
+	assert_eq!(task.status, TaskStatus::Succeeded, "copy failed: {:?}", task.issue);
+	assert_eq!(fs::metadata(target.join("large.bin")).expect("copied").len(), 4 * 1024 * 1024);
+	backend.shutdown().expect("shutdown");
+}
