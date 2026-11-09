@@ -108,6 +108,14 @@ pub mod ffi {
 		#[qinvokable]
 		#[rust_name = "select_named"]
 		fn selectNamed(self: Pin<&mut Self>, name: &QString);
+		/// An interface preference saved in `files.conf`, or `fallback`.
+		#[qinvokable]
+		#[rust_name = "ui_value"]
+		fn uiValue(&self, key: &QString, fallback: &QString) -> QString;
+		/// Save an interface preference to `files.conf`.
+		#[qinvokable]
+		#[rust_name = "set_ui_value"]
+		fn setUiValue(self: Pin<&mut Self>, key: &QString, value: &QString);
 		/// Forget the back and forward history.
 		#[qinvokable]
 		#[rust_name = "clear_history"]
@@ -208,6 +216,14 @@ pub mod ffi {
 		#[qinvokable]
 		#[rust_name = "recent_folder"]
 		fn recentFolder(&self, index: i32) -> QString;
+		/// When the desktop says the file was last opened, as an RFC 3339
+		/// stamp, or empty.
+		#[qinvokable]
+		#[rust_name = "recent_visited"]
+		fn recentVisited(&self, index: i32) -> QString;
+		#[qinvokable]
+		#[rust_name = "recent_is_directory"]
+		fn recentIsDirectory(&self, index: i32) -> bool;
 		#[qinvokable]
 		#[rust_name = "storage_total"]
 		fn storageTotal(&self) -> f64;
@@ -625,6 +641,8 @@ pub struct BackendBridgeRust {
 	tasks_paused:   bool,
 	/// When each place was last left, for the back history's ages.
 	left_at:        std::collections::HashMap<String, std::time::Instant>,
+	/// Interface preferences from `files.conf`.
+	ui_values:      std::collections::BTreeMap<String, String>,
 	snapshot:       BrowserStateSnapshot,
 	icons:          IconService,
 	/// Storage systems rclone offers, read once when the panel is opened.
@@ -710,6 +728,7 @@ impl Default for BackendBridgeRust {
 					backend: Some(backend),
 					tasks_paused: false,
 					left_at: std::collections::HashMap::new(),
+					ui_values: load_ui_values(),
 					snapshot,
 					icons: IconService::new(),
 					providers: Vec::new(),
@@ -747,6 +766,7 @@ impl Default for BackendBridgeRust {
 				backend:        None,
 				tasks_paused:   false,
 				left_at:        std::collections::HashMap::new(),
+				ui_values:      load_ui_values(),
 				snapshot:       BrowserStateSnapshot::default(),
 				icons:          IconService::new(),
 				providers:      Vec::new(),
@@ -1541,6 +1561,26 @@ impl ffi::BackendBridge {
 
 	pub fn clear_history(self: Pin<&mut Self>) { self.submit(Command::ClearHistory); }
 
+	pub fn ui_value(&self, key: &QString, fallback: &QString) -> QString {
+		self
+			.rust()
+			.ui_values
+			.get(&String::from(key))
+			.map_or_else(|| fallback.clone(), |value| value.into())
+	}
+
+	pub fn set_ui_value(mut self: Pin<&mut Self>, key: &QString, value: &QString) {
+		let (key, value) = (String::from(key), String::from(value));
+		if self.rust().ui_values.get(&key) == Some(&value) {
+			return;
+		}
+		self.as_mut().rust_mut().ui_values.insert(key, value);
+		let Some(file) = crate::ui_state::path() else { return };
+		if let Err(error) = crate::ui_state::save(&file, &self.rust().ui_values) {
+			self.as_mut().set_last_error(format!("Could not save interface settings: {error}").into());
+		}
+	}
+
 	pub fn select_named(mut self: Pin<&mut Self>, name: &QString) {
 		self.as_mut().rust_mut().revealing = Some(String::from(name).into_bytes());
 		self.select_revealed();
@@ -2104,6 +2144,14 @@ impl ffi::BackendBridge {
 		})
 	}
 
+	pub fn recent_visited(&self, index: i32) -> QString {
+		self.recent(index).map_or_else(QString::default, |entry| QString::from(&entry.visited))
+	}
+
+	pub fn recent_is_directory(&self, index: i32) -> bool {
+		self.recent(index).is_some_and(|entry| entry.path.is_dir())
+	}
+
 	fn recent(&self, index: i32) -> Option<&Recent> {
 		usize::try_from(index).ok().and_then(|index| self.rust().recents.get(index))
 	}
@@ -2661,6 +2709,10 @@ fn format_size(bytes: u64) -> String {
 		unit += 1;
 	}
 	if unit == 0 { format!("{bytes} B") } else { format!("{value:.1} {}", UNITS[unit]) }
+}
+
+fn load_ui_values() -> std::collections::BTreeMap<String, String> {
+	crate::ui_state::path().map(|file| crate::ui_state::load(&file)).unwrap_or_default()
 }
 
 /// `base` if nothing in `taken` has it, else `base2`, `base3` and so on.

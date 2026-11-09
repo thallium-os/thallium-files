@@ -58,8 +58,103 @@ ApplicationWindow {
     // Below these window widths a column folds away so the file pane keeps
     // room for names; tiled at half a screen, only the rail stays.
     readonly property bool roomForPreview: root.width >= 1240
-    // The rail shows icons; opened, their names too.
-    property bool railOpen: true
+    // The rail shows icons; opened, their names too. Both it and the
+    // sidebar's tab are remembered in files.conf.
+    property bool railOpen: root.bridge.uiValue("sidebar.open", "true") === "true"
+    onRailOpenChanged: root.bridge.setUiValue("sidebar.open", root.railOpen ? "true" : "false")
+    property string sidebarTab: root.bridge.uiValue("sidebar.tab", "places")
+    onSidebarTabChanged: root.bridge.setUiValue("sidebar.tab", root.sidebarTab)
+
+    // ---- Home: the home folder shown as an overview ----
+    // Opening Home shows recent files and the places at a glance; "Browse
+    // files" (or any typing) shows the folder itself, until Home is left.
+    property bool homeBrowsing: false
+    // What the right-hand column describes.
+    readonly property string asideMode: root.homeOpen ? "home" : root.deepSearch ? "search" : "files"
+    readonly property bool homeOpen: !root.homeBrowsing && !root.picking && !root.settingsOpen
+                                     && !root.trashOpen && !root.recentOpen && !root.deepSearch
+                                     && root.query.length === 0 && root.bridge.homePath.length > 0
+                                     && root.bridge.currentPath === root.bridge.homePath
+    Connections {
+        target: root.bridge
+        function onCurrentPathChanged() { root.homeBrowsing = false }
+    }
+    onHomeOpenChanged: if (root.homeOpen) root.bridge.refreshRecents()
+    readonly property var homeRecents: {
+        void root.revision
+        void root.homeOpen
+        const out = []
+        const total = Math.min(4, root.bridge.recentCount())
+        for (let i = 0; i < total; ++i) {
+            const stamp = Date.parse(root.bridge.recentVisited(i))
+            out.push({
+                name: root.bridge.recentName(i),
+                path: root.bridge.recentPath(i),
+                folder: root.bridge.recentFolder(i),
+                directory: root.bridge.recentIsDirectory(i),
+                seconds: isNaN(stamp) ? -1 : stamp / 1000
+            })
+        }
+        return out
+    }
+    // The places Home offers as tiles: the folders in the sidebar's first
+    // group, less Home itself, Recent and Trash.
+    readonly property var homeTiles: root.places.filter(function (place) {
+        return place.section === "" && place.folder !== "" && place.recent !== true && place.trash !== true
+    }).slice(0, 6)
+
+    // ---- The Tree tab: the home folder, opened along the current path ----
+    // Folders the person opened or closed by hand; anything else on the way
+    // to the current folder is open.
+    property var treeToggled: ({})
+    function treeIsOpen(path) {
+        const set = root.treeToggled[path]
+        if (set !== undefined)
+            return set
+        const here = root.bridge.currentPath
+        return here === path || here.startsWith(path + "/")
+    }
+    function toggleTree(path) {
+        const next = Object.assign({}, root.treeToggled)
+        next[path] = !root.treeIsOpen(path)
+        root.treeToggled = next
+    }
+    readonly property var homeTree: {
+        void root.revision
+        void root.treeToggled
+        if (root.sidebarTab !== "tree" || !root.railOpen)
+            return []
+        const home = root.bridge.homePath
+        const out = []
+        if (home.length === 0)
+            return out
+        // `rails` says, for each ancestor level, whether its guide carries on
+        // past this row.
+        function walk(path, depth, rails) {
+            const text = root.bridge.subfolders(path, root.showHidden)
+            const lines = text.length > 0 ? text.split("\n") : []
+            for (let i = 0; i < lines.length; ++i) {
+                const cut = lines[i].lastIndexOf("\t")
+                const name = lines[i].substring(0, cut)
+                const count = parseInt(lines[i].substring(cut + 1))
+                const child = path + "/" + name
+                const last = i === lines.length - 1
+                const open = root.treeIsOpen(child)
+                out.push({ path: child, name: name, depth: depth, count: count, open: open,
+                           last: last, rails: rails, remote: false, top: false })
+                if (open && depth < 12)
+                    walk(child, depth + 1, rails.concat([!last]))
+            }
+        }
+        out.push({ path: home, name: root.leafName(home), depth: 0, count: -1, open: true,
+                   last: false, rails: [], remote: false, top: true })
+        walk(home, 1, [])
+        const remotes = root.places.filter(function (place) { return place.remote === true })
+        for (let r = 0; r < remotes.length; ++r)
+            out.push({ path: remotes[r].target || "", name: remotes[r].label + ":", depth: 0, count: -1,
+                       open: false, last: false, rails: [], remote: true, top: true, place: remotes[r] })
+        return out
+    }
     readonly property int sidebarWidth: root.railOpen ? Theme.railOpenWidth : Theme.railWidth
     // In a narrow file pane the Kind and then the Size column give their
     // width to the name.
@@ -998,6 +1093,15 @@ ApplicationWindow {
         onTriggered: root.bridge.startSearch(root.query, root.showHidden)
     }
 
+    // Enter in the search field: open the highlighted result (Ctrl: the
+    // folder it is in), or start searching beneath the folder.
+    function searchEnter(control) {
+        if (root.deepSearch && root.searchHits > 0)
+            root.openResult(root.searchCursor, control)
+        else
+            root.beginDeepSearch()
+    }
+
     function beginDeepSearch() {
         if (root.query.length === 0)
             return
@@ -1011,11 +1115,79 @@ ApplicationWindow {
         root.bridge.cancelSearch()
     }
 
+    // ---- The search results view ----
+    // "This folder and below" (remembered) makes typing search beneath the
+    // folder at once; without it typing filters the folder, and Enter
+    // searches beneath it.
+    property bool searchDeep: root.bridge.uiValue("search.deep", "true") === "true"
+    onSearchDeepChanged: {
+        root.bridge.setUiValue("search.deep", root.searchDeep ? "true" : "false")
+        if (!root.searchDeep && root.deepSearch)
+            root.endDeepSearch()
+        else if (root.searchDeep && root.query.length > 0)
+            root.beginDeepSearch()
+    }
+    property string searchTab: "all"
+    property int searchCursor: 0
+    property real searchStartedAt: 0
+    property real searchSeconds: -1
+    Connections {
+        target: root.bridge
+        function onSearchingChanged() {
+            if (root.bridge.searching) {
+                root.searchStartedAt = Date.now()
+                root.searchSeconds = -1
+            } else if (root.searchStartedAt > 0) {
+                root.searchSeconds = (Date.now() - root.searchStartedAt) / 1000
+            }
+        }
+    }
+    onSearchHitsChanged: if (root.searchCursor >= root.searchHits) root.searchCursor = Math.max(0, root.searchHits - 1)
+
+    // Searches that led somewhere, newest first, kept in files.conf.
+    property var recentSearches: {
+        const kept = root.bridge.uiValue("search.recent", "")
+        return kept.length > 0 ? kept.split("\t") : []
+    }
+    function rememberSearch(needle) {
+        const clean = needle.trim()
+        if (clean.length < 2)
+            return
+        const next = [clean].concat(root.recentSearches.filter(function (old) { return old !== clean })).slice(0, 6)
+        root.recentSearches = next
+        root.bridge.setUiValue("search.recent", next.join("\t"))
+    }
+
+    // Go to a result: into it if it is a folder, else to where it lives
+    // with it selected. `folderOnly` opens the folder that holds it.
+    function openResult(index, folderOnly) {
+        if (index < 0 || index >= root.searchHits)
+            return
+        root.rememberSearch(root.query)
+        const path = root.bridge.searchPath(index)
+        const isFolder = root.bridge.searchIsDirectory(index)
+        const where = root.bridge.searchFolder(index)
+        const name = root.bridge.searchName(index)
+        root.endDeepSearch()
+        root.query = ""
+        if (isFolder) {
+            root.bridge.navigate(path)
+        } else if (folderOnly) {
+            root.bridge.navigate(where)
+            root.bridge.selectNamed(name)
+        } else {
+            root.bridge.openPath(path)
+        }
+    }
+
     onQueryChanged: {
+        root.searchCursor = 0
         if (root.query.length === 0)
             root.endDeepSearch()
         else if (root.deepSearch)
             searchDebounce.restart()
+        else if (root.searchDeep && !root.picking)
+            root.beginDeepSearch()
     }
 
     // Qt has no clipboard API for QML, so the copy goes through a text item
@@ -1446,6 +1618,7 @@ ApplicationWindow {
                                        && !root.recentOpen && !root.settingsOpen
 
     function beginInlineCreate(kind, template) {
+        root.homeBrowsing = true
         if (!root.inlineFits) {
             root.beginCreate(kind, template)
             return
@@ -3431,14 +3604,72 @@ ApplicationWindow {
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
             acceptedButtons: Qt.LeftButton | Qt.RightButton
-            ToolTip.visible: !root.railOpen && navMouse.containsMouse
-            ToolTip.text: navItem.trailing.length > 0 ? navItem.label + " (" + navItem.trailing + ")" : navItem.label
-            ToolTip.delay: 300
             onClicked: function (mouse) {
                 if (mouse.button === Qt.RightButton)
                     navItem.menuRequested()
                 else
                     navItem.activated()
+            }
+        }
+
+        // In the rail, hovering names the place: a panel with a green edge
+        // and an arrow pointing back at the icon.
+        Popup {
+            id: railTip
+            visible: !root.railOpen && navMouse.containsMouse && navItem.label.length > 0
+            x: navItem.width + 12
+            y: (navItem.height - height) / 2
+            padding: 0
+            closePolicy: Popup.NoAutoClose
+            background: Item {}
+            contentItem: Item {
+                implicitWidth: tipRow.implicitWidth + 24
+                implicitHeight: 32
+                Rectangle {
+                    x: -5
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 9
+                    height: 9
+                    rotation: 45
+                    color: Theme.cPanel
+                    border.width: 1
+                    border.color: Theme.cGreen
+                }
+                Rectangle {
+                    anchors.fill: parent
+                    color: Theme.cPanel
+                    border.width: 1
+                    border.color: Theme.cGreen
+                }
+                // Covers the arrow's inner edge so it joins the panel.
+                Rectangle {
+                    x: 1
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 3
+                    height: 10
+                    color: Theme.cPanel
+                }
+                Row {
+                    id: tipRow
+                    anchors.centerIn: parent
+                    spacing: 10
+                    Text {
+                        text: navItem.label
+                        color: Theme.cFg
+                        font.family: Theme.fontHuman
+                        font.pixelSize: 13
+                        font.weight: Font.DemiBold
+                    }
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: text.length > 0
+                        text: navItem.meta.replace("▾", "").trim() || navItem.trailing.toUpperCase()
+                        color: navItem.metaColor
+                        font.family: Theme.fontMono
+                        font.pixelSize: 10
+                        font.letterSpacing: 1
+                    }
+                }
             }
         }
 
@@ -3986,8 +4217,10 @@ ApplicationWindow {
                     root.searchShown = false
                     root.release()
                 }
-                Keys.onReturnPressed: root.beginDeepSearch()
-                Keys.onEnterPressed: root.beginDeepSearch()
+                Keys.onReturnPressed: function (event) { root.searchEnter(event.modifiers & Qt.ControlModifier) }
+                Keys.onEnterPressed: function (event) { root.searchEnter(event.modifiers & Qt.ControlModifier) }
+                Keys.onUpPressed: if (root.deepSearch) root.searchCursor = Math.max(0, root.searchCursor - 1)
+                Keys.onDownPressed: if (root.deepSearch) root.searchCursor = Math.min(root.searchHits - 1, root.searchCursor + 1)
 
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
@@ -4135,6 +4368,21 @@ ApplicationWindow {
             anchors.verticalCenter: parent.verticalCenter
             textFormat: Text.StyledText
             text: {
+                if (root.homeOpen) {
+                    const remotes = root.places.filter(function (place) { return place.remote === true }).length
+                    return ["HOME", root.homeTiles.length + (root.homeTiles.length === 1 ? " PLACE" : " PLACES"),
+                            remotes + (remotes === 1 ? " REMOTE" : " REMOTES")].join("  ·  ")
+                }
+                if (root.deepSearch) {
+                    void root.revision
+                    const found = root.searchHits
+                    const parts = [statusBar.pad(found) + (found === 1 ? " RESULT" : " RESULTS")]
+                    if (root.bridge.searching)
+                        parts.push("SEARCHING")
+                    else if (root.searchSeconds >= 0)
+                        parts.push(root.searchSeconds.toFixed(2) + " S")
+                    return parts.join("  ·  ")
+                }
                 const parts = [statusBar.pad(root.rows.length) + " ITEMS"]
                 if (root.selectedCount > 0)
                     parts.push(statusBar.pad(root.selectedCount) + " SELECTED")
@@ -4262,19 +4510,183 @@ ApplicationWindow {
                             font.weight: Font.DemiBold
                         }
                     }
-                    Item { width: 1; height: root.railOpen ? 26 : 0 }
+                    Item { width: 1; height: root.railOpen ? 20 : 0 }
 
-                    HudHeader {
+                    // PLACES | TREE
+                    Row {
+                        id: sidebarTabs
                         visible: root.railOpen
+                        x: 6
+                        width: parent.width - 6
+                        height: visible ? 32 : 0
+                        Repeater {
+                            model: [["places", "Places"], ["tree", "Tree"]]
+                            delegate: Rectangle {
+                                id: sideTab
+                                required property var modelData
+                                readonly property bool on: root.sidebarTab === sideTab.modelData[0]
+                                width: sidebarTabs.width / 2
+                                height: 32
+                                color: sideTab.on ? Theme.cWash : "transparent"
+                                border.width: 1
+                                border.color: Theme.cLine
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: sideTab.modelData[1].toUpperCase()
+                                    color: sideTab.on || sideTabMouse.containsMouse ? Theme.cGreen : Theme.cMuted
+                                    font.family: Theme.fontMono
+                                    font.pixelSize: 9
+                                    font.bold: sideTab.on
+                                    font.letterSpacing: 3
+                                }
+                                Rectangle {
+                                    anchors.bottom: parent.bottom
+                                    width: parent.width
+                                    height: 2
+                                    color: Theme.cGreen
+                                    visible: sideTab.on
+                                }
+                                MouseArea {
+                                    id: sideTabMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.sidebarTab = sideTab.modelData[0]
+                                }
+                            }
+                        }
+                    }
+                    Item { width: 1; height: root.railOpen ? 22 : 0 }
+
+                    // ---- Tree ----
+                    HudHeader {
+                        visible: root.railOpen && root.sidebarTab === "tree"
+                        x: 6
+                        width: parent.width - 6
+                        title: "Tree"
+                        sub: "~"
+                        titleSize: 12
+                    }
+                    Item { width: 1; height: root.railOpen && root.sidebarTab === "tree" ? 12 : 0 }
+                    Repeater {
+                        model: root.homeTree
+                        delegate: Rectangle {
+                            id: node
+                            required property var modelData
+                            readonly property bool here: root.bridge.currentPath === node.modelData.path
+                                                         && !root.recentOpen && !root.trashOpen && !root.settingsOpen
+                            readonly property real indent: 10 + node.modelData.depth * 16
+                            width: placesColumn.width
+                            height: 30
+                            color: node.here ? Theme.cWash : nodeMouse.containsMouse ? Theme.cDim : "transparent"
+
+                            MouseArea {
+                                id: nodeMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    if (node.modelData.remote) {
+                                        root.openPlace(node.modelData.place)
+                                        return
+                                    }
+                                    root.settingsOpen = false
+                                    root.recentOpen = false
+                                    root.trashOpen = false
+                                    root.bridge.navigate(node.modelData.path)
+                                }
+                            }
+                            DropArea {
+                                anchors.fill: parent
+                                enabled: !node.modelData.remote
+                                onDropped: function (drop) { root.dropInto(drop, node.modelData.path) }
+                            }
+                            // Ancestors' guides that carry on past this row.
+                            Repeater {
+                                model: node.modelData.rails
+                                delegate: Rectangle {
+                                    required property bool modelData
+                                    required property int index
+                                    visible: modelData
+                                    x: 14 + index * 16
+                                    width: 1
+                                    height: node.height
+                                    color: Theme.cLine
+                                }
+                            }
+                            // This row's own guide and elbow.
+                            Rectangle {
+                                visible: node.modelData.depth > 0
+                                x: node.indent - 12
+                                width: 1
+                                height: node.modelData.last ? node.height / 2 : node.height
+                                color: node.here ? Theme.cGreen : Theme.cLine
+                            }
+                            Rectangle {
+                                visible: node.modelData.depth > 0
+                                x: node.indent - 12
+                                y: node.height / 2
+                                width: 8
+                                height: 1
+                                color: node.here ? Theme.cGreen : Theme.cLine
+                            }
+                            Text {
+                                id: nodeGlyph
+                                x: node.indent
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: node.modelData.open ? "▾" : "▸"
+                                color: node.here || node.modelData.top ? Theme.cGreen : Theme.cLine
+                                font.family: Theme.fontMono
+                                font.pixelSize: 9
+                                MouseArea {
+                                    anchors.fill: parent
+                                    anchors.margins: -6
+                                    enabled: !node.modelData.remote && !node.modelData.top
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.toggleTree(node.modelData.path)
+                                }
+                            }
+                            Text {
+                                anchors.left: nodeGlyph.right
+                                anchors.leftMargin: 8
+                                anchors.right: nodeCount.left
+                                anchors.rightMargin: 8
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: node.modelData.name
+                                elide: Text.ElideRight
+                                color: node.modelData.remote ? Theme.tCode
+                                     : node.here || node.modelData.top ? Theme.cFg : Theme.cMuted
+                                font.family: Theme.fontHuman
+                                font.pixelSize: 13
+                                font.weight: node.modelData.top || node.here ? Font.DemiBold : Font.Normal
+                            }
+                            Text {
+                                id: nodeCount
+                                anchors.right: parent.right
+                                anchors.rightMargin: 12
+                                anchors.verticalCenter: parent.verticalCenter
+                                visible: node.modelData.count >= 0 && (node.here || node.modelData.open)
+                                text: root.pad2(node.modelData.count)
+                                color: node.here ? Theme.cGreen : Theme.cMuted
+                                font.family: Theme.fontMono
+                                font.pixelSize: 11
+                            }
+                        }
+                    }
+
+                    // ---- Places ----
+                    HudHeader {
+                        visible: root.railOpen && root.sidebarTab === "places"
                         x: 6
                         width: parent.width - 6
                         title: "Places"
                         titleSize: 12
                     }
-                    Item { width: 1; height: root.railOpen ? 12 : 0 }
+                    Item { width: 1; height: root.railOpen && root.sidebarTab === "places" ? 12 : 0 }
 
                     Repeater {
-                        model: root.places.filter(function (place) { return place.section === "" })
+                        model: root.sidebarTab === "places" || !root.railOpen
+                               ? root.places.filter(function (place) { return place.section === "" }) : []
                         delegate: Column {
                             id: placeBlock
                             required property var modelData
@@ -4340,18 +4752,28 @@ ApplicationWindow {
                         }
                     }
 
-                    Item { width: 1; height: root.railOpen ? 26 : 10 }
+                    Item { width: 1; height: root.railOpen ? (root.sidebarTab === "places" ? 26 : 0) : 10 }
+                    // In the rail, a short rule parts places from locations.
+                    Rectangle {
+                        visible: !root.railOpen
+                        x: (placesColumn.width - width) / 2
+                        width: 22
+                        height: 1
+                        color: Theme.cLine
+                    }
+                    Item { width: 1; height: root.railOpen ? 0 : 10 }
                     HudHeader {
-                        visible: root.railOpen
+                        visible: root.railOpen && root.sidebarTab === "places"
                         x: 6
                         width: parent.width - 6
                         title: "Locations"
                         titleSize: 12
                     }
-                    Item { width: 1; height: root.railOpen ? 12 : 0 }
+                    Item { width: 1; height: root.railOpen && root.sidebarTab === "places" ? 12 : 0 }
 
                     Repeater {
-                        model: root.places.filter(function (place) { return place.section !== "" })
+                        model: root.sidebarTab === "places" || !root.railOpen
+                               ? root.places.filter(function (place) { return place.section !== "" }) : []
                         delegate: NavItem {
                             id: location
                             required property var modelData
@@ -4561,7 +4983,7 @@ ApplicationWindow {
                 // entry never moves the list.
                 HudHeader {
                     id: filesHud
-                    readonly property bool shown: !root.trashOpen && !root.recentOpen && !root.deepSearch
+                    readonly property bool shown: !root.trashOpen && !root.recentOpen && !root.deepSearch && !root.homeOpen
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.top: parent.top
@@ -4587,6 +5009,249 @@ ApplicationWindow {
                     anchors.top: filesHud.bottom
                     anchors.topMargin: filesHud.shown ? 18 : 0
                     height: 0
+                }
+
+                // ---- Home: the overview of the home folder ----
+                Flickable {
+                    id: homeView
+                    anchors.fill: parent
+                    visible: root.homeOpen
+                    contentHeight: homeColumn.implicitHeight + 40
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
+
+                    Column {
+                        id: homeColumn
+                        y: 26
+                        width: homeView.width
+                        spacing: 0
+
+                        Item {
+                            width: parent.width
+                            height: homeTitle.y + homeTitle.height + 30
+                            Text {
+                                text: root.today
+                                color: Theme.cGreen
+                                font.family: Theme.fontMono
+                                font.pixelSize: 10
+                                font.letterSpacing: 3.5
+                            }
+                            Text {
+                                id: homeHeading
+                                y: 14
+                                text: "Home"
+                                color: Theme.cFg
+                                font.family: Theme.fontBrand
+                                font.pixelSize: 52
+                                font.weight: Font.Bold
+                            }
+                            Text {
+                                id: homeTitle
+                                y: homeHeading.y + homeHeading.height + 2
+                                text: "Your files at a glance."
+                                color: Theme.cMuted
+                                font.family: Theme.fontHuman
+                                font.pixelSize: 15
+                            }
+                            Tab {
+                                anchors.right: parent.right
+                                anchors.bottom: homeTitle.bottom
+                                text: "Browse files  →"
+                                textSize: 10
+                                onClicked: root.homeBrowsing = true
+                            }
+                        }
+
+                        HudHeader {
+                            width: parent.width
+                            title: "Recent"
+                            sub: "last opened"
+                            trailing: "SEE ALL"
+                            onTrailingClicked: root.showRecent()
+                        }
+                        Item { width: 1; height: 18 }
+
+                        Text {
+                            visible: root.homeRecents.length === 0
+                            height: visible ? 60 : 0
+                            text: "The desktop has no record of recent files"
+                            color: Theme.cMuted
+                            font.family: Theme.fontHuman
+                            font.pixelSize: 13
+                        }
+                        Row {
+                            id: recentCards
+                            visible: root.homeRecents.length > 0
+                            spacing: 14
+                            Repeater {
+                                model: root.homeRecents
+                                delegate: Rectangle {
+                                    id: recentCard
+                                    required property var modelData
+                                    readonly property string tag: root.tagOf(recentCard.modelData.name, recentCard.modelData.directory)
+                                    readonly property color tone: Theme.typeColor(recentCard.tag)
+                                    width: (homeColumn.width - 3 * 14) / 4
+                                    height: 156
+                                    color: recentMouse.containsMouse ? Theme.cDim : Theme.cPanel
+                                    border.width: 1
+                                    border.color: recentMouse.containsMouse ? Theme.cGreen : Theme.cLine
+                                    Text {
+                                        x: 16
+                                        y: 14
+                                        text: recentCard.tag
+                                        color: recentCard.tone
+                                        font.family: Theme.fontBrand
+                                        font.pixelSize: 26
+                                        font.weight: Font.ExtraBold
+                                    }
+                                    Text {
+                                        x: 16
+                                        y: 68
+                                        width: parent.width - 32
+                                        text: recentCard.modelData.name
+                                        elide: Text.ElideMiddle
+                                        color: Theme.cFg
+                                        font.family: Theme.fontHuman
+                                        font.pixelSize: 14
+                                        font.weight: Font.DemiBold
+                                    }
+                                    Text {
+                                        x: 16
+                                        y: 90
+                                        width: parent.width - 32
+                                        text: (recentCard.modelData.seconds >= 0 ? root.stampText(recentCard.modelData.seconds) + " · " : "")
+                                              + root.leafName(recentCard.modelData.folder)
+                                        elide: Text.ElideRight
+                                        color: Theme.cMuted
+                                        font.family: Theme.fontHuman
+                                        font.pixelSize: 12
+                                    }
+                                    Text {
+                                        x: 16
+                                        anchors.bottom: parent.bottom
+                                        anchors.bottomMargin: 16
+                                        text: "■ " + recentCard.tag + " ■"
+                                        color: recentCard.tone
+                                        font.family: Theme.fontMono
+                                        font.pixelSize: 9
+                                        font.letterSpacing: 2
+                                    }
+                                    MouseArea {
+                                        id: recentMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: recentCard.modelData.directory
+                                                   ? root.bridge.navigate(recentCard.modelData.path)
+                                                   : root.bridge.openPath(recentCard.modelData.path)
+                                    }
+                                }
+                            }
+                        }
+                        Item { width: 1; height: 30 }
+
+                        HudHeader {
+                            width: parent.width
+                            title: "Places"
+                            sub: "pinned"
+                        }
+                        Item { width: 1; height: 18 }
+
+                        Grid {
+                            id: homeTiles
+                            columns: 3
+                            spacing: 12
+                            // The place Back would return to: where you just were.
+                            readonly property string cameFrom: {
+                                void root.revision
+                                return root.bridge.historyCount() > 0 ? root.bridge.historyPath(0) : ""
+                            }
+                            Repeater {
+                                model: root.homeTiles
+                                delegate: Rectangle {
+                                    id: tile
+                                    required property var modelData
+                                    readonly property string path: tile.modelData.target || root.placePath(tile.modelData.folder)
+                                    readonly property bool lit: homeTiles.cameFrom.length > 0
+                                                                && (homeTiles.cameFrom === tile.path
+                                                                    || homeTiles.cameFrom.startsWith(tile.path + "/"))
+                                    width: (homeColumn.width - 2 * 12) / 3
+                                    height: 76
+                                    color: tile.lit ? Theme.cWash : tileMouse.containsMouse ? Theme.cDim : Theme.cPanel
+                                    border.width: 1
+                                    border.color: tile.lit || tileMouse.containsMouse ? Theme.cGreen : Theme.cLine
+                                    Rectangle {
+                                        id: tileIcon
+                                        x: 16
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: 40
+                                        height: 40
+                                        color: "transparent"
+                                        border.width: 1
+                                        border.color: tile.lit ? Theme.cGreen : Theme.cLine
+                                        Icon {
+                                            anchors.centerIn: parent
+                                            name: tile.modelData.icon || "folder"
+                                            size: 16
+                                            tint: tile.lit ? Theme.cGreen : "transparent"
+                                        }
+                                    }
+                                    Column {
+                                        anchors.left: tileIcon.right
+                                        anchors.leftMargin: 16
+                                        anchors.right: tileCount.left
+                                        anchors.rightMargin: 10
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        spacing: 4
+                                        Text {
+                                            width: parent.width
+                                            text: tile.modelData.label
+                                            elide: Text.ElideRight
+                                            color: Theme.cFg
+                                            font.family: Theme.fontHuman
+                                            font.pixelSize: 14
+                                            font.weight: Font.DemiBold
+                                        }
+                                        Text {
+                                            width: parent.width
+                                            text: root.homeRelative(tile.path)
+                                            elide: Text.ElideMiddle
+                                            color: Theme.cMuted
+                                            font.family: Theme.fontMono
+                                            font.pixelSize: 10
+                                            font.letterSpacing: 1
+                                        }
+                                    }
+                                    Text {
+                                        id: tileCount
+                                        anchors.right: parent.right
+                                        anchors.rightMargin: 16
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        readonly property int total: {
+                                            void root.revision
+                                            return root.bridge.entryTotal(tile.path, root.showHidden)
+                                        }
+                                        visible: tileCount.total >= 0
+                                        text: root.pad2(tileCount.total)
+                                        color: tile.lit ? Theme.cGreen : Theme.cMuted
+                                        font.family: Theme.fontMono
+                                        font.pixelSize: 11
+                                    }
+                                    MouseArea {
+                                        id: tileMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: root.openPlace(tile.modelData)
+                                    }
+                                    DropArea {
+                                        anchors.fill: parent
+                                        onDropped: function (drop) { root.dropInto(drop, tile.path) }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // Transfers float over the foot of the pane, above the dock, so
@@ -4616,7 +5281,7 @@ ApplicationWindow {
                     anchors.horizontalCenter: parent.horizontalCenter
                     anchors.bottom: parent.bottom
                     anchors.bottomMargin: 18
-                    visible: root.selectedCount > 0 && !root.trashOpen && !root.recentOpen
+                    visible: root.selectedCount > 0 && !root.trashOpen && !root.recentOpen && !root.homeOpen && !root.deepSearch
                     width: dockRow.implicitWidth + 16
                     height: 46
                     radius: Theme.radius
@@ -4660,7 +5325,7 @@ ApplicationWindow {
                     anchors.right: parent.right
                     anchors.top: selectionBar.bottom
                     height: visible ? 40 : 0
-                    visible: root.view !== "grid" && !root.trashOpen && !root.recentOpen && !root.deepSearch
+                    visible: root.view !== "grid" && !root.trashOpen && !root.recentOpen && !root.deepSearch && !root.homeOpen
                     color: Theme.cPanel
                     border.width: 1
                     border.color: Theme.cLine
@@ -4750,7 +5415,7 @@ ApplicationWindow {
                 Column {
                     anchors.centerIn: parent
                     spacing: 6
-                    visible: !root.deepSearch && !root.recentOpen && !root.trashOpen && !root.bridge.loading && root.rows.length === 0
+                    visible: !root.deepSearch && !root.recentOpen && !root.trashOpen && !root.homeOpen && !root.bridge.loading && root.rows.length === 0
 
                     Icon {
                         anchors.horizontalCenter: parent.horizontalCenter
@@ -5060,16 +5725,98 @@ ApplicationWindow {
                 // Everything beneath this folder whose name matches. Results
                 // appear while the walk is still running, so a match in the
                 // first directory read is on screen in milliseconds.
+                HudHeader {
+                    id: searchHud
+                    anchors.left: parent.left
+                    anchors.right: searchLeave.left
+                    anchors.rightMargin: 12
+                    anchors.top: parent.top
+                    anchors.topMargin: 26
+                    visible: root.deepSearch && !root.recentOpen && !root.trashOpen
+                    title: "Search"
+                    sub: {
+                        void root.revision
+                        const found = root.searchHits
+                        return "“" + root.query + "”  ·  " + found + (found === 1 ? " result" : " results")
+                               + " in " + root.homeRelative(root.bridge.currentPath)
+                    }
+                }
+                Row {
+                    id: searchLeave
+                    anchors.right: parent.right
+                    anchors.verticalCenter: searchHud.verticalCenter
+                    visible: searchHud.visible
+                    spacing: 8
+                    Rectangle {
+                        width: escText.implicitWidth + 14
+                        height: 20
+                        color: Theme.cDim
+                        border.width: 1
+                        border.color: Theme.cLine
+                        Text {
+                            id: escText
+                            anchors.centerIn: parent
+                            text: "ESC"
+                            color: Theme.cFg
+                            font.family: Theme.fontMono
+                            font.pixelSize: 9
+                            font.bold: true
+                            font.letterSpacing: 1
+                        }
+                    }
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "TO LEAVE"
+                        color: Theme.cMuted
+                        font.family: Theme.fontMono
+                        font.pixelSize: 9
+                        font.letterSpacing: 2
+                    }
+                }
+                // ALL · NAMES. Only names are searched, so there is no
+                // CONTENTS tab until there is content search.
+                Item {
+                    id: searchTabs
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: searchHud.bottom
+                    anchors.topMargin: 22
+                    height: 38
+                    visible: searchHud.visible
+                    Rectangle {
+                        anchors.bottom: parent.bottom
+                        width: parent.width
+                        height: 1
+                        color: Theme.cDead
+                    }
+                    Row {
+                        height: parent.height
+                        spacing: 18
+                        Repeater {
+                            model: [["all", "All"], ["names", "Names"]]
+                            delegate: Tab {
+                                required property var modelData
+                                height: searchTabs.height
+                                text: modelData[1] + "  " + root.pad2(root.searchHits)
+                                active: root.searchTab === modelData[0]
+                                onClicked: root.searchTab = modelData[0]
+                            }
+                        }
+                    }
+                }
+
                 ListView {
                     id: resultsBrowser
                     anchors.left: parent.left
                     anchors.right: parent.right
-                    anchors.top: selectionBar.bottom
-                    anchors.bottom: resultsFoot.top
-                    anchors.margins: 12
+                    anchors.top: searchTabs.bottom
+                    anchors.topMargin: 22
+                    height: Math.min(contentHeight, parent.height - y - resultsFoot.height - 10)
                     visible: root.deepSearch && !root.recentOpen && !root.trashOpen
                     clip: true
                     model: root.searchHits
+                    currentIndex: root.searchCursor
+                    onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
                     boundsBehavior: Flickable.StopAtBounds
                     cacheBuffer: 800
 
@@ -5088,56 +5835,88 @@ ApplicationWindow {
                             void root.revision
                             return root.bridge.searchIsDirectory(resultRow.index)
                         }
+                        readonly property bool current: root.searchCursor === resultRow.index
+                        // Where in the name the query sits, for the highlight.
+                        readonly property int at: resultRow.name.toLowerCase().indexOf(root.query.toLowerCase())
 
                         width: ListView.view.width
-                        height: Theme.rowHeight
-                        color: "transparent"
+                        height: 50
+                        color: resultRow.current ? Theme.cWash : resultMouse.containsMouse ? Theme.cDim : Theme.cPanel
+                        Rectangle { width: parent.width; height: 1; color: Theme.cDead; visible: resultRow.index > 0 }
+                        Rectangle { width: 2; height: parent.height; color: Theme.cGreen; visible: resultRow.current }
 
-                        Rectangle {
-                            anchors.fill: parent
-                            anchors.topMargin: 4
-                            anchors.bottomMargin: 4
-                            radius: Theme.radius
-                            color: resultMouse.containsMouse ? Theme.surfaceHigh : Theme.surface
-                        }
-
-                        FileTile {
-                            id: resultGlyph
-                            anchors.left: parent.left
-                            anchors.leftMargin: 18
+                        TypeTag {
+                            x: 16
                             anchors.verticalCenter: parent.verticalCenter
-                            width: 30
-                            height: width
-                            name: resultRow.name
-                            folder: resultRow.folder
+                            kind: root.tagOf(resultRow.name, resultRow.folder)
                         }
-
-                        Text {
+                        Row {
                             id: resultName
-                            anchors.left: resultGlyph.right
-                            anchors.leftMargin: 16
-                            anchors.right: parent.right
-                            anchors.rightMargin: 20
-                            anchors.bottom: parent.verticalCenter
-                            text: resultRow.name
-                            elide: Text.ElideMiddle
-                            color: Theme.ink
-                            font.family: Theme.family
-                            font.pixelSize: Theme.text
-                            font.weight: resultRow.folder ? Font.Medium : Font.Normal
+                            x: 62
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 0
+                            Text {
+                                text: resultRow.at >= 0 ? resultRow.name.substring(0, resultRow.at) : resultRow.name
+                                color: Theme.cFg
+                                font.family: Theme.fontHuman
+                                font.pixelSize: 14
+                                font.weight: Font.DemiBold
+                            }
+                            Rectangle {
+                                visible: resultRow.at >= 0
+                                width: matched.implicitWidth + 2
+                                height: matched.implicitHeight
+                                color: Qt.rgba(Theme.cGreen.r, Theme.cGreen.g, Theme.cGreen.b, 0.22)
+                                Text {
+                                    id: matched
+                                    anchors.centerIn: parent
+                                    text: resultRow.at >= 0 ? resultRow.name.substr(resultRow.at, root.query.length) : ""
+                                    color: Theme.cGreen
+                                    font.family: Theme.fontHuman
+                                    font.pixelSize: 14
+                                    font.weight: Font.DemiBold
+                                }
+                            }
+                            Text {
+                                visible: resultRow.at >= 0
+                                text: resultRow.at >= 0 ? resultRow.name.substring(resultRow.at + root.query.length) : ""
+                                color: Theme.cFg
+                                font.family: Theme.fontHuman
+                                font.pixelSize: 14
+                                font.weight: Font.DemiBold
+                            }
                         }
-
                         Text {
-                            anchors.left: resultName.left
-                            anchors.right: parent.right
-                            anchors.rightMargin: 20
-                            anchors.top: parent.verticalCenter
-                            anchors.topMargin: 1
-                            text: resultRow.where
+                            anchors.left: resultName.right
+                            anchors.leftMargin: 12
+                            anchors.right: resultChip.left
+                            anchors.rightMargin: 12
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: root.homeRelative(resultRow.where)
                             elide: Text.ElideLeft
-                            color: Theme.inkDim
-                            font.family: Theme.mono
-                            font.pixelSize: Theme.textSmall
+                            color: Theme.cMuted
+                            font.family: Theme.fontMono
+                            font.pixelSize: 11
+                        }
+                        Rectangle {
+                            id: resultChip
+                            anchors.right: parent.right
+                            anchors.rightMargin: 16
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: chipText.implicitWidth + 18
+                            height: 20
+                            color: "transparent"
+                            border.width: 1
+                            border.color: Theme.cLine
+                            Text {
+                                id: chipText
+                                anchors.centerIn: parent
+                                text: "NAME"
+                                color: Theme.cMuted
+                                font.family: Theme.fontMono
+                                font.pixelSize: 9
+                                font.letterSpacing: 2
+                            }
                         }
 
                         MouseArea {
@@ -5147,13 +5926,7 @@ ApplicationWindow {
                             cursorShape: Qt.PointingHandCursor
                             // One click goes to where the result lives, which is
                             // what a result is usually being looked for.
-                            onClicked: {
-                                root.endDeepSearch()
-                                root.query = ""
-                                root.bridge.navigate(resultRow.folder
-                                                       ? root.bridge.searchPath(resultRow.index)
-                                                       : resultRow.where)
-                            }
+                            onClicked: root.openResult(resultRow.index, true)
                             onDoubleClicked: {
                                 if (!resultRow.folder)
                                     root.bridge.openPath(root.bridge.searchPath(resultRow.index))
@@ -5161,44 +5934,46 @@ ApplicationWindow {
                         }
                     }
                 }
-
-                // What the walk has found so far, and whether it is still going.
+                // The table's edge, around however many results there are.
                 Rectangle {
+                    z: 1
+                    anchors.fill: resultsBrowser
+                    anchors.margins: -1
+                    visible: resultsBrowser.visible && root.searchHits > 0
+                    color: "transparent"
+                    border.width: 1
+                    border.color: Theme.cLine
+                }
+
+                // How to move through the results, what the walk has found so
+                // far, and whether it is still going.
+                Item {
                     id: resultsFoot
                     anchors.left: parent.left
                     anchors.right: parent.right
-                    anchors.bottom: parent.bottom
-                    height: root.deepSearch ? 30 : 0
+                    anchors.top: resultsBrowser.bottom
+                    anchors.topMargin: 18
+                    height: root.deepSearch ? 20 : 0
                     visible: root.deepSearch
-                    color: "transparent"
 
                     Text {
                         anchors.left: parent.left
-                        anchors.leftMargin: 14
                         anchors.verticalCenter: parent.verticalCenter
                         text: {
                             void root.revision
                             const found = root.searchHits
-                            const capped = root.bridge.searchTruncated()
-                            if (root.bridge.searching)
-                                return "Searching…  " + found + " found"
+                            if (root.bridge.searching && found === 0)
+                                return "SEARCHING…"
                             if (found === 0)
-                                return "Nothing beneath this folder matches “" + root.query + "”"
-                            return found + (capped ? "+ matches (showing the first " + found + ")" : found === 1 ? " match" : " matches")
+                                return "NOTHING BENEATH THIS FOLDER MATCHES “" + root.query.toUpperCase() + "”"
+                            const keys = "↑↓ MOVE  ·  ↵ OPEN  ·  CTRL ↵ OPEN FOLDER"
+                            return root.bridge.searchTruncated()
+                                   ? keys + "  ·  SHOWING FIRST " + found.toLocaleString(Qt.locale("en_US"), "f", 0) : keys
                         }
-                        color: root.inkFaint
-                        font.family: root.sansFamily
-                        font.pixelSize: 12
-                    }
-
-                    Text {
-                        anchors.right: parent.right
-                        anchors.rightMargin: 14
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: "Esc to leave"
-                        color: root.inkGhost
-                        font.family: root.sansFamily
-                        font.pixelSize: 11
+                        color: Theme.cMuted
+                        font.family: Theme.fontMono
+                        font.pixelSize: 10
+                        font.letterSpacing: 2
                     }
                 }
 
@@ -5235,7 +6010,7 @@ ApplicationWindow {
                     anchors.leftMargin: 0
                     anchors.rightMargin: 0
                     anchors.bottomMargin: 8
-                    visible: !root.deepSearch && !root.recentOpen && !root.trashOpen && root.view !== "grid"
+                    visible: !root.deepSearch && !root.recentOpen && !root.trashOpen && !root.homeOpen && root.view !== "grid"
                              && (root.rows.length > 0 || root.inlineKind !== "")
                     clip: true
                     model: root.rows
@@ -5529,7 +6304,7 @@ ApplicationWindow {
                     anchors.top: selectionBar.bottom
                     anchors.bottom: parent.bottom
                     anchors.margins: 0
-                    visible: !root.deepSearch && !root.recentOpen && !root.trashOpen && root.view === "grid" && root.rows.length > 0
+                    visible: !root.deepSearch && !root.recentOpen && !root.trashOpen && !root.homeOpen && root.view === "grid" && root.rows.length > 0
                     clip: true
                     model: root.rows
                     cellWidth: Math.floor(width / Math.max(2, Math.floor(width / 200)))
@@ -6119,10 +6894,374 @@ ApplicationWindow {
                     width: recordView.width - 44
                     spacing: 26
 
+                    // ---- Search: where to look, and searches that led somewhere ----
+                    Column {
+                        visible: root.asideMode === "search"
+                        width: parent.width
+                        spacing: 16
+
+                        HudHeader { width: parent.width; title: "Scope" }
+                        Item {
+                            width: parent.width
+                            height: scopeColumn.implicitHeight + 12
+                            ChamferPanel { anchors.fill: parent; accentEdge: false }
+                            Column {
+                                id: scopeColumn
+                                x: 16
+                                y: 6
+                                width: parent.width - 32
+                                Repeater {
+                                    model: [
+                                        { label: "This folder and below", sub: root.homeRelative(root.bridge.currentPath).toUpperCase(),
+                                          on: root.searchDeep, live: true, key: "deep" },
+                                        { label: "Include hidden files", sub: "DOTFILES", on: root.showHidden, live: true, key: "hidden" },
+                                        { label: "Search remotes", sub: "NOT YET · SLOWER", on: false, live: false, key: "remotes" }
+                                    ]
+                                    delegate: Item {
+                                        id: scopeRow
+                                        required property var modelData
+                                        required property int index
+                                        width: scopeColumn.width
+                                        height: 52
+                                        opacity: scopeRow.modelData.live ? 1 : 0.45
+                                        Rectangle {
+                                            visible: scopeRow.index > 0
+                                            width: parent.width
+                                            height: 1
+                                            color: Theme.cDead
+                                        }
+                                        Rectangle {
+                                            id: scopeBox
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            width: 18
+                                            height: 18
+                                            color: scopeRow.modelData.on ? Theme.cGreen : "transparent"
+                                            border.width: 1
+                                            border.color: scopeRow.modelData.on ? Theme.cGreen : Theme.cLine
+                                            Text {
+                                                anchors.centerIn: parent
+                                                visible: scopeRow.modelData.on
+                                                text: "✓"
+                                                color: Theme.cBase
+                                                font.family: Theme.fontMono
+                                                font.pixelSize: 11
+                                                font.bold: true
+                                            }
+                                        }
+                                        Column {
+                                            anchors.left: scopeBox.right
+                                            anchors.leftMargin: 14
+                                            anchors.right: parent.right
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            spacing: 3
+                                            Text {
+                                                width: parent.width
+                                                text: scopeRow.modelData.label
+                                                elide: Text.ElideRight
+                                                color: Theme.cFg
+                                                font.family: Theme.fontHuman
+                                                font.pixelSize: 13
+                                                font.weight: Font.DemiBold
+                                            }
+                                            Text {
+                                                width: parent.width
+                                                text: scopeRow.modelData.sub
+                                                elide: Text.ElideMiddle
+                                                color: Theme.cMuted
+                                                font.family: Theme.fontMono
+                                                font.pixelSize: 9
+                                                font.letterSpacing: 1
+                                            }
+                                        }
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            enabled: scopeRow.modelData.live
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                if (scopeRow.modelData.key === "deep")
+                                                    root.searchDeep = !root.searchDeep
+                                                else if (scopeRow.modelData.key === "hidden") {
+                                                    root.showHidden = !root.showHidden
+                                                    if (root.deepSearch)
+                                                        searchDebounce.restart()
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Item { width: 1; height: 4 }
+                        HudHeader { width: parent.width; title: "Recent"; sub: "searches"; visible: root.recentSearches.length > 0 }
+                        Flow {
+                            width: parent.width
+                            spacing: 8
+                            Repeater {
+                                model: root.recentSearches
+                                delegate: Rectangle {
+                                    id: chip
+                                    required property string modelData
+                                    width: chipLabel.implicitWidth + 30
+                                    height: 32
+                                    color: chipMouse.containsMouse ? Theme.cDim : Theme.cPanel
+                                    border.width: 1
+                                    border.color: chipMouse.containsMouse ? Theme.cGreen : Theme.cLine
+                                    Text {
+                                        id: chipLabel
+                                        anchors.centerIn: parent
+                                        text: chip.modelData
+                                        color: Theme.cFg
+                                        font.family: Theme.fontHuman
+                                        font.pixelSize: 13
+                                        font.weight: Font.Bold
+                                    }
+                                    MouseArea {
+                                        id: chipMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            root.query = chip.modelData
+                                            root.beginDeepSearch()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ---- Home: the disk at a glance, remotes, transfers ----
+                    Column {
+                        visible: root.asideMode === "home"
+                        width: parent.width
+                        spacing: 16
+
+                        HudHeader { width: parent.width; title: "Storage"; sub: "/"; visible: root.storageKnown }
+                        Item {
+                            visible: root.storageKnown
+                            width: parent.width
+                            height: visible ? 146 : 0
+                            readonly property real total: {
+                                void root.revision
+                                return root.bridge.storageTotal()
+                            }
+                            readonly property real used: {
+                                void root.revision
+                                return root.bridge.storageUsed()
+                            }
+                            id: homeDisk
+                            ChamferPanel { anchors.fill: parent }
+                            Row {
+                                x: 18
+                                y: 16
+                                spacing: 6
+                                Text {
+                                    id: homeShare
+                                    text: Math.round(root.storageShare * 100)
+                                    color: Theme.cFg
+                                    font.family: Theme.fontBrand
+                                    font.pixelSize: 40
+                                    font.weight: Font.ExtraBold
+                                }
+                                Text {
+                                    anchors.baseline: homeShare.baseline
+                                    text: "%"
+                                    color: Theme.cGreen
+                                    font.family: Theme.fontBrand
+                                    font.pixelSize: 18
+                                    font.weight: Font.DemiBold
+                                }
+                            }
+                            Text {
+                                anchors.right: parent.right
+                                anchors.rightMargin: 18
+                                y: 42
+                                text: "USED"
+                                color: Theme.cMuted
+                                font.family: Theme.fontMono
+                                font.pixelSize: 9
+                                font.letterSpacing: 3
+                            }
+                            SegmentBar {
+                                x: 21
+                                y: 74
+                                width: parent.width - 42
+                                height: 9
+                                count: 28
+                                share: root.storageShare
+                            }
+                            Row {
+                                x: 18
+                                y: 98
+                                width: parent.width - 36
+                                Repeater {
+                                    model: [
+                                        ["Used", homeDisk.used],
+                                        ["Free", Math.max(0, homeDisk.total - homeDisk.used)],
+                                        ["Total", homeDisk.total]
+                                    ]
+                                    delegate: Column {
+                                        required property var modelData
+                                        width: parent.width / 3
+                                        spacing: 6
+                                        Text {
+                                            text: modelData[0].toUpperCase()
+                                            color: Theme.cMuted
+                                            font.family: Theme.fontMono
+                                            font.pixelSize: 8
+                                            font.letterSpacing: 3
+                                        }
+                                        Text {
+                                            text: root.readableSize(modelData[1])
+                                            color: Theme.cFg
+                                            font.family: Theme.fontMono
+                                            font.pixelSize: 12
+                                            font.letterSpacing: 1
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Item { width: 1; height: 4 }
+                        HudHeader { width: parent.width; title: "Remotes"; sub: "rclone" }
+                        Repeater {
+                            model: root.places.filter(function (place) { return place.remote === true })
+                            delegate: Rectangle {
+                                id: remoteRow
+                                required property var modelData
+                                width: parent.width
+                                height: 64
+                                color: remoteMouse.containsMouse ? Theme.cDim : Theme.cPanel
+                                border.width: 1
+                                border.color: remoteMouse.containsMouse ? Theme.cGreen : Theme.cLine
+                                Icon {
+                                    x: 18
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    name: "globe"
+                                    size: 16
+                                }
+                                Column {
+                                    x: 46
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: parent.width - 46 - 90
+                                    spacing: 4
+                                    Text {
+                                        width: parent.width
+                                        text: remoteRow.modelData.label
+                                        elide: Text.ElideRight
+                                        color: Theme.cFg
+                                        font.family: Theme.fontHuman
+                                        font.pixelSize: 15
+                                        font.weight: Font.DemiBold
+                                    }
+                                    Text {
+                                        width: parent.width
+                                        text: remoteRow.modelData.target
+                                        elide: Text.ElideRight
+                                        color: Theme.cMuted
+                                        font.family: Theme.fontMono
+                                        font.pixelSize: 10
+                                    }
+                                }
+                                Text {
+                                    anchors.right: parent.right
+                                    anchors.rightMargin: 16
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "■ LINKED"
+                                    color: Theme.cGreen
+                                    font.family: Theme.fontMono
+                                    font.pixelSize: 9
+                                    font.letterSpacing: 2
+                                }
+                                MouseArea {
+                                    id: remoteMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.openPlace(remoteRow.modelData)
+                                }
+                            }
+                        }
+                        Rectangle {
+                            width: parent.width
+                            height: 40
+                            color: addRemoteMouse.containsMouse ? Theme.cDim : "transparent"
+                            border.width: 1
+                            border.color: addRemoteMouse.containsMouse ? Theme.cGreen : Theme.cLine
+                            Text {
+                                x: 16
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: "+ Add remote"
+                                color: Theme.cGreen
+                                font.family: Theme.fontHuman
+                                font.pixelSize: 13
+                                font.weight: Font.Bold
+                            }
+                            MouseArea {
+                                id: addRemoteMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.openPlace({ add: true })
+                            }
+                        }
+
+                        Item { width: 1; height: 4 }
+                        HudHeader {
+                            width: parent.width
+                            title: "Transfers"
+                            sub: root.transfers.length > 0 ? root.transfers.length + " live" : ""
+                        }
+                        // Nothing running: a dashed, empty slot.
+                        Item {
+                            width: parent.width
+                            height: 72
+                            Shape {
+                                anchors.fill: parent
+                                ShapePath {
+                                    strokeColor: Theme.cLine
+                                    strokeWidth: 1
+                                    strokeStyle: ShapePath.DashLine
+                                    dashPattern: [3, 3]
+                                    fillColor: "transparent"
+                                    startX: 0.5; startY: 0.5
+                                    PathLine { x: homeIdle.width - 0.5; y: 0.5 }
+                                    PathLine { x: homeIdle.width - 0.5; y: homeIdle.height - 0.5 }
+                                    PathLine { x: 0.5; y: homeIdle.height - 0.5 }
+                                    PathLine { x: 0.5; y: 0.5 }
+                                }
+                            }
+                            id: homeIdle
+                            Column {
+                                anchors.centerIn: parent
+                                spacing: 8
+                                Text {
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                    text: root.transfers.length > 0 ? (root.transfersPaused ? "PAUSED" : "RUNNING") : "IDLE"
+                                    color: root.transfers.length > 0 ? Theme.cGreen : Theme.cMuted
+                                    font.family: Theme.fontMono
+                                    font.pixelSize: 9
+                                    font.letterSpacing: 3
+                                }
+                                Text {
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                    text: root.transfers.length > 0
+                                          ? root.transfers.length + (root.transfers.length === 1 ? " copy" : " copies") + " in the card below."
+                                          : "No copies running right now."
+                                    color: Theme.cMuted
+                                    font.family: Theme.fontHuman
+                                    font.pixelSize: 13
+                                }
+                            }
+                        }
+                    }
+
                     // ---- The record: one held entry ----
                     Item {
                         id: recordCard
-                        visible: inspector.single
+                        visible: inspector.single && root.asideMode === "files"
                         width: parent.width
                         height: visible ? recordBody.implicitHeight + 36 : 0
 
@@ -6367,7 +7506,7 @@ ApplicationWindow {
 
                     // ---- Several held ----
                     Item {
-                        visible: root.selectedCount > 1
+                        visible: root.selectedCount > 1 && root.asideMode === "files"
                         width: parent.width
                         height: visible ? 150 : 0
                         ChamferPanel { anchors.fill: parent }
@@ -6399,7 +7538,7 @@ ApplicationWindow {
                         id: storagePanel
                         width: parent.width
                         spacing: 16
-                        visible: storagePanel.known && storagePanel.total > 0
+                        visible: storagePanel.known && storagePanel.total > 0 && root.asideMode === "files"
 
                         readonly property bool known: {
                             void root.revision
@@ -6433,7 +7572,7 @@ ApplicationWindow {
                     Column {
                         width: parent.width
                         spacing: 16
-                        visible: !root.trashOpen && !root.recentOpen
+                        visible: !root.trashOpen && !root.recentOpen && root.asideMode === "files"
                         HudHeader { width: parent.width; title: "This folder"; sub: "composition" }
                         CompositionCard {
                             width: parent.width
@@ -6445,7 +7584,7 @@ ApplicationWindow {
                     // ---- Move to trash: armed, then a second click within 3s ----
                     Item {
                         id: trashLink
-                        visible: inspector.single && !root.trashOpen
+                        visible: inspector.single && !root.trashOpen && root.asideMode === "files"
                         width: parent.width
                         height: visible ? 40 : 0
                         property bool armed: false
