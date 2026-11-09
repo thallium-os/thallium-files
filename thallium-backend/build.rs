@@ -30,6 +30,13 @@ fn main() {
 				"qml/SplitPane.qml",
 				"qml/ColorField.qml",
 				"qml/Donut.qml",
+				"qml/ChamferPanel.qml",
+				"qml/CornerBrackets.qml",
+				"qml/HudHeader.qml",
+				"qml/SegmentBar.qml",
+				"qml/TypeTag.qml",
+				"qml/Kbd.qml",
+				"qml/Tab.qml",
 			]),
 	)
 	.qrc_resources(resources)

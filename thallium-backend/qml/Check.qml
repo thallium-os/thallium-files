@@ -18,7 +18,7 @@ Item {
         Rectangle {
             width: 18
             height: 18
-            radius: 4
+            radius: 0
             color: check.checked ? Theme.inkSoft : (mouse.containsMouse ? Theme.surfaceHigh : Theme.surface)
             border.width: 1
             border.color: check.checked ? Theme.inkSoft : Theme.outline

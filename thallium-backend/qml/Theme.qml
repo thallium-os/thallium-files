@@ -179,8 +179,69 @@ QtObject {
             chart: theme.chartHues(p, accentKey)
         }
     }
+    // ---- Thallium 81 ----
+    // The OS palette the Store draws in (thallium-store/ui/shell.qml). It is
+    // what Files looks like on the default Deep Space variant; the other
+    // variants and custom themes keep deriving their shades as before.
+    readonly property bool t81: !theme.custom && theme.active.id === "thallium-deep-space"
+    function t81Colors() {
+        return {
+            dark: true,
+            accent: "#a7c080", folder: "#3a464c", highlight: "#a7c080",
+            danger: "#e67e80",
+            canvas: "#060607", inset: "#060607",
+            surface: "#15191b", surfaceHigh: "#1e2326",
+            control: "#1e2326", controlHigh: "#3a464c",
+            line: "#232a2e", outlineSoft: "#3a464c", cross: "#3a464c",
+            ink: "#d3c6aa", inkSoft: "#d3c6aa",
+            inkDim: "#8f9a91", inkFaint: "#5f6b70",
+            tile: "#3a464c", tileInk: "#d3c6aa",
+            bar: "#101315", wash: "#2b3a2e", warn: "#dbbc7f",
+            chart: ["#a7c080", "#83c092", "#dbbc7f", "#d699b6", "#8f9a91"]
+        }
+    }
     readonly property var colors: theme.custom ? theme.derive(theme.base)
+                                               : theme.t81 ? theme.t81Colors()
                                                : theme.fromPalette(theme.pal, theme.accentKey, theme.active.dark)
+
+    // The Thallium 81 token names (tokens.qml), read from whichever palette
+    // is active so a custom theme still repaints every surface.
+    readonly property color cBase: theme.colors.canvas
+    readonly property color cBar: theme.colors.bar || theme.mix(theme.colors.canvas, theme.colors.surface, 0.6)
+    readonly property color cPanel: theme.colors.surface
+    readonly property color cDim: theme.colors.control
+    readonly property color cLine: theme.colors.outlineSoft
+    readonly property color cDead: theme.colors.line
+    readonly property color cWash: theme.colors.wash || theme.wash(theme.colors.accent, 0.18)
+    readonly property color cFg: theme.colors.ink
+    readonly property color cMuted: theme.colors.inkDim
+    readonly property color cDisabled: theme.colors.inkFaint
+    readonly property color cGreen: theme.colors.accent
+    readonly property color cRed: theme.colors.danger
+    readonly property color cWarn: theme.colors.warn || "#dbbc7f"
+    // File types: tags and the composition charts.
+    readonly property color tDir: theme.colors.accent
+    readonly property color tCode: "#83c092"
+    readonly property color tDoc: "#dbbc7f"
+    readonly property color tText: "#d699b6"
+    function typeColor(tag) {
+        return tag === "DIR" ? theme.tDir : tag === "CODE" ? theme.tCode
+             : tag === "DOC" ? theme.tDoc : theme.tText
+    }
+    readonly property string fontBrand: "Unbounded"
+    readonly property string fontHuman: "Albert Sans"
+    readonly property string fontMono: "JetBrains Mono"
+    readonly property int chamfer: 14
+    readonly property real shear: -0.42
+    readonly property int tickW: 2
+    readonly property int headerHeight: 64
+    readonly property int statusHeight: 32
+    readonly property int sidebarWidth: 268
+    readonly property int recordWidth: 340
+    readonly property int buttonHeight: 40
+    readonly property int tFast: 120
+    readonly property int tMed: 220
+    readonly property int tSlow: 360
     readonly property bool dark: theme.colors.dark
 
     // ---- Accent: active, focused and held things ----
@@ -193,7 +254,7 @@ QtObject {
     readonly property color canvas: theme.colors.canvas
     readonly property color surface: theme.colors.surface
     readonly property color surfaceHigh: theme.colors.surfaceHigh
-    readonly property color selected: theme.accentWash
+    readonly property color selected: theme.t81 ? theme.cWash : theme.accentWash
     readonly property color control: theme.colors.control
     readonly property color controlHigh: theme.colors.controlHigh
     readonly property color inset: theme.colors.inset
@@ -219,12 +280,13 @@ QtObject {
     readonly property var chart: theme.colors.chart
 
     // ---- Shape ----
-    readonly property int radius: 8
-    readonly property int radiusSmall: 6
+    // Thallium 81 draws no rounded corners anywhere.
+    readonly property int radius: 0
+    readonly property int radiusSmall: 0
     readonly property int gap: 12
-    readonly property int railWidth: 62
-    readonly property int railOpenWidth: 212
-    readonly property int previewWidth: 320
+    readonly property int railWidth: 64
+    readonly property int railOpenWidth: 268
+    readonly property int previewWidth: 330
     readonly property int controlHeight: 34
     readonly property int rowHeight: 56
     readonly property int rowHeightDense: 34

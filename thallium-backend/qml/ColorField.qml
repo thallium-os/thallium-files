@@ -113,12 +113,12 @@ Item {
                 height: 140
                 Rectangle {
                     anchors.fill: parent
-                    radius: 4
+                    radius: 0
                     color: Qt.hsva(field.hue, 1, 1, 1)
                 }
                 Rectangle {
                     anchors.fill: parent
-                    radius: 4
+                    radius: 0
                     gradient: Gradient {
                         orientation: Gradient.Horizontal
                         GradientStop { position: 0; color: "#ffffffff" }
@@ -127,7 +127,7 @@ Item {
                 }
                 Rectangle {
                     anchors.fill: parent
-                    radius: 4
+                    radius: 0
                     gradient: Gradient {
                         GradientStop { position: 0; color: "#00000000" }
                         GradientStop { position: 1; color: "#ff000000" }
@@ -138,7 +138,7 @@ Item {
                     y: (1 - field.brightness) * parent.height - height / 2
                     width: 12
                     height: 12
-                    radius: 6
+                    radius: 0
                     color: "transparent"
                     border.width: 2
                     border.color: field.brightness > 0.5 ? "#000000" : "#ffffff"
@@ -161,7 +161,7 @@ Item {
                 height: 140
                 Rectangle {
                     anchors.fill: parent
-                    radius: 4
+                    radius: 0
                     gradient: Gradient {
                         GradientStop { position: 0.000; color: "#ff0000" }
                         GradientStop { position: 0.167; color: "#ffff00" }
@@ -177,7 +177,7 @@ Item {
                     y: field.hue * parent.height - height / 2
                     width: parent.width + 4
                     height: 4
-                    radius: 2
+                    radius: 0
                     color: "transparent"
                     border.width: 1
                     border.color: Theme.ink

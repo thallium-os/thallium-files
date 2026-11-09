@@ -439,6 +439,29 @@ pub mod ffi {
 		#[rust_name = "template_path"]
 		fn templatePath(&self, row: i32) -> QString;
 
+		/// The login name and the machine's name, for the sidebar's
+		/// `user@host` line. Read at run time, never stored.
+		#[qinvokable]
+		#[rust_name = "user_name"]
+		fn userName(&self) -> QString;
+		#[qinvokable]
+		#[rust_name = "host_name"]
+		fn hostName(&self) -> QString;
+		/// The folders directly inside a local folder, one `name\tcount`
+		/// line each, sorted by name; `count` is how many entries each holds.
+		#[qinvokable]
+		#[rust_name = "subfolders"]
+		fn subfolders(&self, path: &QString, include_hidden: bool) -> QString;
+		/// The first `lines` lines of a local text file, for the record card's
+		/// preview. Empty for anything that is not readable UTF-8 text.
+		#[qinvokable]
+		#[rust_name = "text_head"]
+		fn textHead(&self, path: &QString, lines: i32) -> QString;
+		/// How many entries a local folder holds; -1 when it cannot be read.
+		#[qinvokable]
+		#[rust_name = "entry_total"]
+		fn entryTotal(&self, path: &QString, include_hidden: bool) -> i32;
+
 		#[qinvokable]
 		#[rust_name = "remotes_configurable"]
 		fn remotesConfigurable(&self) -> bool;
@@ -1673,6 +1696,28 @@ impl ffi::BackendBridge {
 		template(row).map_or_else(QString::default, |path| path.to_string_lossy().as_ref().into())
 	}
 
+	pub fn user_name(&self) -> QString { login_name().as_str().into() }
+
+	pub fn host_name(&self) -> QString { machine_name().as_str().into() }
+
+	pub fn text_head(&self, path: &QString, lines: i32) -> QString {
+		let wanted = usize::try_from(lines).unwrap_or(0);
+		head_lines(std::path::Path::new(&path.to_string()), wanted).as_str().into()
+	}
+
+	pub fn entry_total(&self, path: &QString, include_hidden: bool) -> i32 {
+		std::fs::read_dir(path.to_string()).map_or(-1, |entries| {
+			count(
+				entries.filter_map(Result::ok).filter(|e| visible(&e.file_name(), include_hidden)).count(),
+			)
+		})
+	}
+
+	pub fn subfolders(&self, path: &QString, include_hidden: bool) -> QString {
+		let listing = subfolder_listing(std::path::Path::new(&path.to_string()), include_hidden);
+		listing.as_str().into()
+	}
+
 	pub fn delete_selected(self: Pin<&mut Self>) {
 		let targets = self.selected_locations();
 		self.submit(Command::Delete { targets });
@@ -2347,6 +2392,83 @@ fn clipboard_sources() -> Option<(bool, Vec<Location>)> {
 	(!sources.is_empty()).then_some((cut, sources))
 }
 
+/// `$USER`, else the password database's name for this uid.
+fn login_name() -> String {
+	if let Some(name) = std::env::var_os("USER").filter(|name| !name.is_empty()) {
+		return name.to_string_lossy().into_owned();
+	}
+	// SAFETY: getpwuid returns null or a pointer into static storage that
+	// stays valid until the next getpw* call; the name is copied out at once.
+	unsafe {
+		let entry = libc::getpwuid(libc::getuid());
+		if entry.is_null() || (*entry).pw_name.is_null() {
+			return String::new();
+		}
+		std::ffi::CStr::from_ptr((*entry).pw_name).to_string_lossy().into_owned()
+	}
+}
+
+/// The kernel's host name.
+fn machine_name() -> String {
+	let mut buffer = [0u8; 256];
+	// SAFETY: the buffer outlives the call and its length is passed with it.
+	let ok = unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) } == 0;
+	if !ok {
+		return String::new();
+	}
+	let end = buffer.iter().position(|byte| *byte == 0).unwrap_or(buffer.len());
+	String::from_utf8_lossy(&buffer[..end]).into_owned()
+}
+
+fn visible(name: &std::ffi::OsStr, include_hidden: bool) -> bool {
+	include_hidden || !name.to_string_lossy().starts_with('.')
+}
+
+/// Up to `wanted` lines from the start of a text file, read from its first
+/// 4 KiB. Binary files (a NUL byte, or not UTF-8 up to the last whole line)
+/// give nothing.
+fn head_lines(file: &std::path::Path, wanted: usize) -> String {
+	use std::io::Read;
+	if wanted == 0 || !file.is_file() {
+		return String::new();
+	}
+	let Ok(handle) = std::fs::File::open(file) else { return String::new() };
+	let mut bytes = Vec::with_capacity(4096);
+	if handle.take(4096).read_to_end(&mut bytes).is_err() || bytes.contains(&0) {
+		return String::new();
+	}
+	let text = match std::str::from_utf8(&bytes) {
+		Ok(text) => text,
+		// A read that stops inside a character still counts as text.
+		Err(error) if error.error_len().is_none() => {
+			std::str::from_utf8(&bytes[..error.valid_up_to()]).unwrap_or("")
+		}
+		Err(_) => return String::new(),
+	};
+	text.lines().take(wanted).map(|line| line.trim_end_matches('\r')).collect::<Vec<_>>().join("\n")
+}
+
+/// `name\tcount` for each folder in `folder`, sorted by name. Unreadable
+/// folders count as empty; a folder that cannot be listed gives nothing.
+fn subfolder_listing(folder: &std::path::Path, include_hidden: bool) -> String {
+	let Ok(entries) = std::fs::read_dir(folder) else { return String::new() };
+	let mut found: Vec<(String, usize)> = entries
+		.filter_map(Result::ok)
+		.filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+		.filter(|entry| visible(&entry.file_name(), include_hidden))
+		.map(|entry| {
+			let count = std::fs::read_dir(entry.path())
+				.map(|inner| {
+					inner.filter_map(Result::ok).filter(|e| visible(&e.file_name(), include_hidden)).count()
+				})
+				.unwrap_or(0);
+			(entry.file_name().to_string_lossy().into_owned(), count)
+		})
+		.collect();
+	found.sort_by_key(|(name, _)| name.to_lowercase());
+	found.iter().map(|(name, count)| format!("{name}\t{count}")).collect::<Vec<_>>().join("\n")
+}
+
 /// The files in the XDG templates folder, which "New file" offers as starting
 /// points. Read on demand: the folder is small and edited outside the app.
 fn templates() -> Vec<PathBuf> {
@@ -2420,12 +2542,46 @@ fn status_text(status: TaskStatus) -> &'static str {
 mod tests {
 	use thallium_protocol::TaskStatus;
 
-	use super::{count, format_size, status_text};
+	use super::{count, format_size, head_lines, status_text, subfolder_listing};
 
 	#[test]
 	fn presentation_helpers_are_stable() {
 		assert_eq!(count(3), 3);
 		assert_eq!(format_size(1536), "1.5 KiB");
 		assert_eq!(status_text(TaskStatus::Succeeded), "Complete");
+	}
+
+	#[test]
+	fn subfolders_list_folders_with_their_counts() {
+		let root = std::env::temp_dir().join(format!("thallium-subfolders-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&root);
+		std::fs::create_dir_all(root.join("beta/one")).unwrap();
+		std::fs::create_dir_all(root.join("Alpha")).unwrap();
+		std::fs::create_dir_all(root.join(".hidden")).unwrap();
+		std::fs::write(root.join("beta/file.txt"), b"x").unwrap();
+		std::fs::write(root.join("beta/.dot"), b"x").unwrap();
+		std::fs::write(root.join("loose.txt"), b"x").unwrap();
+		assert_eq!(subfolder_listing(&root, false), "Alpha\t0\nbeta\t2");
+		assert_eq!(subfolder_listing(&root, true), ".hidden\t0\nAlpha\t0\nbeta\t3");
+		assert_eq!(subfolder_listing(&root.join("missing"), false), "");
+		std::fs::remove_dir_all(&root).unwrap();
+	}
+
+	#[test]
+	fn text_heads_read_lines_and_skip_binaries() {
+		let root = std::env::temp_dir().join(format!("thallium-head-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&root);
+		std::fs::create_dir_all(&root).unwrap();
+		std::fs::write(
+			root.join("a.toml"),
+			"[package]\r\nname = \"x\"\nversion = \"1\"\nedition = \"2021\"\n",
+		)
+		.unwrap();
+		std::fs::write(root.join("b.bin"), [0x7f, b'E', 0, 1]).unwrap();
+		assert_eq!(head_lines(&root.join("a.toml"), 3), "[package]\nname = \"x\"\nversion = \"1\"");
+		assert_eq!(head_lines(&root.join("b.bin"), 3), "");
+		assert_eq!(head_lines(&root, 3), "");
+		assert_eq!(head_lines(&root.join("a.toml"), 0), "");
+		std::fs::remove_dir_all(&root).unwrap();
 	}
 }

@@ -50,14 +50,14 @@ Item {
             y: 0
             width: parent.width * 0.42
             height: parent.height * 0.3
-            radius: 3
+            radius: 0
             color: tile.fill
         }
         Rectangle {
             y: parent.height * 0.14
             width: parent.width
             height: parent.height * 0.86
-            radius: 4
+            radius: 0
             color: tile.fill
         }
         Rectangle {
@@ -65,7 +65,7 @@ Item {
             y: parent.height * 0.6
             width: parent.width * 0.22
             height: 2
-            radius: 1
+            radius: 0
             color: Theme.tileInk
             opacity: 0.55
         }
@@ -79,13 +79,13 @@ Item {
         Rectangle {
             anchors.fill: parent
             anchors.rightMargin: tile.fold
-            radius: 5
+            radius: 0
             color: tile.fill
         }
         Rectangle {
             anchors.fill: parent
             anchors.topMargin: tile.fold
-            radius: 5
+            radius: 0
             color: tile.fill
         }
         // The fold itself: a darker corner triangle.

@@ -59,7 +59,7 @@ ApplicationWindow {
     // room for names; tiled at half a screen, only the rail stays.
     readonly property bool roomForPreview: root.width >= 1240
     // The rail shows icons; opened, their names too.
-    property bool railOpen: false
+    property bool railOpen: true
     readonly property int sidebarWidth: root.railOpen ? Theme.railOpenWidth : Theme.railWidth
     // In a narrow file pane the Kind and then the Size column give their
     // width to the name.
@@ -71,7 +71,7 @@ ApplicationWindow {
     readonly property int controlHeight: 34
     readonly property int bandHeight: 52
     readonly property int inspectorWidth: Theme.previewWidth + 10
-    readonly property int rowHeight: root.view === "dense" ? Theme.rowHeightDense : Theme.rowHeight + 8
+    readonly property int rowHeight: root.view === "dense" ? Theme.rowHeightDense : 44
 
     property string view: "list"
     property bool searchShown: false
@@ -220,12 +220,10 @@ ApplicationWindow {
             if (seen.length === 0 || seen.indexOf(known[i]) >= 0)
                 out.push({ label: known[i], folder: known[i], icon: icons[known[i]], section: "" })
         }
-        out.push({ label: "Filesystem", folder: "/", icon: "hard-drive", section: "" })
         // A file dialog only needs places to pick from.
-        if (!root.picking) {
+        if (!root.picking)
             out.push({ label: "Trash", folder: null, trash: true, icon: "trash-2", section: "" })
-            out.push({ label: "Settings", folder: null, settings: true, icon: "settings", section: "" })
-        }
+        out.push({ label: "Filesystem", folder: "/", icon: "hard-drive", section: "Locations" })
         // Drives that can be mounted, mounted or not.
         void root.revision
         for (let d = 0; d < root.bridge.driveCount(); ++d)
@@ -236,9 +234,12 @@ ApplicationWindow {
         const listed = out.map(function (place) { return root.placePath(place.folder) })
         for (let b = 0; b < root.bridge.bookmarkCount(); ++b) {
             const path = root.bridge.bookmarkPath(b)
-            if (listed.indexOf(path) < 0)
-                out.push({ label: root.bridge.bookmarkLabel(b), folder: null, target: path, bookmark: b,
-                           icon: "bookmark", section: "Bookmarks" })
+            if (listed.indexOf(path) < 0) {
+                // Pinned folders sit with the places, before Trash.
+                const at = out.findIndex(function (place) { return place.trash === true || place.section !== "" })
+                out.splice(at < 0 ? out.length : at, 0, { label: root.bridge.bookmarkLabel(b), folder: null, target: path,
+                                                           bookmark: b, icon: "folder", section: "" })
+            }
         }
         // Whatever rclone is configured for, listed after the local places
         // because that is the order they are reached in.
@@ -257,6 +258,74 @@ ApplicationWindow {
         if (root.bridge.remotesConfigurable())
             out.push({ label: "Add a remote", folder: null, add: true, icon: "plus", section: "Network" })
         return out
+    }
+
+    function pad2(n) { return n < 10 ? "0" + n : String(n) }
+
+    // The sidebar's head: today's date, and user@host, read at run time.
+    property string today: ""
+    readonly property string whoami: root.bridge.userName() + "@" + root.bridge.hostName()
+    Timer {
+        interval: 30000
+        repeat: true
+        running: true
+        triggeredOnStart: true
+        onTriggered: root.today = Qt.formatDate(new Date(), "dddd, MMMM d").toUpperCase()
+    }
+
+    // The place the open folder lies in: the deepest local place whose
+    // folder holds it. Filesystem is never a place to expand.
+    readonly property string activePlace: {
+        void root.revision
+        const path = root.bridge.currentPath
+        let best = ""
+        for (let i = 0; i < root.places.length; ++i) {
+            const place = root.places[i]
+            if (place.section !== "" || place.recent === true || place.trash === true)
+                continue
+            const target = place.bookmark !== undefined ? place.target : root.placePath(place.folder)
+            if (!target || target === "/")
+                continue
+            if ((path === target || path.startsWith(target + "/")) && target.length > best.length)
+                best = target
+        }
+        return best
+    }
+    // Its folders, and how many entries it holds.
+    readonly property var placeTree: {
+        void root.revision
+        if (root.activePlace.length === 0)
+            return []
+        const text = root.bridge.subfolders(root.activePlace, root.showHidden)
+        if (text.length === 0)
+            return []
+        return text.split("\n").map(function (line) {
+            const tab = line.lastIndexOf("\t")
+            return { name: line.substring(0, tab), count: parseInt(line.substring(tab + 1)) }
+        })
+    }
+    readonly property int placeTotal: {
+        void root.revision
+        return root.activePlace.length > 0 ? root.bridge.entryTotal(root.activePlace, root.showHidden) : -1
+    }
+    // How many tree rows the lit guide runs through: down to the row on the
+    // open folder's path, or none.
+    readonly property int placeTreeLit: {
+        const path = root.bridge.currentPath
+        for (let i = 0; i < root.placeTree.length; ++i) {
+            const branch = root.activePlace + "/" + root.placeTree[i].name
+            if (path === branch || path.startsWith(branch + "/"))
+                return i + 1
+        }
+        return 0
+    }
+    readonly property bool storageKnown: {
+        void root.revision
+        return root.bridge.storageKnown()
+    }
+    readonly property real storageShare: {
+        void root.revision
+        return root.bridge.storageShare()
     }
 
     // What this folder is made of, by entry count. Measured, never guessed:
@@ -494,6 +563,63 @@ ApplicationWindow {
         if (["zip", "tar", "gz", "xz", "zst", "bz2", "7z", "rar", "deb", "rpm"].indexOf(extension) >= 0)
             return "Archives"
         return "Other"
+    }
+
+    // The Thallium 81 type tag: DIR, CODE, DOC, or TXT for plain text and
+    // everything else.
+    function tagOf(name, folder) {
+        const kind = root.kindOf(name, folder)
+        if (kind === "Folders")
+            return "DIR"
+        if (kind === "Code")
+            return "CODE"
+        if (kind === "Documents") {
+            const extension = name.slice(name.lastIndexOf(".") + 1).toLowerCase()
+            return extension === "txt" || extension === "md" ? "TXT" : "DOC"
+        }
+        return "TXT"
+    }
+
+    // The Kind column: what a person would call the file.
+    function kindLabel(name, folder) {
+        if (folder)
+            return "Folder"
+        const dot = name.lastIndexOf(".")
+        const extension = dot > 0 ? name.slice(dot + 1).toLowerCase() : ""
+        const named = {
+            txt: "Plain text", md: "Markdown", pdf: "PDF document", odt: "Document", doc: "Document",
+            docx: "Document", rtf: "Rich text", csv: "Spreadsheet", ods: "Spreadsheet", xlsx: "Spreadsheet",
+            xls: "Spreadsheet", odp: "Presentation", pptx: "Presentation", json: "JSON data",
+            toml: "TOML source", yaml: "YAML source", yml: "YAML source", lock: "Lock file", sh: "Shell script",
+            png: "PNG image", jpg: "JPEG image", jpeg: "JPEG image", gif: "GIF image", webp: "WebP image",
+            svg: "SVG image", mp4: "Video", mkv: "Video", webm: "Video", mov: "Video", mp3: "Audio",
+            flac: "Audio", wav: "Audio", ogg: "Audio", zip: "Archive", tar: "Archive", gz: "Archive",
+            xz: "Archive", zst: "Archive", "7z": "Archive", deb: "Package", iso: "Disc image"
+        }
+        if (named[extension])
+            return named[extension]
+        if (root.kindOf(name, false) === "Code")
+            return extension.toUpperCase() + " source"
+        return extension.length > 0 ? extension.toUpperCase() + " file" : "File"
+    }
+
+    // Times as the Thallium 81 list writes them: Today, 09:58 · 31 Oct, 18:04.
+    function stampText(seconds) {
+        if (seconds <= 0)
+            return "—"
+        const value = new Date(seconds * 1000)
+        const now = new Date()
+        const day = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+        const then = new Date(value.getFullYear(), value.getMonth(), value.getDate())
+        const days = Math.round((day - then) / 86400000)
+        const time = Qt.formatTime(value, "HH:mm")
+        if (days === 0)
+            return "Today, " + time
+        if (days === 1)
+            return "Yesterday, " + time
+        if (value.getFullYear() === now.getFullYear())
+            return value.getDate() + " " + Qt.formatDate(value, "MMM") + ", " + time
+        return value.getDate() + " " + Qt.formatDate(value, "MMM yyyy")
     }
 
     function modifiedText(seconds) {
@@ -904,7 +1030,7 @@ ApplicationWindow {
         }
         background: Rectangle {
             color: menuLine.highlighted ? root.hover : "transparent"
-            radius: 5
+            radius: 0
         }
     }
 
@@ -916,7 +1042,7 @@ ApplicationWindow {
         delegate: MenuLine {}
         background: Rectangle {
             color: root.raisedHigh
-            radius: 9
+            radius: 0
             border.width: 1
             border.color: root.line
         }
@@ -2095,7 +2221,7 @@ ApplicationWindow {
     Shortcut { sequences: ["Delete"]; enabled: !root.typing && root.selectedCount > 0; onActivated: root.bridge.trashSelected() }
     Shortcut { sequences: ["Shift+Delete"]; enabled: !root.typing && root.selectedCount > 0; onActivated: deleteConfirm.open() }
     Shortcut { sequences: ["Ctrl+L", "F6"]; enabled: !root.typing; onActivated: root.editPath() }
-    Shortcut { sequences: [StandardKey.Find]; enabled: !root.typing; onActivated: root.openSearch() }
+    Shortcut { sequences: [StandardKey.Find, "Ctrl+K"]; enabled: !root.typing; onActivated: root.openSearch() }
     // The context menu from the keyboard: for the held entry, or for the
     // folder when nothing is held.
     Shortcut {
@@ -2113,6 +2239,7 @@ ApplicationWindow {
         }
     }
     Shortcut { sequences: [StandardKey.Undo]; enabled: !root.typing; onActivated: root.bridge.undo() }
+    Shortcut { sequences: ["Ctrl+B"]; enabled: !root.typing; onActivated: root.railOpen = !root.railOpen }
     Shortcut { sequences: ["Ctrl+1"]; onActivated: root.view = "list" }
     Shortcut { sequences: ["Ctrl+2"]; onActivated: root.view = "grid" }
 
@@ -2254,7 +2381,7 @@ ApplicationWindow {
         }
 
         implicitHeight: 32
-        radius: 7
+        radius: 0
         color: root.inset
         border.width: 1
         border.color: fieldInput.activeFocus ? root.spectral : root.line
@@ -2296,7 +2423,7 @@ ApplicationWindow {
 
         implicitWidth: buttonLabel.implicitWidth + 26
         implicitHeight: 30
-        radius: 7
+        radius: 0
         color: !sheetButton.enabled
                ? "transparent"
                : (sheetButton.primary
@@ -2343,7 +2470,7 @@ ApplicationWindow {
             anchors.verticalCenter: parent.verticalCenter
             width: 10
             height: 10
-            radius: 3
+            radius: 0
             color: parent.modelData.color
             border.width: 1
             border.color: Theme.outlineSoft
@@ -2391,7 +2518,7 @@ ApplicationWindow {
 
         implicitWidth: 30
         implicitHeight: 30
-        radius: 7
+        radius: 0
         color: iconAction.active
                ? root.raisedHigh
                : (mouse.containsMouse && iconAction.enabled ? root.hover : "transparent")
@@ -2431,7 +2558,7 @@ ApplicationWindow {
 
         implicitWidth: caption.implicitWidth + 22
         implicitHeight: 26
-        radius: 6
+        radius: 0
         color: textMouse.containsMouse ? root.hover : root.raisedHigh
         border.width: 1
         border.color: textMouse.containsMouse ? root.lineStrong : root.line
@@ -2462,7 +2589,7 @@ ApplicationWindow {
 
         implicitWidth: 15
         implicitHeight: 15
-        radius: 4
+        radius: 0
         color: tick.checked ? root.ember : "transparent"
         border.width: 1
         border.color: tick.checked
@@ -2560,57 +2687,98 @@ ApplicationWindow {
         property string icon: ""
         property string label: ""
         property string trailing: ""
+        // Right-aligned mono readout: a count, LINKED, a share.
+        property string meta: ""
+        property color metaColor: Theme.cMuted
+        property bool accentLabel: false
         property bool active: false
+        // A segment bar under the label (the Filesystem's fill), 0..1; -1 for none.
+        property real share: -1
         signal activated
         signal menuRequested
         // A folder this item names, so files can be dropped on it.
         property string dropTarget: ""
 
         width: parent ? parent.width : 0
-        implicitHeight: 42
-        radius: Theme.radius
-        color: navItem.active
-               ? Theme.selected
-               : (navMouse.containsMouse ? Theme.surfaceHigh : "transparent")
-        border.width: navItem.active ? 1 : 0
-        border.color: Theme.outline
+        implicitHeight: navItem.share >= 0 && root.railOpen ? 50 : 36
+        radius: 0
+        color: navItem.active ? Theme.cWash : (navMouse.containsMouse ? Theme.cDim : "transparent")
+
+        Behavior on color { ColorAnimation { duration: Theme.tFast } }
+
+        // The selected place carries a 2px accent bar on its left edge.
+        Rectangle {
+            anchors.left: parent.left
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            width: 2
+            visible: navItem.active
+            color: Theme.cGreen
+        }
 
         Item {
             id: navGlyph
             anchors.left: parent.left
             anchors.leftMargin: root.railOpen ? 12 : (navItem.width - width) / 2
-            anchors.verticalCenter: parent.verticalCenter
-            width: 20
-            height: 20
+            anchors.top: parent.top
+            anchors.topMargin: (36 - height) / 2
+            width: 16
+            height: 16
             Icon {
                 visible: navItem.icon.length > 0
                 anchors.centerIn: parent
                 name: navItem.icon.length > 0 ? navItem.icon : "folder"
-                size: 20
-                shade: navItem.active ? 1 : (navMouse.containsMouse ? 0.8 : 0.5)
-                tint: navItem.active ? Theme.accent : "transparent"
+                size: 15
+                shade: navItem.active ? 1 : (navMouse.containsMouse ? 0.9 : 0.7)
+                tint: navItem.active || navItem.accentLabel ? Theme.cGreen : "transparent"
             }
-            Glyph {
+            Text {
                 visible: navItem.icon.length === 0
                 anchors.centerIn: parent
                 text: navItem.glyph
-                font.pixelSize: 15
-                color: navItem.active ? Theme.accent : root.inkFaint
+                font.family: Theme.fontMono
+                font.pixelSize: 14
+                color: navItem.active || navItem.accentLabel ? Theme.cGreen : Theme.cMuted
             }
         }
 
         Text {
+            id: navLabel
             visible: root.railOpen
             anchors.left: navGlyph.right
             anchors.leftMargin: 12
-            anchors.right: parent.right
+            anchors.right: navMeta.visible ? navMeta.left : parent.right
             anchors.rightMargin: 10
-            anchors.verticalCenter: parent.verticalCenter
+            anchors.verticalCenter: navGlyph.verticalCenter
             text: navItem.label
             elide: Text.ElideRight
-            color: navItem.active ? Theme.ink : Theme.inkSoft
-            font.family: Theme.family
-            font.pixelSize: Theme.text
+            color: navItem.accentLabel ? Theme.cGreen : navItem.active ? Theme.cFg : Theme.cFg
+            font.family: Theme.fontHuman
+            font.pixelSize: 13
+            font.weight: navItem.active ? Font.Medium : Font.Normal
+        }
+        Text {
+            id: navMeta
+            visible: root.railOpen && navItem.meta.length > 0
+            anchors.right: parent.right
+            anchors.rightMargin: 12
+            anchors.verticalCenter: navGlyph.verticalCenter
+            text: navItem.meta
+            color: navItem.metaColor
+            font.family: Theme.fontMono
+            font.pixelSize: 11
+            font.letterSpacing: 1.5
+        }
+        SegmentBar {
+            visible: root.railOpen && navItem.share >= 0
+            anchors.left: navLabel.left
+            anchors.right: parent.right
+            anchors.rightMargin: 14
+            anchors.top: navGlyph.bottom
+            anchors.topMargin: 10
+            height: 5
+            count: 22
+            share: Math.max(0, navItem.share)
         }
 
         MouseArea {
@@ -2621,7 +2789,7 @@ ApplicationWindow {
             acceptedButtons: Qt.LeftButton | Qt.RightButton
             ToolTip.visible: !root.railOpen && navMouse.containsMouse
             ToolTip.text: navItem.trailing.length > 0 ? navItem.label + " (" + navItem.trailing + ")" : navItem.label
-            ToolTip.delay: 500
+            ToolTip.delay: 300
             onClicked: function (mouse) {
                 if (mouse.button === Qt.RightButton)
                     navItem.menuRequested()
@@ -2638,10 +2806,97 @@ ApplicationWindow {
                 anchors.fill: parent
                 visible: parent.containsDrag
                 color: "transparent"
-                radius: Theme.radius
                 border.width: 1
-                border.color: Theme.highlight
+                border.color: Theme.cGreen
             }
+        }
+    }
+
+    // One folder in the sidebar's tree: a guide line down the left, an
+    // elbow, a square node, the name and how many entries it holds. The row
+    // on the way to the open folder lights the guide, elbow and node green.
+    component TreeRow: Rectangle {
+        id: treeRow
+        property string label: ""
+        property int count: 0
+        property bool onPath: false
+        property bool last: false
+        property bool lit: false
+        property string target: ""
+        signal activated
+
+        width: parent ? parent.width : 0
+        height: 30
+        color: treeRow.onPath ? Theme.cWash : (treeMouse.containsMouse ? Theme.cDim : "transparent")
+
+        readonly property int guideX: 20
+        // The guide runs the full row, or stops at the elbow on the last one.
+        Rectangle {
+            x: treeRow.guideX
+            y: 0
+            width: 1
+            height: treeRow.last ? treeRow.height / 2 : treeRow.height
+            color: treeRow.lit ? Theme.cGreen : Theme.cLine
+        }
+        Rectangle {
+            x: treeRow.guideX
+            y: treeRow.height / 2
+            width: 12
+            height: 1
+            color: treeRow.onPath ? Theme.cGreen : Theme.cLine
+        }
+        Rectangle {
+            id: treeNode
+            x: treeRow.guideX + 12
+            anchors.verticalCenter: parent.verticalCenter
+            width: 7
+            height: 7
+            color: treeRow.onPath ? Theme.cGreen : Theme.cBase
+            border.width: 1
+            border.color: treeRow.onPath ? Theme.cGreen : Theme.cMuted
+        }
+        Text {
+            id: treeToggle
+            anchors.left: treeNode.right
+            anchors.leftMargin: 8
+            anchors.verticalCenter: parent.verticalCenter
+            text: treeRow.onPath ? "▾" : "▸"
+            color: treeRow.onPath ? Theme.cGreen : Theme.cLine
+            font.family: Theme.fontMono
+            font.pixelSize: 9
+        }
+        Text {
+            anchors.left: treeToggle.right
+            anchors.leftMargin: 8
+            anchors.right: treeCount.left
+            anchors.rightMargin: 8
+            anchors.verticalCenter: parent.verticalCenter
+            text: treeRow.label
+            elide: Text.ElideRight
+            color: Theme.cFg
+            font.family: Theme.fontHuman
+            font.pixelSize: 13
+        }
+        Text {
+            id: treeCount
+            anchors.right: parent.right
+            anchors.rightMargin: 12
+            anchors.verticalCenter: parent.verticalCenter
+            text: treeRow.count < 10 ? "0" + treeRow.count : String(treeRow.count)
+            color: treeRow.onPath ? Theme.cGreen : Theme.cMuted
+            font.family: Theme.fontMono
+            font.pixelSize: 11
+        }
+        MouseArea {
+            id: treeMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: treeRow.activated()
+        }
+        DropArea {
+            anchors.fill: parent
+            onDropped: function (drop) { root.dropInto(drop, treeRow.target) }
         }
     }
 
@@ -2653,30 +2908,33 @@ ApplicationWindow {
         property bool numeric: false
 
         implicitHeight: 16
+        implicitWidth: sortRow.implicitWidth
 
         Row {
-            anchors.left: sortHead.numeric ? undefined : parent.left
-            anchors.right: sortHead.numeric ? parent.right : undefined
+            id: sortRow
             anchors.verticalCenter: parent.verticalCenter
-            spacing: 4
+            spacing: 6
 
-            Overline {
+            Text {
                 text: sortHead.label.toUpperCase()
-                color: root.sortKey === sortHead.key ? root.inkMuted : root.inkGhost
+                color: root.sortKey === sortHead.key ? Theme.cFg : Theme.cMuted
+                font.family: Theme.fontMono
+                font.pixelSize: 10
+                font.letterSpacing: 3
                 anchors.verticalCenter: parent.verticalCenter
             }
-
             Text {
                 visible: root.sortKey === sortHead.key
                 text: root.sortAscending ? "▲" : "▼"
-                color: root.spectral
-                font.pixelSize: 6
+                color: Theme.cGreen
+                font.pixelSize: 7
                 anchors.verticalCenter: parent.verticalCenter
             }
         }
 
         MouseArea {
             anchors.fill: parent
+            anchors.margins: -6
             cursorShape: Qt.PointingHandCursor
             onClicked: root.applySort(sortHead.key)
         }
@@ -2829,10 +3087,472 @@ ApplicationWindow {
         }
     }
 
+    // ============================ HEADER =============================
+    // One 64px bar across the window: the mark, the way back, where you
+    // are, search, how to look, and what to make.
+    Rectangle {
+        id: appHeader
+        z: 4
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.topMargin: pickHead.height
+        height: Theme.headerHeight
+        color: Theme.cBar
+
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            height: 1
+            color: Theme.cDead
+        }
+
+        // ---- Mark ----
+        Item {
+            id: brandBlock
+            anchors.left: parent.left
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            width: root.sidebarWidth
+            Rectangle {
+                id: brandMark
+                anchors.left: parent.left
+                anchors.leftMargin: 20
+                anchors.verticalCenter: parent.verticalCenter
+                width: 34
+                height: 34
+                color: Theme.cGreen
+                Text {
+                    anchors.centerIn: parent
+                    text: "T"
+                    color: Theme.cBase
+                    font.family: Theme.fontBrand
+                    font.pixelSize: 17
+                    font.weight: Font.ExtraBold
+                }
+            }
+            Column {
+                anchors.left: brandMark.right
+                anchors.leftMargin: 12
+                anchors.verticalCenter: parent.verticalCenter
+                visible: root.sidebarWidth > 160
+                spacing: 1
+                Text {
+                    text: "Thallium"
+                    color: Theme.cFg
+                    font.family: Theme.fontBrand
+                    font.pixelSize: 17
+                    font.weight: Font.DemiBold
+                }
+                Text {
+                    text: "FILES"
+                    color: Theme.cMuted
+                    font.family: Theme.fontMono
+                    font.pixelSize: 9
+                    font.letterSpacing: 4
+                }
+            }
+        }
+
+        // ---- The way back ----
+        Row {
+            id: headerNav
+            anchors.left: brandBlock.right
+            anchors.leftMargin: 10
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 6
+            IconButton { id: backButton; icon: "chevron-left"; hint: "Back (Alt+Left)"; iconSize: 15; onClicked: root.bridge.back() }
+            IconButton { icon: "chevron-right"; hint: "Forward (Alt+Right)"; iconSize: 15; onClicked: root.bridge.forward() }
+            IconButton { icon: "arrow-up"; hint: "Up (Alt+Up)"; iconSize: 15; onClicked: root.bridge.up() }
+        }
+
+        // ---- Where you are: one tab per folder ----
+        Item {
+            id: pathBar
+            anchors.left: headerNav.right
+            anchors.leftMargin: 18
+            anchors.right: headerSearch.left
+            anchors.rightMargin: 18
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+
+            // Ctrl+L swaps the tabs for a field that takes a typed path;
+            // Enter goes there, Escape puts the tabs back.
+            Rectangle {
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                height: 36
+                visible: pathEditor.visible
+                color: Theme.cDim
+                border.width: 1
+                border.color: Theme.cGreen
+            }
+            TextInput {
+                id: pathEditor
+                visible: false
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.leftMargin: 12
+                anchors.rightMargin: 12
+                anchors.verticalCenter: parent.verticalCenter
+                height: 36
+                verticalAlignment: TextInput.AlignVCenter
+                clip: true
+                color: Theme.cFg
+                selectionColor: Theme.cWash
+                selectedTextColor: Theme.cFg
+                font.family: Theme.fontMono
+                font.pixelSize: 12
+                function finish() {
+                    visible = false
+                    root.release()
+                }
+                function go() {
+                    let target = text.trim()
+                    if (target === "~" || target.startsWith("~/"))
+                        target = root.bridge.homePath + target.substring(1)
+                    if (target.length > 0)
+                        root.openTarget(target)
+                    finish()
+                }
+                Keys.onReturnPressed: go()
+                Keys.onEnterPressed: go()
+                Keys.onEscapePressed: finish()
+                onActiveFocusChanged: if (!activeFocus && visible) finish()
+            }
+
+            Flickable {
+                visible: !pathEditor.visible
+                anchors.fill: parent
+                contentWidth: crumbRow.width
+                clip: true
+                flickableDirection: Flickable.HorizontalFlick
+                // Keep the deepest tab in view.
+                contentX: Math.max(0, crumbRow.width - width)
+
+                Row {
+                    id: crumbRow
+                    height: parent.height
+                    spacing: 0
+
+                    Repeater {
+                        id: crumbRepeater
+                        model: root.trashOpen ? [{ label: "Trash", path: "" }]
+                             : root.recentOpen ? [{ label: "Recent", path: "" }]
+                             : root.crumbs
+                        delegate: Row {
+                            id: crumb
+                            required property int index
+                            required property var modelData
+                            readonly property bool last: crumb.index === crumbRepeater.count - 1
+                            height: crumbRow.height
+                            spacing: 0
+
+                            Tab {
+                                height: parent.height
+                                text: crumb.modelData.label
+                                active: crumb.last
+                                underlineInset: 0
+                                onClicked: if (crumb.modelData.path.length > 0) root.bridge.navigate(crumb.modelData.path)
+                                DropArea {
+                                    anchors.fill: parent
+                                    enabled: crumb.modelData.path.length > 0
+                                    onDropped: function (drop) { root.dropInto(drop, crumb.modelData.path) }
+                                }
+                                TapHandler { onDoubleTapped: root.editPath() }
+                            }
+                            Text {
+                                visible: !crumb.last
+                                anchors.verticalCenter: parent.verticalCenter
+                                leftPadding: 4
+                                rightPadding: 4
+                                text: "›"
+                                color: Theme.cLine
+                                font.family: Theme.fontMono
+                                font.pixelSize: 14
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- Search ----
+        Rectangle {
+            id: headerSearch
+            anchors.right: viewTabs.left
+            anchors.rightMargin: 22
+            anchors.verticalCenter: parent.verticalCenter
+            width: Math.max(180, Math.min(280, parent.width * 0.2))
+            height: 36
+            color: Theme.cDim
+            border.width: 1
+            border.color: searchInput.activeFocus ? Theme.cGreen : Theme.cLine
+
+            Rectangle {
+                // The focus ring: 3px of the accent at 14%.
+                anchors.fill: parent
+                anchors.margins: -3
+                z: -1
+                visible: searchInput.activeFocus
+                color: Theme.wash(Theme.cGreen, 0.14)
+            }
+
+            Text {
+                id: searchMark
+                anchors.left: parent.left
+                anchors.leftMargin: 12
+                anchors.verticalCenter: parent.verticalCenter
+                text: "⌕"
+                color: root.deepSearch ? Theme.cGreen : Theme.cMuted
+                font.family: Theme.fontMono
+                font.pixelSize: 14
+            }
+
+            TextInput {
+                id: searchInput
+                anchors.left: searchMark.right
+                anchors.leftMargin: 10
+                anchors.right: searchKbd.left
+                anchors.rightMargin: 8
+                anchors.verticalCenter: parent.verticalCenter
+                clip: true
+                color: Theme.cFg
+                selectionColor: Theme.cWash
+                selectedTextColor: Theme.cFg
+                font.family: Theme.fontHuman
+                font.pixelSize: 13
+                text: root.query
+                onTextChanged: root.query = text
+                onActiveFocusChanged: if (!activeFocus && text.length === 0) root.searchShown = false
+                Keys.onEscapePressed: {
+                    if (root.deepSearch)
+                        root.endDeepSearch()
+                    root.query = ""
+                    root.searchShown = false
+                    root.release()
+                }
+                Keys.onReturnPressed: root.beginDeepSearch()
+                Keys.onEnterPressed: root.beginDeepSearch()
+
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: searchInput.text.length === 0
+                    text: "Search…"
+                    color: Theme.cMuted
+                    font.family: Theme.fontHuman
+                    font.pixelSize: 13
+                }
+            }
+
+            Kbd {
+                id: searchKbd
+                anchors.right: parent.right
+                anchors.rightMargin: 12
+                anchors.verticalCenter: parent.verticalCenter
+                visible: root.query.length === 0
+                text: "CTRL K"
+            }
+            Text {
+                id: clearSearch
+                anchors.right: parent.right
+                anchors.rightMargin: 12
+                anchors.verticalCenter: parent.verticalCenter
+                visible: root.query.length > 0
+                text: "×"
+                color: clearMouse.containsMouse ? Theme.cGreen : Theme.cMuted
+                font.family: Theme.fontMono
+                font.pixelSize: 14
+                MouseArea {
+                    id: clearMouse
+                    anchors.fill: parent
+                    anchors.margins: -6
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        root.endDeepSearch()
+                        root.query = ""
+                    }
+                }
+            }
+        }
+
+        // ---- How to look ----
+        Row {
+            id: viewTabs
+            anchors.right: newButton.left
+            anchors.rightMargin: 22
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            visible: !root.trashOpen && !root.recentOpen
+            Tab { height: parent.height; text: "Grid"; active: root.view === "grid"; onClicked: root.view = "grid" }
+            Tab { height: parent.height; text: "List"; active: root.view !== "grid"; onClicked: root.view = "list" }
+        }
+
+        // ---- What to make ----
+        TextButton {
+            id: newButton
+            anchors.right: windowButtons.left
+            anchors.rightMargin: 22
+            anchors.verticalCenter: parent.verticalCenter
+            primary: true
+            height: 36
+            text: "+ New"
+            visible: !root.trashOpen && !root.recentOpen
+            onClicked: groundMenu.popup(newButton, 0, newButton.height + 6)
+        }
+
+        Row {
+            id: windowButtons
+            anchors.right: parent.right
+            anchors.rightMargin: 12
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            spacing: 0
+            Rectangle {
+                width: 1
+                height: 34
+                anchors.verticalCenter: parent.verticalCenter
+                color: Theme.cLine
+            }
+            Item { width: 10; height: 1 }
+            Repeater {
+                model: [
+                    { glyph: "–", hint: "Minimise" },
+                    { glyph: "□", hint: "Maximise" },
+                    { glyph: "×", hint: "Close" }
+                ]
+                delegate: Item {
+                    id: windowButton
+                    required property var modelData
+                    required property int index
+                    width: 34
+                    height: parent.height
+                    Text {
+                        anchors.centerIn: parent
+                        text: windowButton.modelData.glyph
+                        color: windowMouse.containsMouse
+                               ? (windowButton.index === 2 ? Theme.cRed : Theme.cGreen) : Theme.cFg
+                        font.family: Theme.fontMono
+                        font.pixelSize: 13
+                    }
+                    MouseArea {
+                        id: windowMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            if (windowButton.index === 0)
+                                root.showMinimized()
+                            else if (windowButton.index === 1)
+                                root.visibility === Window.Maximized ? root.showNormal() : root.showMaximized()
+                            else
+                                root.close()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ========================== STATUS BAR ===========================
+    Rectangle {
+        id: statusBar
+        z: 4
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: pickBar.height
+        height: Theme.statusHeight
+        color: Theme.cBar
+
+        function pad(n) { return n < 10 ? "0" + n : String(n) }
+
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            height: 1
+            color: Theme.cDead
+        }
+        Text {
+            anchors.left: parent.left
+            anchors.leftMargin: 20
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.StyledText
+            text: {
+                const parts = [statusBar.pad(root.rows.length) + " ITEMS"]
+                if (root.selectedCount > 0)
+                    parts.push(statusBar.pad(root.selectedCount) + " SELECTED")
+                if (root.selectedCount === 1 && inspector.sizeText.length > 0)
+                    parts.push("<font color='" + Theme.cFg + "'>" + inspector.sizeText.toUpperCase() + "</font>")
+                if (root.showHidden)
+                    parts.push("HIDDEN SHOWN")
+                return parts.join("  ·  ")
+            }
+            color: Theme.cMuted
+            font.family: Theme.fontMono
+            font.pixelSize: 11
+            font.letterSpacing: 2
+        }
+        Row {
+            anchors.right: parent.right
+            anchors.rightMargin: 20
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 10
+            readonly property int remotes: {
+                void root.revision
+                return root.bridge.remoteCount()
+            }
+            Rectangle {
+                visible: parent.remotes > 0
+                anchors.verticalCenter: parent.verticalCenter
+                width: 6
+                height: 6
+                color: Theme.cGreen
+            }
+            Text {
+                visible: parent.remotes > 0
+                text: {
+                    void root.revision
+                    return (parent.remotes === 1 ? root.bridge.remoteName(0) : parent.remotes + " REMOTES").toUpperCase() + " LINKED"
+                }
+                color: Theme.cGreen
+                font.family: Theme.fontMono
+                font.pixelSize: 11
+                font.letterSpacing: 2
+            }
+            Text {
+                visible: parent.remotes > 0 && freeText.visible
+                text: "·"
+                color: Theme.cMuted
+                font.family: Theme.fontMono
+                font.pixelSize: 11
+            }
+            Text {
+                id: freeText
+                text: {
+                    void root.revision
+                    return root.readableSize(root.bridge.storageTotal() - root.bridge.storageUsed()).toUpperCase() + " FREE"
+                }
+                visible: {
+                    void root.revision
+                    return root.bridge.storageKnown()
+                }
+                color: Theme.cMuted
+                font.family: Theme.fontMono
+                font.pixelSize: 11
+                font.letterSpacing: 2
+            }
+        }
+    }
+
     Row {
         anchors.fill: parent
-        anchors.bottomMargin: pickBar.height
-        anchors.topMargin: pickHead.height
+        anchors.bottomMargin: pickBar.height + statusBar.height
+        anchors.topMargin: pickHead.height + appHeader.height
         spacing: 0
 
         // ============================ SIDEBAR ============================
@@ -2840,137 +3560,212 @@ ApplicationWindow {
             id: sidebar
             width: root.sidebarWidth
             height: parent.height
-            color: root.canvas
+            color: Theme.cBase
             clip: true
 
-            // Places, bookmarks, drives and remotes, and Settings at the foot.
-            Item {
-                id: placesColumn
-                anchors.left: parent.left
+            Rectangle {
                 anchors.right: parent.right
+                width: 1
                 height: parent.height
-
-                Rectangle {
-                    anchors.right: parent.right
-                    width: 1
-                    height: parent.height
-                    color: root.line
-                }
-
-                ListView {
-                    id: placesView
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    anchors.bottom: railToggle.top
-                    anchors.margins: 9
-                    anchors.topMargin: 14
-                    clip: true
-                    spacing: 2
-                    model: root.places
-                    boundsBehavior: Flickable.StopAtBounds
-                    section.property: "section"
-                    section.delegate: Item {
-                        required property string section
-                        width: placesView.width
-                        // Groups after the first are parted by a rule; the
-                        // tooltips name what is in them.
-                        height: section.length === 0 ? 0 : 14
-                        visible: section.length > 0
-                        CrossRule {
-                            id: sectionRule
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.bottom: parent.bottom
-                            anchors.bottomMargin: 2
-                        }
-                    }
-
-                    delegate: NavItem {
-                        id: placeEntry
-                        required property var modelData
-                        readonly property bool adds: placeEntry.modelData.add === true
-                        readonly property bool remote: placeEntry.modelData.remote === true
-                        readonly property bool recent: placeEntry.modelData.recent === true
-                        readonly property bool trash: placeEntry.modelData.trash === true
-                        readonly property bool settings: placeEntry.modelData.settings === true
-                        readonly property bool marked: placeEntry.modelData.bookmark !== undefined
-                        readonly property bool drive: placeEntry.modelData.drive !== undefined
-                        readonly property string target: placeEntry.remote || placeEntry.marked || placeEntry.drive
-                                                         ? placeEntry.modelData.target
-                                                         : root.placePath(placeEntry.modelData.folder)
-                        width: placesView.width
-                        icon: placeEntry.modelData.icon || ""
-                        glyph: placeEntry.adds
-                               ? "+"
-                               : (placeEntry.recent
-                                  ? "◴"
-                                  : placeEntry.trash
-                                  ? "⌫"
-                                  : placeEntry.marked
-                                  ? "★"
-                                  : placeEntry.drive
-                                  ? (root.bridge.driveEjectable(placeEntry.modelData.drive) ? "⏏" : "◫")
-                                  : placeEntry.remote
-                                  ? "◈"
-                                  : (placeEntry.modelData.folder === "/"
-                                     ? "◆"
-                                     : (placeEntry.modelData.folder === "" ? "⌂" : "▸")))
-                        label: placeEntry.modelData.label
-                        active: root.settingsOpen
-                                ? placeEntry.settings
-                                : placeEntry.settings
-                                ? false
-                                : placeEntry.recent
-                                ? root.recentOpen
-                                : placeEntry.trash
-                                ? root.trashOpen
-                                : (!placeEntry.adds && !root.recentOpen && !root.trashOpen
-                                   && root.bridge.currentPath === placeEntry.target)
-                        dropTarget: placeEntry.recent || placeEntry.trash || placeEntry.settings || placeEntry.adds || placeEntry.remote
-                                    ? "" : placeEntry.target
-                        trailing: placeEntry.remote ? "remote"
-                                  : placeEntry.drive && placeEntry.target.length === 0 ? "not mounted" : ""
-                        onMenuRequested: {
-                            if (placeEntry.drive) {
-                                driveMenu.index = placeEntry.modelData.drive
-                                driveMenu.popup()
-                                return
-                            }
-                            if (!placeEntry.marked)
-                                return
-                            bookmarkMenu.index = placeEntry.modelData.bookmark
-                            bookmarkMenu.popup()
-                        }
-                        onActivated: {
-                            if (placeEntry.settings) {
-                                root.openSettings()
-                            } else if (placeEntry.recent) {
-                                root.showRecent()
-                            } else if (placeEntry.trash) {
-                                root.showTrash()
-                            } else {
-                                root.openPlace(placeEntry.modelData)
-                            }
-                        }
-                    }
-                }
-
-                // Opens and closes the rail, at its foot.
-                NavItem {
-                    id: railToggle
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.bottom: parent.bottom
-                    anchors.margins: 9
-                    anchors.bottomMargin: 14
-                    icon: "panel-left"
-                    label: root.railOpen ? "Collapse" : "Expand"
-                    onActivated: root.railOpen = !root.railOpen
-                }
-
+                color: Theme.cDead
+                z: 2
             }
 
+            Flickable {
+                id: placesView
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.bottom: sidebarFoot.top
+                anchors.rightMargin: 1
+                contentHeight: placesColumn.implicitHeight + 24
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+
+                Column {
+                    id: placesColumn
+                    x: 14
+                    y: 24
+                    width: placesView.width - 28
+                    spacing: 0
+
+                    // ---- Today, and whose machine this is ----
+                    Column {
+                        visible: root.railOpen
+                        width: parent.width
+                        leftPadding: 6
+                        spacing: 6
+                        Text {
+                            text: root.today
+                            color: Theme.cGreen
+                            font.family: Theme.fontMono
+                            font.pixelSize: 10
+                            font.letterSpacing: 3.5
+                        }
+                        Text {
+                            text: root.whoami
+                            color: Theme.cFg
+                            font.family: Theme.fontBrand
+                            font.pixelSize: 15
+                            font.weight: Font.DemiBold
+                        }
+                    }
+                    Item { width: 1; height: root.railOpen ? 26 : 0 }
+
+                    HudHeader {
+                        visible: root.railOpen
+                        x: 6
+                        width: parent.width - 6
+                        title: "Places"
+                        titleSize: 12
+                    }
+                    Item { width: 1; height: root.railOpen ? 12 : 0 }
+
+                    Repeater {
+                        model: root.places.filter(function (place) { return place.section === "" })
+                        delegate: Column {
+                            id: placeBlock
+                            required property var modelData
+                            readonly property bool recent: modelData.recent === true
+                            readonly property bool trash: modelData.trash === true
+                            readonly property bool marked: modelData.bookmark !== undefined
+                            readonly property string target: placeBlock.marked ? modelData.target : root.placePath(modelData.folder)
+                            readonly property bool active: placeBlock.recent ? root.recentOpen
+                                                         : placeBlock.trash ? root.trashOpen
+                                                         : !root.recentOpen && !root.trashOpen && !root.settingsOpen
+                                                           && placeBlock.target === root.activePlace
+                            readonly property bool expanded: placeBlock.active && root.railOpen && root.placeTree.length > 0
+                                                             && !placeBlock.recent && !placeBlock.trash
+                            width: placesColumn.width
+
+                            NavItem {
+                                width: parent.width
+                                icon: placeBlock.modelData.icon || ""
+                                label: placeBlock.modelData.label
+                                active: placeBlock.active
+                                meta: placeBlock.active && !placeBlock.recent && !placeBlock.trash && root.placeTotal >= 0
+                                      ? root.pad2(root.placeTotal) + (placeBlock.expanded ? "  ▾" : "") : ""
+                                dropTarget: placeBlock.recent || placeBlock.trash ? "" : placeBlock.target
+                                onMenuRequested: {
+                                    if (!placeBlock.marked)
+                                        return
+                                    bookmarkMenu.index = placeBlock.modelData.bookmark
+                                    bookmarkMenu.popup()
+                                }
+                                onActivated: {
+                                    if (placeBlock.recent)
+                                        root.showRecent()
+                                    else if (placeBlock.trash)
+                                        root.showTrash()
+                                    else
+                                        root.openPlace(placeBlock.modelData)
+                                }
+                            }
+                            Column {
+                                visible: placeBlock.expanded
+                                width: parent.width
+                                topPadding: 2
+                                bottomPadding: 6
+                                Repeater {
+                                    model: placeBlock.expanded ? root.placeTree : []
+                                    delegate: TreeRow {
+                                        id: branch
+                                        required property var modelData
+                                        required property int index
+                                        readonly property string path: placeBlock.target + "/" + branch.modelData.name
+                                        width: placesColumn.width
+                                        label: branch.modelData.name
+                                        count: branch.modelData.count
+                                        target: branch.path
+                                        last: branch.index === root.placeTree.length - 1
+                                        onPath: root.bridge.currentPath === branch.path
+                                                || root.bridge.currentPath.startsWith(branch.path + "/")
+                                        lit: root.placeTreeLit > branch.index
+                                        onActivated: root.bridge.navigate(branch.path)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Item { width: 1; height: root.railOpen ? 26 : 10 }
+                    HudHeader {
+                        visible: root.railOpen
+                        x: 6
+                        width: parent.width - 6
+                        title: "Locations"
+                        titleSize: 12
+                    }
+                    Item { width: 1; height: root.railOpen ? 12 : 0 }
+
+                    Repeater {
+                        model: root.places.filter(function (place) { return place.section !== "" })
+                        delegate: NavItem {
+                            id: location
+                            required property var modelData
+                            readonly property bool adds: location.modelData.add === true
+                            readonly property bool remote: location.modelData.remote === true
+                            readonly property bool drive: location.modelData.drive !== undefined
+                            readonly property bool marked: location.modelData.bookmark !== undefined
+                            readonly property bool system: location.modelData.folder === "/"
+                            readonly property string target: location.system ? "/" : (location.modelData.target || "")
+                            width: placesColumn.width
+                            icon: location.adds ? "" : (location.remote ? "globe" : location.modelData.icon || "")
+                            glyph: location.adds ? "+" : ""
+                            accentLabel: location.adds
+                            label: location.adds ? "Add remote" : location.modelData.label
+                            active: !location.adds && !root.recentOpen && !root.trashOpen && !root.settingsOpen
+                                    && location.target.length > 0 && root.bridge.currentPath === location.target
+                            meta: location.remote ? "LINKED"
+                                  : location.system && root.storageKnown ? Math.round(root.storageShare * 100) + "%"
+                                  : location.drive && location.target.length === 0 ? "OFF" : ""
+                            metaColor: location.remote ? Theme.cGreen : Theme.cMuted
+                            share: location.system && root.storageKnown ? root.storageShare : -1
+                            trailing: location.remote ? "remote"
+                                      : location.drive && location.target.length === 0 ? "not mounted" : ""
+                            dropTarget: location.adds || location.remote ? "" : location.target
+                            onMenuRequested: {
+                                if (location.drive) {
+                                    driveMenu.index = location.modelData.drive
+                                    driveMenu.popup()
+                                } else if (location.marked) {
+                                    bookmarkMenu.index = location.modelData.bookmark
+                                    bookmarkMenu.popup()
+                                }
+                            }
+                            onActivated: root.openPlace(location.modelData)
+                        }
+                    }
+                }
+            }
+
+            // Settings, and the way to fold the sidebar into a rail.
+            Column {
+                id: sidebarFoot
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                anchors.leftMargin: 14
+                anchors.rightMargin: 15
+                anchors.bottomMargin: 12
+                spacing: 2
+                Rectangle { width: parent.width; height: 1; color: Theme.cDead }
+                Item { width: 1; height: 8 }
+                NavItem {
+                    visible: !root.picking
+                    icon: "settings"
+                    label: "Settings"
+                    active: root.settingsOpen
+                    onActivated: root.openSettings()
+                }
+                NavItem {
+                    id: railToggle
+                    glyph: root.railOpen ? "«" : "»"
+                    label: "Collapse"
+                    meta: "CTRL B"
+                    onActivated: root.railOpen = !root.railOpen
+                }
+            }
         }
 
         // ============================== MAIN ==============================
@@ -3077,282 +3872,22 @@ ApplicationWindow {
                 anchors.topMargin: root.tabs.length > 1 ? 8 : 0
             }
 
-            // ---- Folder bar: the way back, where you are, how to look ----
+            // The folder bar moved into the window's header.
             Item {
                 id: folderBar
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.top: headerRule.bottom
-                anchors.leftMargin: 28
-                anchors.rightMargin: 28
-                anchors.topMargin: 16
-                height: 40
-
-                Row {
-                    id: headerNav
-                    anchors.left: parent.left
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 2
-                    IconButton { icon: "arrow-left"; hint: "Back (Alt+Left)"; iconSize: 16; onClicked: root.bridge.back() }
-                    IconButton { icon: "arrow-right"; hint: "Forward (Alt+Right)"; iconSize: 16; onClicked: root.bridge.forward() }
-                    IconButton { icon: "arrow-up"; hint: "Up (Alt+Up)"; iconSize: 16; onClicked: root.bridge.up() }
-                }
-
-                Item {
-                    id: pathBar
-                    anchors.left: headerNav.right
-                    anchors.leftMargin: 14
-                    anchors.right: folderTools.left
-                    anchors.rightMargin: 14
-                    anchors.verticalCenter: parent.verticalCenter
-                    height: Theme.controlHeight
-
-                    // Ctrl+L swaps the crumbs for a field that takes a typed
-                    // path; Enter goes there, Escape puts the crumbs back.
-                    Rectangle {
-                        anchors.fill: parent
-                        visible: pathEditor.visible
-                        radius: Theme.radius
-                        color: Theme.surface
-                        border.width: 1
-                        border.color: Theme.outline
-                    }
-                    TextInput {
-                        id: pathEditor
-                        visible: false
-                        anchors.fill: parent
-                        anchors.leftMargin: 12
-                        anchors.rightMargin: 12
-                        verticalAlignment: TextInput.AlignVCenter
-                        clip: true
-                        color: Theme.ink
-                        selectionColor: Theme.controlHigh
-                        selectedTextColor: Theme.ink
-                        font.family: Theme.family
-                        font.pixelSize: Theme.text
-                        function finish() {
-                            visible = false
-                            root.release()
-                        }
-                        function go() {
-                            let target = text.trim()
-                            if (target === "~" || target.startsWith("~/"))
-                                target = root.bridge.homePath + target.substring(1)
-                            if (target.length > 0)
-                                root.openTarget(target)
-                            finish()
-                        }
-                        Keys.onReturnPressed: go()
-                        Keys.onEnterPressed: go()
-                        Keys.onEscapePressed: finish()
-                        onActiveFocusChanged: if (!activeFocus && visible) finish()
-                    }
-
-                    Flickable {
-                        visible: !pathEditor.visible
-                        anchors.fill: parent
-                        contentWidth: crumbRow.width
-                        clip: true
-                        flickableDirection: Flickable.HorizontalFlick
-                        // Keep the deepest crumb in view.
-                        contentX: Math.max(0, crumbRow.width - width)
-
-                        Row {
-                            id: crumbRow
-                            height: parent.height
-                            spacing: 8
-
-                            Repeater {
-                                id: crumbRepeater
-                                model: root.trashOpen ? [{ label: "Trash", path: "" }]
-                                     : root.recentOpen ? [{ label: "Recent", path: "" }]
-                                     : root.crumbs
-                                delegate: Row {
-                                    id: crumb
-                                    required property int index
-                                    required property var modelData
-                                    readonly property bool last: crumb.index === crumbRepeater.count - 1
-                                    spacing: 8
-                                    anchors.verticalCenter: parent.verticalCenter
-
-                                    Text {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        text: crumb.modelData.label
-                                        color: crumb.last || crumbMouse.containsMouse ? Theme.ink : Theme.inkDim
-                                        font.family: Theme.family
-                                        font.pixelSize: Theme.textLarge + 1
-                                        MouseArea {
-                                            id: crumbMouse
-                                            anchors.fill: parent
-                                            hoverEnabled: true
-                                            cursorShape: Qt.PointingHandCursor
-                                            onClicked: if (crumb.modelData.path.length > 0) root.bridge.navigate(crumb.modelData.path)
-                                            onDoubleClicked: root.editPath()
-                                        }
-                                        DropArea {
-                                            anchors.fill: parent
-                                            enabled: crumb.modelData.path.length > 0
-                                            onDropped: function (drop) { root.dropInto(drop, crumb.modelData.path) }
-                                        }
-                                    }
-                                    Icon {
-                                        visible: !crumb.last
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        name: "chevron-right"
-                                        size: 14
-                                        shade: 0.4
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Row {
-                    id: folderTools
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 10
-
-
-                    // One button for the view: each press moves to the next one.
-                    IconButton {
-                        readonly property var views: [
-                            { key: "list", icon: "list", label: "List" },
-                            { key: "grid", icon: "layout-grid", label: "Grid" },
-                            { key: "dense", icon: "grid-3x3", label: "Compact" }
-                        ]
-                        readonly property int at: Math.max(0, views.findIndex(function (v) { return v.key === root.view }))
-                        readonly property var next: views[(at + 1) % views.length]
-                        anchors.verticalCenter: parent.verticalCenter
-                        visible: !root.trashOpen && !root.recentOpen
-                        icon: views[at].icon
-                        hint: views[at].label + " view; click for " + next.label
-                        onClicked: root.view = next.key
-                    }
-                    Row {
-                        id: headerActions
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 6
-
-                        // Search opens in place, to the left of the buttons.
-                        Rectangle {
-                            id: headerSearch
-                            visible: root.searchShown || root.query.length > 0
-                            width: 240
-                            height: Theme.controlHeight
-                            radius: Theme.radius
-                            color: Theme.surface
-                            border.width: 1
-                            border.color: searchInput.activeFocus ? Theme.outline : Theme.outlineSoft
-
-                            Icon {
-                                id: searchMark
-                                anchors.left: parent.left
-                                anchors.leftMargin: 10
-                                anchors.verticalCenter: parent.verticalCenter
-                                name: "search"
-                                size: 15
-                                shade: root.deepSearch ? 1 : 0.5
-                            }
-
-                            TextInput {
-                                id: searchInput
-                                anchors.left: searchMark.right
-                                anchors.leftMargin: 8
-                                anchors.right: clearSearch.left
-                                anchors.rightMargin: 6
-                                anchors.verticalCenter: parent.verticalCenter
-                                clip: true
-                                color: Theme.ink
-                                selectionColor: Theme.controlHigh
-                                selectedTextColor: Theme.ink
-                                font.family: Theme.family
-                                font.pixelSize: Theme.text
-                                text: root.query
-                                onTextChanged: root.query = text
-                                onActiveFocusChanged: if (!activeFocus && text.length === 0) root.searchShown = false
-                                Keys.onEscapePressed: {
-                                    if (root.deepSearch)
-                                        root.endDeepSearch()
-                                    root.query = ""
-                                    root.searchShown = false
-                                    root.release()
-                                }
-                                Keys.onReturnPressed: root.beginDeepSearch()
-                                Keys.onEnterPressed: root.beginDeepSearch()
-
-                                Text {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    visible: searchInput.text.length === 0
-                                    text: "Filter, or Enter to search below"
-                                    color: Theme.inkFaint
-                                    font.family: Theme.family
-                                    font.pixelSize: 12
-                                }
-                            }
-
-                            IconButton {
-                                id: clearSearch
-                                anchors.right: parent.right
-                                anchors.rightMargin: 3
-                                anchors.verticalCenter: parent.verticalCenter
-                                visible: root.query.length > 0
-                                implicitWidth: 26
-                                implicitHeight: 26
-                                icon: "x"
-                                iconSize: 14
-                                onClicked: {
-                                    root.endDeepSearch()
-                                    root.query = ""
-                                }
-                            }
-                        }
-
-                        IconButton {
-                            icon: "search"
-                            hint: "Search (Ctrl+F)"
-                            on: headerSearch.visible
-                            onClicked: root.openSearch()
-                        }
-                        IconButton {
-                            icon: "panel-right"
-                            hint: root.previewOpen ? "Hide preview" : "Show preview"
-                            on: root.previewOpen
-                            onClicked: root.togglePreview()
-                        }
-                    }
-                }
+                height: 0
             }
 
-            // ---- Status line: how many entries are showing ----
+            // The count lives in the window's status bar now.
             Item {
                 id: statusLine
-                readonly property bool shown: !root.trashOpen && !root.recentOpen
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
-                anchors.leftMargin: 28
-                anchors.rightMargin: 28
-                height: statusLine.shown ? 30 : 10
-                visible: statusLine.shown
-
-                CrossRule {
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                }
-                Text {
-                    anchors.left: parent.left
-                    anchors.verticalCenter: parent.verticalCenter
-                    anchors.verticalCenterOffset: 1
-                    text: root.rows.length + (root.rows.length === 1 ? " item" : " items")
-                          + (root.selectedCount > 0 ? "  ·  " + root.selectedCount + " held" : "")
-                          + (root.showHidden ? "  ·  hidden shown" : "")
-                    color: Theme.inkDim
-                    font.family: Theme.mono
-                    font.pixelSize: 11
-                }
+                height: 0
             }
 
             // ---- Browser ----
@@ -3362,21 +3897,43 @@ ApplicationWindow {
                 anchors.right: parent.right
                 anchors.top: folderBar.bottom
                 anchors.bottom: statusLine.top
-                anchors.leftMargin: 24
-                anchors.rightMargin: 24
-                anchors.topMargin: 10
-                anchors.bottomMargin: 4
+                anchors.leftMargin: 32
+                anchors.rightMargin: 32
+                anchors.topMargin: 0
+                anchors.bottomMargin: 18
                 clip: true
 
 
                 // Selection toolbar, present only while something is held.
                 // Views anchor under this; it takes no room, so holding an
                 // entry never moves the list.
+                HudHeader {
+                    id: filesHud
+                    readonly property bool shown: !root.trashOpen && !root.recentOpen && !root.deepSearch
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.topMargin: shown ? 26 : 0
+                    height: shown ? 22 : 0
+                    visible: shown
+                    title: "Files"
+                    sub: {
+                        const total = root.rows.length
+                        const folders = root.composition.length > 0 ? root.composition[0].count : 0
+                        return total + (total === 1 ? " item" : " items") + "  ·  "
+                             + folders + (folders === 1 ? " folder, " : " folders, ")
+                             + (total - folders) + (total - folders === 1 ? " file" : " files")
+                    }
+                    trailing: root.sortKey.toUpperCase() + (root.sortAscending ? "  ▲" : "  ▼")
+                    onTrailingClicked: root.applySort(root.sortKey)
+                }
+
                 Item {
                     id: selectionBar
                     anchors.left: parent.left
                     anchors.right: parent.right
-                    anchors.top: parent.top
+                    anchors.top: filesHud.bottom
+                    anchors.topMargin: filesHud.shown ? 18 : 0
                     height: 0
                 }
 
@@ -3473,7 +4030,7 @@ ApplicationWindow {
                                 anchors.right: parent.right
                                 anchors.bottom: parent.bottom
                                 height: 3
-                                radius: 2
+                                radius: 0
                                 color: Theme.control
                                 Rectangle {
                                     readonly property int progress: {
@@ -3481,7 +4038,7 @@ ApplicationWindow {
                                         return root.bridge.taskProgress(taskRow.slot)
                                     }
                                     height: parent.height
-                                    radius: 2
+                                    radius: 0
                                     width: parent.width * Math.max(0, Math.min(100, progress)) / 100
                                     color: Theme.inkSoft
                                 }
@@ -3535,55 +4092,37 @@ ApplicationWindow {
                     }
                 }
 
-                // Column heads, list view only.
-                Item {
+                // Column heads, list view only: the top of the table frame.
+                Rectangle {
                     id: columnHeads
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.top: selectionBar.bottom
-                    height: visible ? 26 : 0
+                    height: visible ? 40 : 0
                     visible: root.view !== "grid" && !root.trashOpen && !root.recentOpen && !root.deepSearch
-                    readonly property bool dense: root.view === "dense"
+                    color: Theme.cPanel
+                    border.width: 1
+                    border.color: Theme.cLine
+                    // Where each column starts, as a share of the table.
+                    readonly property real kindX: Math.round(width * 0.445)
+                    readonly property real sizeX: Math.round(width * 0.64)
+                    readonly property real modifiedX: Math.round(width * 0.785)
+                    readonly property bool kindShown: width >= 560
+                    readonly property bool sizeShown: width >= 420
 
-                    SortHead {
-                        anchors.left: parent.left
-                        anchors.leftMargin: columnHeads.dense ? 38 : 64
+                    SortHead { x: 16; anchors.verticalCenter: parent.verticalCenter; label: "Name"; key: "name" }
+                    SortHead { x: columnHeads.kindX; visible: columnHeads.kindShown; anchors.verticalCenter: parent.verticalCenter; label: "Kind"; key: "kind" }
+                    Text {
+                        x: columnHeads.sizeX
+                        visible: columnHeads.sizeShown
                         anchors.verticalCenter: parent.verticalCenter
-                        width: 120
-                        label: "Name"
-                        key: "name"
-                    }
-                    SortHead {
-                        id: kindHead
-                        visible: columnHeads.dense && root.kindColumn
-                        anchors.right: sizeHead.left
-                        anchors.rightMargin: 16
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: 90
-                        label: "Kind"
-                        key: "kind"
-                        numeric: true
-                    }
-                    Overline {
-                        id: sizeHead
-                        visible: root.sizeColumn
-                        anchors.right: modifiedHead.left
-                        anchors.rightMargin: root.sizeColumn ? 16 : 0
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: root.sizeColumn ? 80 : 0
-                        horizontalAlignment: Text.AlignRight
                         text: "SIZE"
+                        color: Theme.cMuted
+                        font.family: Theme.fontMono
+                        font.pixelSize: 10
+                        font.letterSpacing: 3
                     }
-                    SortHead {
-                        id: modifiedHead
-                        anchors.right: parent.right
-                        anchors.rightMargin: columnHeads.dense ? 30 : 52
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: 110
-                        label: "Modified"
-                        key: "modified"
-                        numeric: true
-                    }
+                    SortHead { x: columnHeads.modifiedX; anchors.verticalCenter: parent.verticalCenter; label: "Modified"; key: "modified" }
                 }
 
                 // A directory is being read. On a remote that is a network
@@ -3620,7 +4159,7 @@ ApplicationWindow {
                             Rectangle {
                                 width: 6
                                 height: 6
-                                radius: 3
+                                radius: 0
                                 color: root.spectral
                                 x: spinnerTrack.width / 2 - width / 2
                                 y: -1
@@ -4113,6 +4652,19 @@ ApplicationWindow {
                 }
 
                 // ---- List ----
+                // The table's sides and foot, drawn around however many rows
+                // there are.
+                Rectangle {
+                    z: 1
+                    anchors.left: listBrowser.left
+                    anchors.right: listBrowser.right
+                    anchors.top: listBrowser.top
+                    height: Math.min(listBrowser.contentHeight, listBrowser.height) + 1
+                    visible: listBrowser.visible
+                    color: "transparent"
+                    border.width: 1
+                    border.color: Theme.cLine
+                }
                 ListView {
                     id: listBrowser
                     anchors.left: parent.left
@@ -4174,7 +4726,7 @@ ApplicationWindow {
                         color: Theme.wash(Theme.highlight, 0.12)
                         border.width: 1
                         border.color: Theme.highlight
-                        radius: 3
+                        radius: 0
                     }
 
                     delegate: Item {
@@ -4199,102 +4751,110 @@ ApplicationWindow {
                         // A hidden entry is shown at half strength.
                         readonly property real dim: root.isHidden(listRow.name) ? 0.5 : 1.0
 
+                        readonly property string tag: root.tagOf(listRow.name, listRow.folder)
+
                         width: ListView.view.width
                         height: root.rowHeight
 
-                        // In the list view every entry is a card; dense rows are
-                        // flat. Held entries are filled and outlined all round.
+                        // One table: a panel with a hairline between rows. The
+                        // held row takes the wash and a 2px accent bar.
                         Rectangle {
                             anchors.fill: parent
-                            anchors.topMargin: listRow.dense ? 0 : 4
-                            anchors.bottomMargin: listRow.dense ? 0 : 4
-                            radius: listRow.dense ? Theme.radiusSmall : Theme.radius
-                            color: listRow.selected ? Theme.selected
-                                 : rowMouse.containsMouse ? Theme.surfaceHigh
-                                 : listRow.dense ? "transparent" : Theme.surface
-                            border.width: listRow.selected || root.focusRow === listRow.entry ? 1 : 0
-                            border.color: listRow.selected ? Theme.outline : Theme.outlineSoft
+                            color: listRow.selected ? Theme.cWash
+                                 : rowMouse.containsMouse ? Theme.cDim : Theme.cPanel
+                            Behavior on color { ColorAnimation { duration: Theme.tFast } }
+                        }
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            height: 1
+                            color: Theme.cDead
+                        }
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.top: parent.top
+                            anchors.bottom: parent.bottom
+                            width: 2
+                            visible: listRow.selected
+                            color: Theme.cGreen
+                        }
+                        Rectangle {
+                            anchors.fill: parent
+                            visible: root.focusRow === listRow.entry && !listRow.selected
+                            color: "transparent"
+                            border.width: 1
+                            border.color: Theme.cLine
                         }
 
-                        FileTile {
-                            id: rowTile
+                        TypeTag {
+                            id: rowTag
                             opacity: listRow.dim
-                            anchors.left: parent.left
-                            anchors.leftMargin: listRow.dense ? 10 : 18
+                            x: 16
                             anchors.verticalCenter: parent.verticalCenter
-                            width: listRow.dense ? 18 : 30
-                            height: width
-                            name: listRow.name
-                            folder: listRow.folder
-                            lifted: listRow.selected
-                            thumbnail: {
-                                void root.revision
-                                return listRow.dense ? "" : root.bridge.entryThumbnail(listRow.entry)
-                            }
+                            kind: listRow.tag
                         }
 
                         Text {
                             opacity: listRow.dim
-                            anchors.left: rowTile.right
-                            anchors.leftMargin: listRow.dense ? 10 : 16
-                            anchors.right: listRow.dense && root.kindColumn ? rowKind.left : rowSize.left
-                            anchors.rightMargin: 16
+                            x: 62
+                            width: (columnHeads.kindShown ? columnHeads.kindX : columnHeads.sizeShown ? columnHeads.sizeX : columnHeads.modifiedX) - x - 16
                             anchors.verticalCenter: parent.verticalCenter
                             text: listRow.name
                             elide: Text.ElideMiddle
-                            color: listRow.selected || listRow.folder ? Theme.ink : Theme.inkSoft
-                            font.family: Theme.family
-                            font.pixelSize: Theme.text
-                            font.weight: listRow.folder ? Font.Medium : Font.Normal
+                            color: Theme.cFg
+                            font.family: Theme.fontHuman
+                            font.pixelSize: 13
+                            font.weight: Font.DemiBold
                         }
 
                         Text {
                             id: rowKind
-                            visible: listRow.dense && root.kindColumn
+                            visible: columnHeads.kindShown
                             opacity: listRow.dim
-                            anchors.right: rowSize.left
-                            anchors.rightMargin: 16
+                            x: columnHeads.kindX
+                            width: columnHeads.sizeX - x - 12
                             anchors.verticalCenter: parent.verticalCenter
-                            width: 90
                             elide: Text.ElideRight
-                            text: listRow.folder ? "Folder" : root.kindOf(listRow.name, false)
-                            color: Theme.inkFaint
-                            font.family: Theme.mono
-                            font.pixelSize: 12
+                            text: root.kindLabel(listRow.name, listRow.folder)
+                            color: Theme.cFg
+                            font.family: Theme.fontHuman
+                            font.pixelSize: 13
                         }
 
                         Text {
                             id: rowSize
-                            visible: root.sizeColumn
+                            visible: columnHeads.sizeShown
                             opacity: listRow.dim
-                            anchors.right: rowModified.left
-                            anchors.rightMargin: root.sizeColumn ? 16 : 0
+                            x: columnHeads.sizeX
+                            width: columnHeads.modifiedX - x - 12
                             anchors.verticalCenter: parent.verticalCenter
-                            width: root.sizeColumn ? 80 : 0
-                            horizontalAlignment: Text.AlignRight
+                            elide: Text.ElideRight
                             text: {
                                 void root.revision
-                                return listRow.folder ? "—" : root.bridge.entryDetail(listRow.entry)
+                                if (!listRow.folder)
+                                    return root.bridge.entryDetail(listRow.entry)
+                                const held = root.bridge.entryTotal(root.bridge.entryPath(listRow.entry), root.showHidden)
+                                return held < 0 ? "—" : held + (held === 1 ? " item" : " items")
                             }
-                            color: Theme.inkDim
-                            font.family: Theme.mono
+                            color: Theme.cFg
+                            font.family: Theme.fontMono
                             font.pixelSize: 12
                         }
 
                         Text {
                             id: rowModified
                             opacity: listRow.dim
-                            anchors.right: rowMore.left
-                            anchors.rightMargin: listRow.dense ? 4 : 12
+                            x: columnHeads.modifiedX
+                            width: parent.width - x - 12
                             anchors.verticalCenter: parent.verticalCenter
-                            width: 110
-                            horizontalAlignment: Text.AlignRight
+                            elide: Text.ElideRight
                             text: {
                                 void root.revision
-                                return root.modifiedText(root.bridge.entryModified(listRow.entry))
+                                return root.stampText(root.bridge.entryModified(listRow.entry))
                             }
-                            color: Theme.inkSoft
-                            font.family: Theme.mono
+                            color: Theme.cFg
+                            font.family: Theme.fontMono
                             font.pixelSize: 12
                         }
 
@@ -4307,7 +4867,7 @@ ApplicationWindow {
                                 anchors.fill: parent
                                 visible: parent.containsDrag
                                 color: "transparent"
-                                radius: 6
+                                radius: 0
                                 border.width: 1
                                 border.color: Theme.highlight
                             }
@@ -4356,21 +4916,6 @@ ApplicationWindow {
                             onCanceled: root.sweepRelease()
                         }
 
-                        IconButton {
-                            id: rowMore
-                            anchors.right: parent.right
-                            anchors.rightMargin: listRow.dense ? 2 : 10
-                            anchors.verticalCenter: parent.verticalCenter
-                            visible: !listRow.dense || rowMouse.containsMouse || listRow.selected
-                            width: listRow.dense ? 24 : 30
-                            height: width
-                            implicitWidth: width
-                            implicitHeight: height
-                            icon: "ellipsis-vertical"
-                            iconSize: 16
-                            hint: "More"
-                            onClicked: root.openEntryMenu(listRow.entry)
-                        }
                     }
                 }
 
@@ -4385,8 +4930,8 @@ ApplicationWindow {
                     visible: !root.deepSearch && !root.recentOpen && !root.trashOpen && root.view === "grid" && root.rows.length > 0
                     clip: true
                     model: root.rows
-                    cellWidth: Math.floor(width / Math.max(2, Math.floor(width / 220)))
-                    cellHeight: 250
+                    cellWidth: Math.floor(width / Math.max(2, Math.floor(width / 200)))
+                    cellHeight: 170
                     boundsBehavior: Flickable.StopAtBounds
                     // Resizing changes the layout constantly. Holding a screen
                     // of delegates either side keeps that from rebuilding them,
@@ -4436,7 +4981,7 @@ ApplicationWindow {
                         color: Theme.wash(Theme.highlight, 0.12)
                         border.width: 1
                         border.color: Theme.highlight
-                        radius: 3
+                        radius: 0
                     }
 
                     delegate: Item {
@@ -4465,17 +5010,20 @@ ApplicationWindow {
                         height: gridBrowser.cellHeight
                         opacity: root.isHidden(tileHost.name) ? 0.5 : 1
 
-                        // The reference's file card: mark, name, a ruled line,
-                        // and what it weighs.
+                        readonly property string tag: root.tagOf(tileHost.name, tileHost.folder)
+
+                        // The Store's app card: the type tag set large, the
+                        // name, what it is, and a flag at the foot.
                         Rectangle {
                             id: card
                             anchors.fill: parent
                             anchors.margins: 7
-                            radius: Theme.radius
-                            color: tileHost.selected ? Theme.selected : (tileMouse.containsMouse ? Theme.surfaceHigh : Theme.surface)
-                            border.width: tileHost.selected || root.focusRow === tileHost.entry ? 1 : 0
-                            border.color: tileHost.selected ? Theme.outline : Theme.outlineSoft
+                            color: tileHost.selected ? Theme.cWash : (tileMouse.containsMouse ? Theme.cDim : Theme.cPanel)
+                            border.width: 1
+                            border.color: tileHost.selected ? Theme.cGreen
+                                        : root.focusRow === tileHost.entry || tileMouse.containsMouse ? Theme.cLine : Theme.cDead
                             clip: true
+                            Behavior on color { ColorAnimation { duration: Theme.tFast } }
 
                             // A picture or video fills the top of its card.
                             Image {
@@ -4484,7 +5032,7 @@ ApplicationWindow {
                                 anchors.right: parent.right
                                 anchors.top: parent.top
                                 anchors.margins: 1
-                                height: parent.height * 0.56
+                                height: parent.height * 0.42
                                 visible: tileHost.pictured
                                 source: tileHost.thumbnail
                                 fillMode: Image.PreserveAspectCrop
@@ -4492,77 +5040,70 @@ ApplicationWindow {
                                 asynchronous: true
                             }
 
-                            FileTile {
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                anchors.top: parent.top
-                                anchors.topMargin: 38
-                                visible: !tileHost.pictured
-                                width: 60
-                                height: 60
-                                name: tileHost.name
-                                folder: tileHost.folder
-                                lifted: tileHost.selected
-                            }
-
                             Text {
-                                id: cardName
-                                anchors.left: parent.left
-                                anchors.right: parent.right
-                                anchors.leftMargin: 14
-                                anchors.rightMargin: 14
-                                anchors.bottom: cardRule.top
-                                anchors.bottomMargin: 10
-                                height: 34
-                                text: tileHost.name
-                                horizontalAlignment: Text.AlignHCenter
-                                verticalAlignment: Text.AlignBottom
-                                wrapMode: Text.Wrap
-                                maximumLineCount: 2
-                                elide: Text.ElideMiddle
-                                color: Theme.ink
-                                font.family: Theme.family
-                                font.pixelSize: Theme.text
+                                x: 18
+                                y: 16
+                                visible: !tileHost.pictured
+                                text: tileHost.tag
+                                color: Theme.typeColor(tileHost.tag)
+                                font.family: Theme.fontBrand
+                                font.pixelSize: 26
+                                font.weight: Font.ExtraBold
                             }
 
-                            CrossRule {
-                                id: cardRule
+                            Column {
                                 anchors.left: parent.left
                                 anchors.right: parent.right
-                                anchors.bottom: cardFoot.top
-                                anchors.leftMargin: 14
-                                anchors.rightMargin: 14
-                                anchors.bottomMargin: 8
-                            }
-
-                            Item {
-                                id: cardFoot
-                                anchors.left: parent.left
-                                anchors.right: parent.right
-                                anchors.bottom: parent.bottom
-                                anchors.margins: 16
-                                height: 32
-                                Column {
-                                    anchors.left: parent.left
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    spacing: 2
-                                    Text {
-                                        text: tileHost.folder ? "Folder" : "Filesize:"
-                                        color: Theme.ink
-                                        font.family: Theme.family
-                                        font.pixelSize: 12
-                                        font.weight: Font.Medium
-                                    }
-                                    Text {
-                                        text: {
-                                            void root.revision
-                                            return tileHost.folder ? root.modifiedText(root.bridge.entryModified(tileHost.entry))
-                                                                   : root.bridge.entryDetail(tileHost.entry)
-                                        }
-                                        color: Theme.inkDim
-                                        font.family: Theme.family
-                                        font.pixelSize: 11
-                                    }
+                                anchors.bottom: cardFlag.top
+                                anchors.leftMargin: 18
+                                anchors.rightMargin: 18
+                                anchors.bottomMargin: 14
+                                spacing: 5
+                                Text {
+                                    id: cardName
+                                    width: parent.width
+                                    text: tileHost.name
+                                    elide: Text.ElideMiddle
+                                    color: Theme.cFg
+                                    font.family: Theme.fontHuman
+                                    font.pixelSize: 14
+                                    font.weight: Font.DemiBold
                                 }
+                                Text {
+                                    width: parent.width
+                                    elide: Text.ElideRight
+                                    text: {
+                                        void root.revision
+                                        const when = root.stampText(root.bridge.entryModified(tileHost.entry))
+                                        if (tileHost.folder) {
+                                            const held = root.bridge.entryTotal(root.bridge.entryPath(tileHost.entry), root.showHidden)
+                                            return (held < 0 ? "Folder" : held + (held === 1 ? " item" : " items")) + "  ·  " + when
+                                        }
+                                        return root.bridge.entryDetail(tileHost.entry) + "  ·  " + when
+                                    }
+                                    color: Theme.cMuted
+                                    font.family: Theme.fontHuman
+                                    font.pixelSize: 12
+                                }
+                            }
+
+                            Row {
+                                id: cardFlag
+                                anchors.left: parent.left
+                                anchors.bottom: parent.bottom
+                                anchors.leftMargin: 18
+                                anchors.bottomMargin: 16
+                                spacing: 6
+                                Rectangle { width: 6; height: 6; color: Theme.typeColor(tileHost.tag); anchors.verticalCenter: parent.verticalCenter }
+                                Text {
+                                    text: tileHost.tag
+                                    color: Theme.typeColor(tileHost.tag)
+                                    font.family: Theme.fontMono
+                                    font.pixelSize: 9
+                                    font.letterSpacing: 2
+                                    font.bold: true
+                                }
+                                Rectangle { width: 6; height: 6; color: Theme.typeColor(tileHost.tag); anchors.verticalCenter: parent.verticalCenter }
                             }
                         }
 
@@ -4575,7 +5116,7 @@ ApplicationWindow {
                                     anchors.fill: parent
                                     visible: parent.containsDrag
                                     color: "transparent"
-                                    radius: 6
+                                    radius: 0
                                     border.width: 1
                                     border.color: Theme.highlight
                                 }
@@ -4626,14 +5167,16 @@ ApplicationWindow {
 
                         // The bookmark star a folder card carries, and the menu.
                         IconButton {
-                            anchors.left: card.left
+                            anchors.right: card.right
+                            anchors.rightMargin: 40
                             anchors.top: card.top
-                            anchors.margins: 8
+                            anchors.topMargin: 8
                             width: 28
                             height: 28
                             implicitWidth: 28
                             implicitHeight: 28
-                            visible: tileHost.folder
+                            visible: tileHost.folder && (tileMouse.containsMouse || hovered)
+                            bare: true
                             icon: "star"
                             iconSize: 15
                             hint: "Bookmark"
@@ -4647,7 +5190,9 @@ ApplicationWindow {
                             height: 28
                             implicitWidth: 28
                             implicitHeight: 28
-                            icon: "ellipsis-vertical"
+                            visible: tileMouse.containsMouse || hovered || tileHost.selected
+                            bare: true
+                            icon: "ellipsis"
                             iconSize: 15
                             hint: "More"
                             onClicked: root.openEntryMenu(tileHost.entry)
@@ -4886,10 +5431,10 @@ ApplicationWindow {
             height: parent.height
             visible: width > 0
             clip: true
-            color: Theme.surface
+            color: Theme.cBase
 
             Behavior on width {
-                NumberAnimation { duration: 130; easing.type: Easing.OutCubic }
+                NumberAnimation { duration: Theme.tMed; easing.type: Easing.OutCubic }
             }
 
             // The entry described: the one held, or none.
@@ -4929,328 +5474,428 @@ ApplicationWindow {
                      + (inspector.number("files") === 1 ? " file" : " files"))
                 : root.readableSize(inspector.number("size"))
 
-            // ---- Head ----
-            Row {
-                id: previewHead
-                anchors.left: parent.left
-                anchors.top: parent.top
-                anchors.leftMargin: 28
-                anchors.topMargin: 28
-                spacing: 10
-                Icon {
-                    anchors.verticalCenter: parent.verticalCenter
-                    name: inspector.single || root.selectedCount > 1 ? "file-text" : "hard-drive"
-                    size: 18
-                    shade: 0.7
-                }
-                Text {
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: inspector.single || root.selectedCount > 1 ? "File Preview" : "Storage"
-                    color: Theme.ink
-                    font.family: Theme.family
-                    font.pixelSize: Theme.textLarge + 1
-                    font.weight: Font.Medium
-                }
+            readonly property string entryTag: root.tagOf(inspector.entryName, inspector.entryFolder)
+            readonly property string entryPath: {
+                void root.revision
+                return inspector.single ? root.bridge.entryPath(inspector.row) : ""
+            }
+            // Where the record sits in the list, counted from one.
+            readonly property int position: root.rows.indexOf(inspector.row) + 1
+            readonly property string preview: {
+                void root.revision
+                const tag = inspector.entryTag
+                return inspector.single && (tag === "CODE" || tag === "TXT") && !inspector.entryFolder
+                       ? root.bridge.textHead(inspector.entryPath, 3) : ""
+            }
+            readonly property string placeText: {
+                const folder = inspector.text("folder")
+                const home = root.bridge.homePath
+                if (home.length > 0 && (folder === home || folder.startsWith(home + "/")))
+                    return "~" + folder.substring(home.length)
+                return folder
             }
 
-            CrossRule {
-                id: previewRule
+            Rectangle {
                 anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: previewHead.bottom
-                anchors.leftMargin: 24
-                anchors.rightMargin: 24
-                anchors.topMargin: 22
+                width: 1
+                height: parent.height
+                color: Theme.cDead
             }
 
-            // ---- One entry ----
             Flickable {
-                id: previewBody
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: previewRule.bottom
-                anchors.bottom: previewFoot.top
-                anchors.topMargin: 18
-                visible: inspector.single
-                contentHeight: previewColumn.height
+                id: recordView
+                anchors.fill: parent
+                anchors.leftMargin: 1
+                contentHeight: recordColumn.implicitHeight + 48
                 clip: true
                 boundsBehavior: Flickable.StopAtBounds
 
                 Column {
-                    id: previewColumn
-                    x: 28
-                    width: previewBody.width - 56
-                    spacing: 14
+                    id: recordColumn
+                    x: 22
+                    y: 26
+                    width: recordView.width - 44
+                    spacing: 26
 
-                    // The picture, or the file's tile drawn large.
-                    Rectangle {
+                    // ---- The record: one held entry ----
+                    Item {
+                        id: recordCard
+                        visible: inspector.single
                         width: parent.width
-                        height: 168
-                        radius: Theme.radius
-                        color: previewPicture.status === Image.Ready ? Theme.inset : "transparent"
-                        clip: true
-                        Image {
-                            id: previewPicture
+                        height: visible ? recordBody.implicitHeight + 36 : 0
+
+                        ChamferPanel {
                             anchors.fill: parent
-                            source: {
-                                void root.revision
-                                return inspector.single && !inspector.entryFolder ? root.bridge.entryThumbnail(inspector.row) : ""
-                            }
-                            fillMode: Image.PreserveAspectFit
-                            sourceSize: Qt.size(width * 2, height * 2)
-                            asynchronous: true
-                            visible: status === Image.Ready
+                            fill: Theme.mix(Theme.cPanel, Theme.cWash, 0.25)
                         }
-                        FileTile {
-                            anchors.centerIn: parent
-                            visible: previewPicture.status !== Image.Ready
-                            width: 120
-                            height: 120
-                            name: inspector.entryName
-                            folder: inspector.entryFolder
+                        CornerBrackets {
+                            anchors.fill: parent
+                            anchors.margins: 6
                         }
-                    }
-
-                    CrossRule { width: parent.width }
-
-                    Column {
-                        width: parent.width
-                        spacing: 4
+                        // The tag, huge and outlined, as a watermark.
                         Text {
-                            width: parent.width
-                            text: inspector.entryName
-                            wrapMode: Text.WrapAnywhere
-                            maximumLineCount: 3
-                            elide: Text.ElideRight
-                            color: Theme.ink
-                            font.family: Theme.family
-                            font.pixelSize: Theme.title
-                            font.weight: Font.DemiBold
+                            anchors.right: parent.right
+                            anchors.bottom: parent.bottom
+                            anchors.rightMargin: -6
+                            anchors.bottomMargin: 58
+                            text: inspector.entryTag
+                            color: "transparent"
+                            style: Text.Outline
+                            styleColor: Theme.cLine
+                            opacity: 0.32
+                            font.family: Theme.fontBrand
+                            font.pixelSize: 104
+                            font.weight: Font.ExtraBold
                         }
-                        Text {
-                            width: parent.width
-                            text: inspector.sizeText + "  ·  " + root.modifiedText(inspector.number("modified"))
-                            color: Theme.inkDim
-                            font.family: Theme.family
-                            font.pixelSize: 12
-                        }
-                    }
 
-                    Text {
-                        text: "Details"
-                        topPadding: 6
-                        color: Theme.ink
-                        font.family: Theme.family
-                        font.pixelSize: Theme.text
-                        font.weight: Font.Medium
-                    }
+                        Column {
+                            id: recordBody
+                            x: 22
+                            y: 20
+                            width: parent.width - 44
+                            spacing: 16
 
-                    Repeater {
-                        model: [
-                            ["Type", inspector.text("type")],
-                            ["Location", inspector.text("folder")],
-                            ["Links to", inspector.text("link")],
-                            ["Owner", inspector.text("owner") + (inspector.text("group").length > 0 ? " : " + inspector.text("group") : "")],
-                            ["Access", inspector.text("mode")],
-                            ["Created", inspector.number("created") > 0 ? root.modifiedText(inspector.number("created")) : ""]
-                        ].filter(function (pair) { return pair[1].length > 0 && pair[1] !== " : " })
-                        delegate: Column {
-                            id: detailRow
-                            required property var modelData
-                            width: previewColumn.width
-                            spacing: 2
-                            Text {
-                                text: detailRow.modelData[0]
-                                color: Theme.inkFaint
-                                font.family: Theme.family
-                                font.pixelSize: 11
-                            }
-                            Text {
+                            // RECORD 05 / 08, and a tick per entry.
+                            Item {
                                 width: parent.width
-                                text: detailRow.modelData[1]
-                                wrapMode: Text.WrapAnywhere
-                                color: Theme.inkSoft
-                                font.family: Theme.family
-                                font.pixelSize: 12
+                                height: 14
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    textFormat: Text.StyledText
+                                    text: "RECORD  <font color='" + Theme.cGreen + "'><b>" + root.pad2(inspector.position)
+                                          + "</b></font>  /  " + root.pad2(root.rows.length)
+                                    color: Theme.cMuted
+                                    font.family: Theme.fontMono
+                                    font.pixelSize: 10
+                                    font.letterSpacing: 3
+                                }
+                                Row {
+                                    anchors.right: parent.right
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    spacing: 3
+                                    Repeater {
+                                        model: 8
+                                        delegate: Rectangle {
+                                            required property int index
+                                            // Which eighth of the list the record falls in.
+                                            readonly property int at: root.rows.length > 0
+                                                ? Math.min(7, Math.floor((inspector.position - 1) * 8 / root.rows.length)) : -1
+                                            width: 4
+                                            height: 10
+                                            color: index === at ? Theme.cGreen : Theme.cDead
+                                            antialiasing: true
+                                            transform: Matrix4x4 {
+                                                matrix: Qt.matrix4x4(1, Theme.shear, 0, -Theme.shear * 10, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            DashRule { width: parent.width; height: 1 }
+
+                            // The tile, the kind and the name.
+                            Row {
+                                width: parent.width
+                                spacing: 16
+                                Rectangle {
+                                    width: 64
+                                    height: 64
+                                    color: Theme.cDim
+                                    border.width: 1
+                                    border.color: Theme.cLine
+                                    clip: true
+                                    // Hatching, for the tile's ground.
+                                    Canvas {
+                                        anchors.fill: parent
+                                        anchors.margins: 1
+                                        onPaint: {
+                                            const ctx = getContext("2d")
+                                            ctx.reset()
+                                            ctx.strokeStyle = Theme.cDead
+                                            ctx.lineWidth = 1
+                                            for (let k = -height; k < width; k += 6) {
+                                                ctx.beginPath()
+                                                ctx.moveTo(k, height)
+                                                ctx.lineTo(k + height, 0)
+                                                ctx.stroke()
+                                            }
+                                        }
+                                    }
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: inspector.entryTag
+                                        color: Theme.typeColor(inspector.entryTag)
+                                        font.family: Theme.fontBrand
+                                        font.pixelSize: inspector.entryTag.length > 3 ? 12 : 15
+                                        font.weight: Font.ExtraBold
+                                    }
+                                }
+                                Column {
+                                    width: parent.width - 80
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    spacing: 6
+                                    Text {
+                                        text: root.kindLabel(inspector.entryName, inspector.entryFolder).toUpperCase()
+                                        color: Theme.typeColor(inspector.entryTag)
+                                        font.family: Theme.fontMono
+                                        font.pixelSize: 10
+                                        font.letterSpacing: 3
+                                    }
+                                    Text {
+                                        width: parent.width
+                                        text: inspector.entryName
+                                        elide: Text.ElideMiddle
+                                        color: Theme.cFg
+                                        font.family: Theme.fontBrand
+                                        font.pixelSize: 22
+                                        font.weight: Font.DemiBold
+                                    }
+                                }
+                            }
+
+                            // MODIFIED | LOCATION
+                            Row {
+                                width: parent.width
+                                Repeater {
+                                    model: [
+                                        { label: "MODIFIED", value: root.stampText(inspector.number("modified")) },
+                                        { label: "LOCATION", value: inspector.placeText }
+                                    ]
+                                    delegate: Column {
+                                        required property var modelData
+                                        width: recordBody.width / 2
+                                        spacing: 6
+                                        Text {
+                                            text: modelData.label
+                                            color: Theme.cMuted
+                                            font.family: Theme.fontMono
+                                            font.pixelSize: 9
+                                            font.letterSpacing: 3
+                                        }
+                                        Text {
+                                            width: parent.width - 8
+                                            text: modelData.value
+                                            elide: Text.ElideLeft
+                                            color: Theme.cFg
+                                            font.family: Theme.fontMono
+                                            font.pixelSize: 12
+                                        }
+                                    }
+                                }
+                            }
+
+                            // The first lines of a text or code file.
+                            Rectangle {
+                                visible: inspector.preview.length > 0
+                                width: parent.width
+                                height: visible ? previewLines.implicitHeight + 16 : 0
+                                color: Theme.cBase
+                                border.width: 1
+                                border.color: Theme.cDead
+                                Column {
+                                    id: previewLines
+                                    x: 10
+                                    y: 8
+                                    width: parent.width - 20
+                                    Repeater {
+                                        model: inspector.preview.length > 0 ? inspector.preview.split("\n") : []
+                                        delegate: Row {
+                                            required property string modelData
+                                            required property int index
+                                            spacing: 10
+                                            Text {
+                                                text: index + 1
+                                                width: 12
+                                                horizontalAlignment: Text.AlignRight
+                                                color: Theme.cLine
+                                                font.family: Theme.fontMono
+                                                font.pixelSize: 11
+                                            }
+                                            Text {
+                                                width: previewLines.width - 22
+                                                text: modelData
+                                                elide: Text.ElideRight
+                                                color: Theme.cFg
+                                                font.family: Theme.fontMono
+                                                font.pixelSize: 11
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Open, then the icon actions.
+                            Row {
+                                id: recordActions
+                                spacing: 10
+                                TextButton {
+                                    primary: true
+                                    text: "Open  ↵"
+                                    width: 82
+                                    onClicked: root.activateRow(inspector.row)
+                                }
+                                IconButton {
+                                    width: 40
+                                    height: 40
+                                    icon: "terminal"
+                                    hint: "Open terminal here (Ctrl+Alt+T)"
+                                    onClicked: root.bridge.openTerminalHere()
+                                }
+                                IconButton {
+                                    width: 40
+                                    height: 40
+                                    icon: "copy"
+                                    hint: "Copy path (Ctrl+Shift+C)"
+                                    onClicked: root.copyToClipboard(inspector.entryPath)
+                                }
+                                IconButton {
+                                    id: recordMore
+                                    width: 40
+                                    height: 40
+                                    icon: "ellipsis"
+                                    hint: "More"
+                                    onClicked: root.openEntryMenu(inspector.row)
+                                }
                             }
                         }
                     }
-                }
-            }
 
-            // ---- Several entries ----
-            Column {
-                anchors.centerIn: parent
-                width: parent.width - 64
-                spacing: 8
-                visible: root.selectedCount > 1
-                Text {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: root.selectedCount
-                    color: Theme.ink
-                    font.family: Theme.family
-                    font.pixelSize: 34
-                    font.weight: Font.Light
-                }
-                Text {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: "items held"
-                    color: Theme.inkDim
-                    font.family: Theme.family
-                    font.pixelSize: 12
-                }
-            }
-
-            // ---- Nothing held: what this folder holds, and the disk ----
-            Column {
-                id: storagePanel
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: previewRule.bottom
-                anchors.leftMargin: 28
-                anchors.rightMargin: 28
-                anchors.topMargin: 20
-                spacing: 18
-                visible: root.selectedCount === 0
-
-                readonly property real total: {
-                    void root.revision
-                    return root.bridge.storageTotal()
-                }
-                readonly property real used: {
-                    void root.revision
-                    return root.bridge.storageUsed()
-                }
-
-                // The disk, used against free.
-                Overline { text: "DISK" }
-                Row {
-                    spacing: 20
-                    Donut {
-                        id: diskRing
-                        readonly property real share: storagePanel.total > 0 ? storagePanel.used / storagePanel.total : 0
-                        segments: [
-                            { value: storagePanel.used, color: Theme.chart[0] },
-                            { value: Math.max(0, storagePanel.total - storagePanel.used), color: Theme.control }
-                        ]
-                        figure: Math.round(diskRing.share * 100) + "%"
-                        caption: "USED"
-                    }
-                    Column {
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 10
-                        Repeater {
-                            model: [
-                                { label: "Used", value: root.readableSize(storagePanel.used), color: Theme.chart[0] },
-                                { label: "Free", value: root.readableSize(Math.max(0, storagePanel.total - storagePanel.used)), color: Theme.control },
-                                { label: "Total", value: root.readableSize(storagePanel.total), color: "transparent" }
-                            ]
-                            delegate: Legend {}
-                        }
-                    }
-                }
-
-                CrossRule { width: parent.width }
-
-                // What this folder holds, by kind.
-                Overline { text: "THIS FOLDER" }
-                Row {
-                    spacing: 20
-                    Donut {
-                        segments: root.composition.map(function (kind, i) { return { value: kind.count, color: Theme.chart[i] } })
-                        figure: root.rows.length
-                        caption: root.rows.length === 1 ? "ITEM" : "ITEMS"
-                    }
-                    Column {
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 10
-                        Repeater {
-                            model: root.composition.map(function (kind, i) {
-                                return { label: kind.label, value: String(kind.count), color: Theme.chart[i] }
-                            }).filter(function (row) { return row.value !== "0" })
-                            delegate: Legend {}
-                        }
-                    }
-                }
-            }
-
-            // ---- Foot: what can be done with the entry ----
-            Item {
-                id: previewFoot
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.bottom: parent.bottom
-                anchors.leftMargin: 24
-                anchors.rightMargin: 24
-                anchors.bottomMargin: 14
-                height: inspector.single ? 110 : 0
-                visible: inspector.single
-
-                CrossRule { anchors.top: parent.top; width: parent.width }
-                CrossRule { anchors.bottom: parent.bottom; width: parent.width }
-
-                Row {
-                    anchors.centerIn: parent
-                    Repeater {
-                        model: [
-                            { icon: "external-link", label: "Open" },
-                            { icon: "pencil", label: "Rename" },
-                            { icon: "trash-2", label: "Trash" }
-                        ]
-                        delegate: Item {
-                            id: footAction
-                            required property var modelData
-                            required property int index
-                            width: (previewFoot.width) / 3
-                            height: 76
-                            // The reference's crosses between the actions.
+                    // ---- Several held ----
+                    Item {
+                        visible: root.selectedCount > 1
+                        width: parent.width
+                        height: visible ? 150 : 0
+                        ChamferPanel { anchors.fill: parent }
+                        CornerBrackets { anchors.fill: parent; anchors.margins: 6 }
+                        Column {
+                            anchors.centerIn: parent
+                            spacing: 6
                             Text {
-                                visible: footAction.index > 0
-                                anchors.horizontalCenter: parent.left
-                                anchors.top: parent.top
-                                text: "+"
-                                color: Theme.cross
-                                font.pixelSize: 12
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                text: root.pad2(root.selectedCount)
+                                color: Theme.cFg
+                                font.family: Theme.fontBrand
+                                font.pixelSize: 40
+                                font.weight: Font.ExtraBold
+                            }
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                text: "ITEMS HELD"
+                                color: Theme.cMuted
+                                font.family: Theme.fontMono
+                                font.pixelSize: 10
+                                font.letterSpacing: 3
+                            }
+                        }
+                    }
+
+                    // ---- The disk ----
+                    Column {
+                        id: storagePanel
+                        width: parent.width
+                        spacing: 16
+                        visible: storagePanel.total > 0
+
+                        readonly property real total: {
+                            void root.revision
+                            return root.bridge.storageTotal()
+                        }
+                        readonly property real used: {
+                            void root.revision
+                            return root.bridge.storageUsed()
+                        }
+
+                        HudHeader { width: parent.width; title: "Storage"; sub: "/" }
+                        Row {
+                            spacing: 20
+                            Donut {
+                                id: diskRing
+                                readonly property real share: storagePanel.total > 0 ? storagePanel.used / storagePanel.total : 0
+                                segments: [
+                                    { value: storagePanel.used, color: Theme.cGreen },
+                                    { value: Math.max(0, storagePanel.total - storagePanel.used), color: Theme.cDead }
+                                ]
+                                figure: Math.round(diskRing.share * 100) + "%"
+                                caption: "USED"
                             }
                             Column {
-                                anchors.centerIn: parent
-                                spacing: 8
-                                Rectangle {
-                                    anchors.horizontalCenter: parent.horizontalCenter
-                                    width: 36
-                                    height: 36
-                                    radius: Theme.radius
-                                    color: footMouse.containsMouse ? Theme.controlHigh : Theme.control
-                                    Icon { anchors.centerIn: parent; name: footAction.modelData.icon; size: 17; shade: 0.9 }
-                                }
-                                Text {
-                                    anchors.horizontalCenter: parent.horizontalCenter
-                                    text: footAction.modelData.label
-                                    color: Theme.ink
-                                    font.family: Theme.family
-                                    font.pixelSize: 12
-                                    font.weight: Font.Medium
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 10
+                                Repeater {
+                                    model: [
+                                        { label: "Used", value: root.readableSize(storagePanel.used), color: Theme.cGreen },
+                                        { label: "Free", value: root.readableSize(Math.max(0, storagePanel.total - storagePanel.used)), color: Theme.cDead },
+                                        { label: "Total", value: root.readableSize(storagePanel.total), color: "transparent" }
+                                    ]
+                                    delegate: Legend {}
                                 }
                             }
+                        }
+                    }
+
+                    // ---- What this folder holds ----
+                    Column {
+                        width: parent.width
+                        spacing: 16
+                        visible: !root.trashOpen && !root.recentOpen
+                        HudHeader { width: parent.width; title: "This folder"; sub: "composition" }
+                        Row {
+                            spacing: 20
+                            Donut {
+                                segments: root.composition.map(function (kind, i) { return { value: kind.count, color: Theme.chart[i] } })
+                                figure: root.pad2(root.rows.length)
+                                caption: root.rows.length === 1 ? "ITEM" : "ITEMS"
+                            }
+                            Column {
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 10
+                                Repeater {
+                                    model: root.composition.map(function (kind, i) {
+                                        return { label: kind.label, value: String(kind.count), color: Theme.chart[i] }
+                                    }).filter(function (row) { return row.value !== "0" })
+                                    delegate: Legend {}
+                                }
+                            }
+                        }
+                    }
+
+                    // ---- Move to trash: armed, then a second click within 3s ----
+                    Item {
+                        id: trashLink
+                        visible: inspector.single && !root.trashOpen
+                        width: parent.width
+                        height: visible ? 40 : 0
+                        property bool armed: false
+                        Timer { id: trashDisarm; interval: 3000; onTriggered: trashLink.armed = false }
+                        Rectangle { width: parent.width; height: 1; color: Theme.cDead }
+                        Text {
+                            anchors.left: parent.left
+                            anchors.bottom: parent.bottom
+                            text: trashLink.armed ? "CLICK AGAIN TO TRASH" : "MOVE TO TRASH"
+                            color: Theme.cRed
+                            font.family: Theme.fontMono
+                            font.pixelSize: 11
+                            font.letterSpacing: 3
+                            font.bold: trashLink.armed
                             MouseArea {
-                                id: footMouse
                                 anchors.fill: parent
-                                hoverEnabled: true
+                                anchors.margins: -6
                                 cursorShape: Qt.PointingHandCursor
                                 onClicked: {
-                                    if (footAction.index === 0)
-                                        root.activateRow(inspector.row)
-                                    else if (footAction.index === 1)
-                                        root.beginRename(inspector.row)
-                                    else
-                                        root.bridge.trashSelected()
+                                    if (!trashLink.armed) {
+                                        trashLink.armed = true
+                                        trashDisarm.restart()
+                                        return
+                                    }
+                                    trashLink.armed = false
+                                    trashDisarm.stop()
+                                    root.bridge.trashSelected()
                                 }
                             }
                         }
                     }
                 }
             }
-
         }
     }
 
@@ -5278,7 +5923,7 @@ ApplicationWindow {
             anchors.centerIn: parent
             width: Math.min(600, parent.width - 72)
             height: Math.min(620, parent.height - 72)
-            radius: 12
+            radius: 0
             color: root.raised
             border.width: 1
             border.color: root.lineStrong
@@ -5462,7 +6107,7 @@ ApplicationWindow {
                         required property var modelData
                         width: ListView.view.width
                         height: 34
-                        radius: 7
+                        radius: 0
                         color: providerMouse.containsMouse ? root.hover : "transparent"
 
                         Text {
@@ -5562,7 +6207,7 @@ ApplicationWindow {
                             width: parent.width
                             visible: sheetCard.link.length > 0
                             height: linkText.implicitHeight + 18
-                            radius: 7
+                            radius: 0
                             color: root.inset
                             border.width: 1
                             border.color: root.emberEdge
@@ -5610,7 +6255,7 @@ ApplicationWindow {
                                 // rclone writes these descriptions over several
                                 // lines, so the row is measured, never fixed.
                                 height: choiceBody.implicitHeight + 16
-                                radius: 7
+                                radius: 0
                                 color: choiceMouse.containsMouse ? root.hover : root.inset
                                 border.width: 1
                                 border.color: root.line

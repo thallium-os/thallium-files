@@ -1,25 +1,25 @@
 import QtQuick
 
-// The hairline the whole design is ruled with: a faint line that ends in a
-// small cross at each end.
+// The hairline the window is ruled with. On Thallium 81 it is a plain 1px
+// rule; the other palettes keep the small cross at each end.
 Item {
     id: rule
-    property color color: Theme.line
+    property color color: Theme.t81 ? Theme.cDead : Theme.line
     property color crossColor: Theme.cross
     implicitHeight: 9
 
     Rectangle {
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.leftMargin: 4
-        anchors.rightMargin: 4
+        anchors.leftMargin: Theme.t81 ? 0 : 4
+        anchors.rightMargin: Theme.t81 ? 0 : 4
         anchors.verticalCenter: parent.verticalCenter
         height: 1
         color: rule.color
     }
 
     Repeater {
-        model: 2
+        model: Theme.t81 ? 0 : 2
         delegate: Item {
             required property int index
             width: 9
