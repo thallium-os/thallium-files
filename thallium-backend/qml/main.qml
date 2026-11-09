@@ -1216,6 +1216,9 @@ ApplicationWindow {
         property string iconName: ""
         property string shortcut: ""
         property bool danger: false
+        // Drawn as focused even before the pointer or keys reach it.
+        property bool lead: false
+        readonly property bool lit: menuLine.highlighted || menuLine.lead
         implicitWidth: 300
         implicitHeight: 36
         arrow: null
@@ -1231,7 +1234,7 @@ ApplicationWindow {
                 name: menuLine.iconName.length > 0 ? menuLine.iconName : "file"
                 size: 14
                 tint: menuLine.danger && menuLine.enabled ? Theme.cRed
-                    : menuLine.highlighted && menuLine.enabled ? Theme.cGreen : "transparent"
+                    : menuLine.lit && menuLine.enabled ? Theme.cGreen : "transparent"
                 shade: menuLine.enabled ? 0.7 : 0.3
             }
             Text {
@@ -1263,13 +1266,13 @@ ApplicationWindow {
         rightPadding: 14
         background: Rectangle {
             color: !menuLine.enabled ? "transparent"
-                 : menuLine.highlighted ? (menuLine.danger ? Qt.rgba(Theme.cRed.r, Theme.cRed.g, Theme.cRed.b, 0.12) : Theme.cWash)
+                 : menuLine.lit ? (menuLine.danger ? Qt.rgba(Theme.cRed.r, Theme.cRed.g, Theme.cRed.b, 0.12) : Theme.cWash)
                  : "transparent"
             Rectangle {
                 width: 2
                 height: parent.height
                 color: menuLine.danger ? Theme.cRed : Theme.cGreen
-                visible: menuLine.highlighted && menuLine.enabled
+                visible: menuLine.lit && menuLine.enabled
             }
         }
     }
@@ -1866,8 +1869,6 @@ ApplicationWindow {
         // Ages are read when the menu opens; they are not live.
         property int stamp: 0
         onAboutToShow: historyMenu.stamp++
-        // The next place back starts highlighted, under the header.
-        onOpened: if (historyMenu.total > 0) historyMenu.currentIndex = 1
 
         function age(seconds) {
             if (seconds < 0)
@@ -1889,6 +1890,7 @@ ApplicationWindow {
                     void root.revision
                     return root.bridge.historyPath(index)
                 }
+                lead: index === 0
                 text: root.pad2(index + 1) + "   " + (place === root.bridge.homePath ? "~  (Home)" : root.homeRelative(place))
                 shortcut: {
                     void historyMenu.stamp
@@ -5282,12 +5284,13 @@ ApplicationWindow {
                     anchors.bottom: parent.bottom
                     anchors.bottomMargin: 18
                     visible: root.selectedCount > 0 && !root.trashOpen && !root.recentOpen && !root.homeOpen && !root.deepSearch
-                    width: dockRow.implicitWidth + 16
-                    height: 46
-                    radius: Theme.radius
-                    color: Theme.control
+                    width: dockRow.implicitWidth + 20
+                    height: 50
+                    radius: 0
+                    color: Theme.cPanel
                     border.width: 1
-                    border.color: Theme.outline
+                    border.color: Theme.cLine
+                    Rectangle { width: 2; height: parent.height; color: Theme.cGreen }
 
                     Row {
                         id: dockRow
@@ -5296,13 +5299,15 @@ ApplicationWindow {
 
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
-                            leftPadding: 8
-                            rightPadding: 10
-                            text: root.selectedCount + " held"
-                            color: Theme.ink
-                            font.family: Theme.family
-                            font.pixelSize: Theme.text
-                            font.weight: Font.Medium
+                            leftPadding: 10
+                            rightPadding: 12
+                            textFormat: Text.StyledText
+                            text: "<font color='" + Theme.cGreen + "'>" + root.pad2(root.selectedCount) + "</font>  HELD"
+                            color: Theme.cFg
+                            font.family: Theme.fontMono
+                            font.pixelSize: 11
+                            font.bold: true
+                            font.letterSpacing: 3
                         }
                         IconButton { icon: "scissors"; hint: "Cut (Ctrl+X)"; onClicked: root.bridge.offerSelected(true) }
                         IconButton { icon: "copy"; hint: "Copy (Ctrl+C)"; onClicked: root.bridge.offerSelected(false) }
@@ -5313,7 +5318,7 @@ ApplicationWindow {
                         }
                         IconButton { icon: "info"; hint: "Properties (Alt+Enter)"; enabled: root.selectedCount === 1; onClicked: root.showProperties(root.firstSelectedRow()) }
                         IconButton { icon: "trash-2"; hint: "Move to Trash (Delete)"; onClicked: root.bridge.trashSelected() }
-                        Rectangle { width: 1; height: 22; color: Theme.outlineSoft; anchors.verticalCenter: parent.verticalCenter }
+                        Rectangle { width: 1; height: 22; color: Theme.cDead; anchors.verticalCenter: parent.verticalCenter }
                         IconButton { icon: "x"; hint: "Let go (Escape)"; onClicked: root.bridge.clearSelection() }
                     }
                 }
