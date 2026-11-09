@@ -11,7 +11,7 @@ use thallium_icons::{IconService, Thumbnail};
 use thallium_protocol::{BrowserStateSnapshot, DirectoryEntryRow, PathBytes, TaskInfo, TaskStatus};
 use thallium_rclone::{Remotes, authorize, config::{Provider, Session, Step}};
 
-use crate::{Backend, BackendConfig, BackendResult, apps, archive, bookmarks, bulk_rename, drives, files_theme, properties, recents::Recent, search::Search, storage::Measure, trash_bin, uca, undo, uri};
+use crate::{Backend, BackendConfig, BackendResult, apps, archive, bookmarks, bulk_rename, drives, files_theme, present, properties, recents::Recent, search::Search, storage::Measure, trash_bin, uca, undo, uri};
 
 #[cxx_qt::bridge]
 pub mod ffi {
@@ -116,6 +116,76 @@ pub mod ffi {
 		#[qinvokable]
 		#[rust_name = "set_ui_value"]
 		fn setUiValue(self: Pin<&mut Self>, key: &QString, value: &QString);
+		/// The type tag for a name: DIR, CODE, DOC, TXT, IMG, VID, AUD or ZIP.
+		#[qinvokable]
+		#[rust_name = "type_tag"]
+		fn typeTag(&self, name: &QString, folder: bool) -> QString;
+		/// The broad group a name sorts under for the Kind column.
+		#[qinvokable]
+		#[rust_name = "kind_group"]
+		fn kindGroup(&self, name: &QString, folder: bool) -> QString;
+		/// What a person would call the file: "TOML source", "PNG image".
+		#[qinvokable]
+		#[rust_name = "kind_name"]
+		fn kindName(&self, name: &QString, folder: bool) -> QString;
+		/// The composition group a type tag counts towards.
+		#[qinvokable]
+		#[rust_name = "bucket_of"]
+		fn bucketOf(&self, tag: &QString) -> QString;
+		/// A byte count as every size in the window reads.
+		#[qinvokable]
+		#[rust_name = "readable_size"]
+		fn readableSize(&self, bytes: f64) -> QString;
+		/// "Today, 09:58", "Yesterday, 23:02", "28 Oct, 16:31".
+		#[qinvokable]
+		#[rust_name = "stamp_text"]
+		fn stampText(&self, seconds: f64) -> QString;
+		/// The open folder's rows to show, in order, as comma-separated row
+		/// numbers: hidden entries kept only when asked, names containing
+		/// `needle`, folders first, then by `key`.
+		#[qinvokable]
+		#[rust_name = "visible_rows"]
+		fn visibleRows(
+			&self,
+			needle: &QString,
+			hidden: bool,
+			key: &QString,
+			ascending: bool,
+		) -> QString;
+		/// How many of those rows fall in each composition group, as
+		/// "dirs,code,docs,other".
+		#[qinvokable]
+		#[rust_name = "composition_counts"]
+		fn compositionCounts(&self, needle: &QString, hidden: bool) -> QString;
+		/// The current path as breadcrumbs, a JSON array of {label, path}.
+		#[qinvokable]
+		#[rust_name = "crumbs_json"]
+		fn crumbsJson(&self) -> QString;
+		/// The folders beneath `base` as sidebar tree rows (JSON), opened
+		/// along the current path and as `toggles` ({"path": bool}) says.
+		#[qinvokable]
+		#[rust_name = "folder_tree_json"]
+		fn folderTreeJson(
+			&self,
+			base: &QString,
+			first_depth: i32,
+			hidden: bool,
+			toggles: &QString,
+		) -> QString;
+		/// The folders directly inside `path`, a JSON array of {name, count}.
+		#[qinvokable]
+		#[rust_name = "subfolders_json"]
+		fn subfoldersJson(&self, path: &QString, hidden: bool) -> QString;
+		/// Running transfers as a JSON array of {id, title, progress, done,
+		/// total, rate}.
+		#[qinvokable]
+		#[rust_name = "transfers_json"]
+		fn transfersJson(&self) -> QString;
+		/// Up to `limit` recent files, a JSON array of {name, path, folder,
+		/// directory, seconds}.
+		#[qinvokable]
+		#[rust_name = "recents_json"]
+		fn recentsJson(&self, limit: i32) -> QString;
 		/// Forget the back and forward history.
 		#[qinvokable]
 		#[rust_name = "clear_history"]
@@ -216,14 +286,6 @@ pub mod ffi {
 		#[qinvokable]
 		#[rust_name = "recent_folder"]
 		fn recentFolder(&self, index: i32) -> QString;
-		/// When the desktop says the file was last opened, as an RFC 3339
-		/// stamp, or empty.
-		#[qinvokable]
-		#[rust_name = "recent_visited"]
-		fn recentVisited(&self, index: i32) -> QString;
-		#[qinvokable]
-		#[rust_name = "recent_is_directory"]
-		fn recentIsDirectory(&self, index: i32) -> bool;
 		#[qinvokable]
 		#[rust_name = "storage_total"]
 		fn storageTotal(&self) -> f64;
@@ -497,11 +559,6 @@ pub mod ffi {
 		#[qinvokable]
 		#[rust_name = "host_name"]
 		fn hostName(&self) -> QString;
-		/// The folders directly inside a local folder, one `name\tcount`
-		/// line each, sorted by name; `count` is how many entries each holds.
-		#[qinvokable]
-		#[rust_name = "subfolders"]
-		fn subfolders(&self, path: &QString, include_hidden: bool) -> QString;
 		/// The first `lines` lines of a local text file, for the record card's
 		/// preview. Empty for anything that is not readable UTF-8 text.
 		#[qinvokable]
@@ -605,18 +662,6 @@ pub mod ffi {
 		#[qinvokable]
 		#[rust_name = "cancel_task"]
 		fn cancelTask(self: Pin<&mut Self>, id: u64);
-		/// Bytes a transfer has written so far.
-		#[qinvokable]
-		#[rust_name = "task_bytes_done"]
-		fn taskBytesDone(&self, row: i32) -> f64;
-		/// Bytes a transfer will write in all, or -1 while still counting.
-		#[qinvokable]
-		#[rust_name = "task_bytes_total"]
-		fn taskBytesTotal(&self, row: i32) -> f64;
-		/// Average bytes per second since the transfer was queued.
-		#[qinvokable]
-		#[rust_name = "task_rate"]
-		fn taskRate(&self, row: i32) -> f64;
 		/// Hold or release every running transfer.
 		#[qinvokable]
 		#[rust_name = "set_tasks_paused"]
@@ -1561,6 +1606,157 @@ impl ffi::BackendBridge {
 
 	pub fn clear_history(self: Pin<&mut Self>) { self.submit(Command::ClearHistory); }
 
+	pub fn type_tag(&self, name: &QString, folder: bool) -> QString {
+		present::type_tag(&String::from(name), folder).into()
+	}
+
+	pub fn kind_group(&self, name: &QString, folder: bool) -> QString {
+		present::kind_group(&String::from(name), folder).into()
+	}
+
+	pub fn kind_name(&self, name: &QString, folder: bool) -> QString {
+		present::kind_name(&String::from(name), folder).into()
+	}
+
+	pub fn bucket_of(&self, tag: &QString) -> QString { present::bucket(&String::from(tag)).into() }
+
+	pub fn readable_size(&self, bytes: f64) -> QString { present::readable_size(bytes).into() }
+
+	pub fn stamp_text(&self, seconds: f64) -> QString { present::stamp(seconds).into() }
+
+	fn listed(&self) -> Vec<EntryFacts> {
+		self
+			.rust()
+			.snapshot
+			.directory
+			.entries
+			.iter()
+			.enumerate()
+			.map(|(row, entry)| {
+				let modified = entry.modified.map_or(0, |stamp| stamp.seconds);
+				(row, entry.name.display_lossy.clone(), entry.is_directory(), modified)
+			})
+			.collect()
+	}
+
+	fn ordered(
+		&self,
+		needle: &QString,
+		hidden: bool,
+		key: &str,
+		ascending: bool,
+	) -> (Vec<usize>, Vec<EntryFacts>) {
+		let listed = self.listed();
+		let entries: Vec<present::Listed<'_>> = listed
+			.iter()
+			.map(|(row, name, folder, modified)| present::Listed {
+				row: *row,
+				name,
+				folder: *folder,
+				modified: *modified,
+			})
+			.collect();
+		let rows = present::ordered_rows(&entries, &String::from(needle), hidden, key, ascending);
+		(rows, listed)
+	}
+
+	pub fn visible_rows(
+		&self,
+		needle: &QString,
+		hidden: bool,
+		key: &QString,
+		ascending: bool,
+	) -> QString {
+		let (rows, _) = self.ordered(needle, hidden, &String::from(key), ascending);
+		rows.iter().map(ToString::to_string).collect::<Vec<_>>().join(",").into()
+	}
+
+	pub fn composition_counts(&self, needle: &QString, hidden: bool) -> QString {
+		let (rows, listed) = self.ordered(needle, hidden, "name", true);
+		let counts =
+			present::composition(rows.iter().map(|&row| (listed[row].1.as_str(), listed[row].2)));
+		counts.iter().map(ToString::to_string).collect::<Vec<_>>().join(",").into()
+	}
+
+	pub fn crumbs_json(&self) -> QString {
+		let path = String::from(self.current_path());
+		let home = String::from(self.home_path());
+		present::crumbs_json(&present::crumbs(&path, &home)).into()
+	}
+
+	pub fn folder_tree_json(
+		&self,
+		base: &QString,
+		first_depth: i32,
+		hidden: bool,
+		toggles: &QString,
+	) -> QString {
+		let base = String::from(base);
+		if base.is_empty() {
+			return QString::from("[]");
+		}
+		let here = String::from(self.current_path());
+		let toggled = present::parse_toggles(&String::from(toggles));
+		let mut children = |path: &str| subfolders_of(std::path::Path::new(path), hidden);
+		let depth = usize::try_from(first_depth).unwrap_or(0);
+		present::tree_json(&present::folder_tree(&base, depth, &here, &toggled, &mut children)).into()
+	}
+
+	pub fn subfolders_json(&self, path: &QString, hidden: bool) -> QString {
+		let found = subfolders_of(std::path::Path::new(&String::from(path)), hidden);
+		let rows: Vec<String> = found
+			.iter()
+			.map(|(name, count)| format!("{{\"name\":{},\"count\":{count}}}", present::json_string(name)))
+			.collect();
+		format!("[{}]", rows.join(",")).into()
+	}
+
+	#[allow(clippy::cast_precision_loss)]
+	pub fn transfers_json(&self) -> QString {
+		let rows: Vec<String> = self
+			.rust()
+			.snapshot
+			.tasks
+			.iter()
+			.filter(|task| task.can_cancel())
+			.map(|task| {
+				format!(
+					"{{\"id\":{},\"title\":{},\"progress\":{},\"done\":{},\"total\":{},\"rate\":{}}}",
+					task.id.0,
+					present::json_string(&task.title),
+					f64::from(task.progress.basis_points()) / 100.0,
+					task.progress.bytes_completed as f64,
+					task.progress.bytes_total.map_or(-1.0, |total| total as f64),
+					transfer_rate(task),
+				)
+			})
+			.collect();
+		format!("[{}]", rows.join(",")).into()
+	}
+
+	pub fn recents_json(&self, limit: i32) -> QString {
+		let limit = usize::try_from(limit).unwrap_or(0);
+		let rows: Vec<String> = self
+			.rust()
+			.recents
+			.iter()
+			.take(limit)
+			.map(|entry| {
+				let folder =
+					entry.path.parent().map_or_else(String::new, |at| at.to_string_lossy().into_owned());
+				format!(
+					"{{\"name\":{},\"path\":{},\"folder\":{},\"directory\":{},\"seconds\":{}}}",
+					present::json_string(&entry.name),
+					present::json_string(&entry.path.to_string_lossy()),
+					present::json_string(&folder),
+					entry.path.is_dir(),
+					present::rfc3339_seconds(&entry.visited).unwrap_or(-1),
+				)
+			})
+			.collect();
+		format!("[{}]", rows.join(",")).into()
+	}
+
 	pub fn ui_value(&self, key: &QString, fallback: &QString) -> QString {
 		self
 			.rust()
@@ -1860,11 +2056,6 @@ impl ffi::BackendBridge {
 		})
 	}
 
-	pub fn subfolders(&self, path: &QString, include_hidden: bool) -> QString {
-		let listing = subfolder_listing(std::path::Path::new(&path.to_string()), include_hidden);
-		listing.as_str().into()
-	}
-
 	pub fn delete_selected(self: Pin<&mut Self>) {
 		let targets = self.selected_locations();
 		self.submit(Command::Delete { targets });
@@ -2144,14 +2335,6 @@ impl ffi::BackendBridge {
 		})
 	}
 
-	pub fn recent_visited(&self, index: i32) -> QString {
-		self.recent(index).map_or_else(QString::default, |entry| QString::from(&entry.visited))
-	}
-
-	pub fn recent_is_directory(&self, index: i32) -> bool {
-		self.recent(index).is_some_and(|entry| entry.path.is_dir())
-	}
-
 	fn recent(&self, index: i32) -> Option<&Recent> {
 		usize::try_from(index).ok().and_then(|index| self.rust().recents.get(index))
 	}
@@ -2312,18 +2495,6 @@ impl ffi::BackendBridge {
 	pub fn cancel_task(self: Pin<&mut Self>, id: u64) {
 		self.submit(Command::CancelTask(thallium_protocol::TaskId(id)));
 	}
-
-	#[allow(clippy::cast_precision_loss)]
-	pub fn task_bytes_done(&self, row: i32) -> f64 {
-		self.task(row).map_or(0.0, |task| task.progress.bytes_completed as f64)
-	}
-
-	#[allow(clippy::cast_precision_loss)]
-	pub fn task_bytes_total(&self, row: i32) -> f64 {
-		self.task(row).and_then(|task| task.progress.bytes_total).map_or(-1.0, |total| total as f64)
-	}
-
-	pub fn task_rate(&self, row: i32) -> f64 { self.task(row).map_or(0.0, transfer_rate) }
 
 	pub fn set_tasks_paused(mut self: Pin<&mut Self>, paused: bool) {
 		self.as_mut().rust_mut().tasks_paused = paused;
@@ -2632,11 +2803,11 @@ fn head_lines(file: &std::path::Path, wanted: usize) -> String {
 	text.lines().take(wanted).map(|line| line.trim_end_matches('\r')).collect::<Vec<_>>().join("\n")
 }
 
-/// `name\tcount` for each folder in `folder`, sorted by name. Unreadable
-/// folders count as empty; a folder that cannot be listed gives nothing.
-fn subfolder_listing(folder: &std::path::Path, include_hidden: bool) -> String {
-	let Ok(entries) = std::fs::read_dir(folder) else { return String::new() };
-	let mut found: Vec<(String, usize)> = entries
+/// The folders directly inside `folder`, with how many entries each holds,
+/// in name order.
+fn subfolders_of(folder: &std::path::Path, include_hidden: bool) -> Vec<(String, i64)> {
+	let Ok(entries) = std::fs::read_dir(folder) else { return Vec::new() };
+	let mut found: Vec<(String, i64)> = entries
 		.filter_map(Result::ok)
 		.filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
 		.filter(|entry| visible(&entry.file_name(), include_hidden))
@@ -2645,12 +2816,12 @@ fn subfolder_listing(folder: &std::path::Path, include_hidden: bool) -> String {
 				.map(|inner| {
 					inner.filter_map(Result::ok).filter(|e| visible(&e.file_name(), include_hidden)).count()
 				})
-				.unwrap_or(0);
+				.map_or(0, |count| i64::try_from(count).unwrap_or(i64::MAX));
 			(entry.file_name().to_string_lossy().into_owned(), count)
 		})
 		.collect();
 	found.sort_by_key(|(name, _)| name.to_lowercase());
-	found.iter().map(|(name, count)| format!("{name}\t{count}")).collect::<Vec<_>>().join("\n")
+	found
 }
 
 /// The files in the XDG templates folder, which "New file" offers as starting
@@ -2711,6 +2882,10 @@ fn format_size(bytes: u64) -> String {
 	if unit == 0 { format!("{bytes} B") } else { format!("{value:.1} {}", UNITS[unit]) }
 }
 
+/// One listed entry: its row, name, whether it is a folder, and when it was
+/// modified.
+type EntryFacts = (usize, String, bool, i64);
+
 fn load_ui_values() -> std::collections::BTreeMap<String, String> {
 	crate::ui_state::path().map(|file| crate::ui_state::load(&file)).unwrap_or_default()
 }
@@ -2749,7 +2924,7 @@ fn status_text(status: TaskStatus) -> &'static str {
 mod tests {
 	use thallium_protocol::TaskStatus;
 
-	use super::{count, format_size, head_lines, status_text, subfolder_listing, transfer_rate, unused_name};
+	use super::{count, format_size, head_lines, status_text, subfolders_of, transfer_rate, unused_name};
 
 	#[test]
 	fn remote_names_count_up_past_the_taken_ones() {
@@ -2795,9 +2970,13 @@ mod tests {
 		std::fs::write(root.join("beta/file.txt"), b"x").unwrap();
 		std::fs::write(root.join("beta/.dot"), b"x").unwrap();
 		std::fs::write(root.join("loose.txt"), b"x").unwrap();
-		assert_eq!(subfolder_listing(&root, false), "Alpha\t0\nbeta\t2");
-		assert_eq!(subfolder_listing(&root, true), ".hidden\t0\nAlpha\t0\nbeta\t3");
-		assert_eq!(subfolder_listing(&root.join("missing"), false), "");
+		assert_eq!(subfolders_of(&root, false), vec![("Alpha".to_owned(), 0), ("beta".to_owned(), 2)]);
+		assert_eq!(subfolders_of(&root, true), vec![
+			(".hidden".to_owned(), 0),
+			("Alpha".to_owned(), 0),
+			("beta".to_owned(), 3)
+		]);
+		assert!(subfolders_of(&root.join("missing"), false).is_empty());
 		std::fs::remove_dir_all(&root).unwrap();
 	}
 

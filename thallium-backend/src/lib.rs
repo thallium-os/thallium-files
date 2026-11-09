@@ -23,6 +23,8 @@ mod drives;
 #[cfg_attr(not(feature = "qt"), allow(dead_code))]
 mod files_theme;
 #[cfg_attr(not(feature = "qt"), allow(dead_code))]
+mod present;
+#[cfg_attr(not(feature = "qt"), allow(dead_code))]
 mod properties;
 #[cfg_attr(not(feature = "qt"), allow(dead_code))]
 mod recents;

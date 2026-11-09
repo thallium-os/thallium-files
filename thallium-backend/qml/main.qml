@@ -92,30 +92,12 @@ ApplicationWindow {
     readonly property var homeRecents: {
         void root.revision
         void root.homeOpen
-        const out = []
-        const total = Math.min(4, root.bridge.recentCount())
-        for (let i = 0; i < total; ++i) {
-            const stamp = Date.parse(root.bridge.recentVisited(i))
-            out.push({
-                name: root.bridge.recentName(i),
-                path: root.bridge.recentPath(i),
-                folder: root.bridge.recentFolder(i),
-                directory: root.bridge.recentIsDirectory(i),
-                seconds: isNaN(stamp) ? -1 : stamp / 1000
-            })
-        }
-        return out
+        return JSON.parse(root.bridge.recentsJson(4))
     }
     // Every folder in the home folder, for Home's own section.
     readonly property var homeFolderRows: {
         void root.revision
-        if (!root.homeOpen)
-            return []
-        const text = root.bridge.subfolders(root.bridge.homePath, root.showHidden)
-        return text.length === 0 ? [] : text.split("\n").map(function (line) {
-            const cut = line.lastIndexOf("\t")
-            return { name: line.substring(0, cut), count: parseInt(line.substring(cut + 1)) }
-        })
+        return root.homeOpen ? JSON.parse(root.bridge.subfoldersJson(root.bridge.homePath, root.showHidden)) : []
     }
     // The places Home offers as tiles: the folders in the sidebar's first
     // group, less Home itself, Recent and Trash.
@@ -139,51 +121,15 @@ ApplicationWindow {
         next[path] = !root.treeIsOpen(path)
         root.treeToggled = next
     }
-    // The folders beneath `base` as tree rows, opening every branch that is
-    // open (by hand, or because the current folder is inside it). Each row
-    // knows which guides of the levels above run past it, and which of its
-    // lines are lit because the current folder lies further down.
-    function folderRows(base, firstDepth) {
-        const out = []
-        const here = root.bridge.currentPath
-        function under(path) { return here === path || here.startsWith(path + "/") }
-        function walk(path, depth, rails) {
-            const text = root.bridge.subfolders(path, root.showHidden)
-            const lines = text.length > 0 ? text.split("\n") : []
-            const kids = lines.map(function (line) {
-                const cut = line.lastIndexOf("\t")
-                return { name: line.substring(0, cut), count: parseInt(line.substring(cut + 1)) }
-            })
-            // The child the current folder is in, if any.
-            let litTo = -1
-            for (let k = 0; k < kids.length; ++k)
-                if (under(path + "/" + kids[k].name))
-                    litTo = k
-            for (let i = 0; i < kids.length; ++i) {
-                const child = path + "/" + kids[i].name
-                const last = i === kids.length - 1
-                const open = root.treeIsOpen(child)
-                out.push({ path: child, name: kids[i].name, depth: depth, count: kids[i].count, open: open,
-                           last: last, rails: rails, remote: false, top: false,
-                           here: here === child, onPath: under(child),
-                           topLit: i <= litTo, restLit: i < litTo })
-                if (open && depth < 12)
-                    walk(child, depth + 1, rails.concat([{ show: !last, lit: i < litTo }]))
-            }
-        }
-        walk(base, firstDepth, [])
-        return out
-    }
     // The active place's branch folded away by hand; it opens again when
     // another place is chosen.
     property bool placeFolded: false
     onActivePlaceChanged: root.placeFolded = false
     readonly property var placeRows: {
         void root.revision
-        void root.treeToggled
         if (root.activePlace.length === 0 || !root.railShown)
             return []
-        return root.folderRows(root.activePlace, 1)
+        return JSON.parse(root.bridge.folderTreeJson(root.activePlace, 1, root.showHidden, JSON.stringify(root.treeToggled)))
     }
     // The open sidebar's width: dragged by its right edge (200–440px,
     // double-click resets), remembered in files.conf.
@@ -266,74 +212,16 @@ ApplicationWindow {
     // Directories first, then the chosen sort key, then the search filter.
     readonly property var rows: {
         void root.revision
-        const needle = root.query.toLowerCase()
-        const total = root.bridge.entryCount()
-        const kept = []
-        for (let i = 0; i < total; ++i) {
-            const name = root.bridge.entryName(i)
-            if (!root.showHidden && root.isHidden(name))
-                continue
-            if (needle.length === 0 || name.toLowerCase().indexOf(needle) >= 0) {
-                kept.push({
-                    row: i,
-                    name: name,
-                    folder: root.bridge.entryIsDirectory(i),
-                    modified: root.bridge.entryModified(i)
-                })
-            }
-        }
-        const direction = root.sortAscending ? 1 : -1
-        const key = root.sortKey
-        kept.sort(function (a, b) {
-            if (a.folder !== b.folder)
-                return a.folder ? -1 : 1
-            if (key === "modified")
-                return (a.modified - b.modified) * direction
-            if (key === "kind") {
-                const left = root.kindOf(a.name, a.folder)
-                const right = root.kindOf(b.name, b.folder)
-                if (left !== right)
-                    return left.localeCompare(right) * direction
-            }
-            return a.name.localeCompare(b.name) * direction
-        })
-        return kept.map(function (entry) { return entry.row })
+        const text = root.bridge.visibleRows(root.query, root.showHidden, root.sortKey, root.sortAscending)
+        return text.length > 0 ? text.split(",").map(Number) : []
     }
 
-    // The first row that is not a directory, so the list can draw a seam
-    // between structure and content.
-    readonly property int firstFileRow: {
-        void root.revision
-        for (let i = 0; i < root.rows.length; ++i) {
-            if (!root.bridge.entryIsDirectory(root.rows[i]))
-                return root.rows[i]
-        }
-        return -1
-    }
 
     // The path as crumbs. Under home it starts at Home rather than at the
     // root, which is how people think of their own files.
     readonly property var crumbs: {
-        const path = root.bridge.currentPath
-        const home = root.bridge.homePath
-        if (!path || path === "/")
-            return [{ label: "Filesystem", path: "/" }]
-        let out, walked, rest
-        if (home.length > 0 && (path === home || path.startsWith(home + "/"))) {
-            out = [{ label: "Home", path: home }]
-            walked = home
-            rest = path.substring(home.length)
-        } else {
-            out = [{ label: "Filesystem", path: "/" }]
-            walked = ""
-            rest = path
-        }
-        const parts = rest.split("/").filter(function (part) { return part.length > 0 })
-        for (let i = 0; i < parts.length; ++i) {
-            walked += "/" + parts[i]
-            out.push({ label: parts[i], path: walked })
-        }
-        return out
+        void root.bridge.currentPath
+        return JSON.parse(root.bridge.crumbsJson())
     }
 
     // The standard places, narrowed to the ones home actually contains once
@@ -424,15 +312,7 @@ ApplicationWindow {
     // Its folders, and how many entries it holds.
     readonly property var placeTree: {
         void root.revision
-        if (root.activePlace.length === 0)
-            return []
-        const text = root.bridge.subfolders(root.activePlace, root.showHidden)
-        if (text.length === 0)
-            return []
-        return text.split("\n").map(function (line) {
-            const tab = line.lastIndexOf("\t")
-            return { name: line.substring(0, tab), count: parseInt(line.substring(tab + 1)) }
-        })
+        return root.activePlace.length > 0 ? JSON.parse(root.bridge.subfoldersJson(root.activePlace, root.showHidden)) : []
     }
     readonly property int placeTotal: {
         void root.revision
@@ -452,16 +332,12 @@ ApplicationWindow {
     // describes the directory currently on screen.
     readonly property var composition: {
         void root.revision
-        const counts = { DIR: 0, CODE: 0, DOC: 0, TXT: 0 }
-        for (let i = 0; i < root.rows.length; ++i) {
-            const at = root.rows[i]
-            counts[root.bucketOf(root.tagOf(root.bridge.entryName(at), root.bridge.entryIsDirectory(at)))] += 1
-        }
+        const counts = root.bridge.compositionCounts(root.query, root.showHidden).split(",").map(Number)
         return [
-            { tag: "DIR", label: "Folders", short: "Folders", sym: "Fd", count: counts.DIR, color: Theme.tDir },
-            { tag: "CODE", label: "Code", short: "Code", sym: "Cd", count: counts.CODE, color: Theme.tCode },
-            { tag: "DOC", label: "Documents", short: "Docs", sym: "Dc", count: counts.DOC, color: Theme.tDoc },
-            { tag: "TXT", label: "Text & media", short: "Other", sym: "Tx", count: counts.TXT, color: Theme.tText }
+            { tag: "DIR", label: "Folders", short: "Folders", sym: "Fd", count: counts[0], color: Theme.tDir },
+            { tag: "CODE", label: "Code", short: "Code", sym: "Cd", count: counts[1], color: Theme.tCode },
+            { tag: "DOC", label: "Documents", short: "Docs", sym: "Dc", count: counts[2], color: Theme.tDoc },
+            { tag: "TXT", label: "Text & media", short: "Other", sym: "Tx", count: counts[3], color: Theme.tText }
         ]
     }
 
@@ -469,21 +345,7 @@ ApplicationWindow {
     // Finished rows stay in the bridge's list but never reach the card.
     readonly property var transfers: {
         void root.revision
-        const out = []
-        const total = root.bridge.taskCount()
-        for (let i = 0; i < total; ++i) {
-            if (!root.bridge.taskActive(i))
-                continue
-            out.push({
-                id: root.bridge.taskId(i),
-                title: root.bridge.taskTitle(i),
-                progress: root.bridge.taskProgress(i) / 100,
-                done: root.bridge.taskBytesDone(i),
-                total: root.bridge.taskBytesTotal(i),
-                rate: root.bridge.taskRate(i)
-            })
-        }
-        return out
+        return JSON.parse(root.bridge.transfersJson())
     }
     property bool transfersPaused: false
     function setTransfersPaused(paused) {
@@ -637,17 +499,6 @@ ApplicationWindow {
         return root.bridge.homePath + "/" + folder
     }
 
-    // Bytes as a disk is spoken about: three significant figures, no more.
-    function readableSize(bytes) {
-        const units = ["B", "KB", "MB", "GB", "TB", "PB"]
-        let value = bytes
-        let at = 0
-        while (value >= 1024 && at < units.length - 1) {
-            value /= 1024
-            at += 1
-        }
-        return (value >= 100 || at === 0 ? Math.round(value) : value.toFixed(1)) + " " + units[at]
-    }
 
     // Settings, shown in place of the folder. Going anywhere closes it.
     property bool settingsOpen: false
@@ -700,90 +551,9 @@ ApplicationWindow {
         return name.length > 0 && name.charAt(0) === "."
     }
 
-    function kindOf(name, folder) {
-        if (folder)
-            return "Folders"
-        const dot = name.lastIndexOf(".")
-        const extension = dot > 0 ? name.slice(dot + 1).toLowerCase() : ""
-        if (["rs", "js", "ts", "jsx", "tsx", "py", "c", "h", "cpp", "hpp", "go", "java", "kt", "rb", "sh", "bash", "fish", "qml", "sql", "json", "toml", "yaml", "yml", "conf", "ini", "lock"].indexOf(extension) >= 0)
-            return "Code"
-        if (["txt", "md", "pdf", "odt", "doc", "docx", "rtf", "csv", "ods", "xlsx"].indexOf(extension) >= 0)
-            return "Documents"
-        if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "mp4", "mkv", "webm", "mov", "mp3", "flac", "wav", "ogg"].indexOf(extension) >= 0)
-            return "Media"
-        if (["zip", "tar", "gz", "xz", "zst", "bz2", "7z", "rar", "deb", "rpm"].indexOf(extension) >= 0)
-            return "Archives"
-        return "Other"
-    }
 
-    // The Thallium 81 type tag: DIR, CODE, DOC, TXT for plain text, IMG /
-    // VID / AUD for media, ZIP for archives, and TXT for anything else.
-    // The last group shares the text colour.
-    function tagOf(name, folder) {
-        const kind = root.kindOf(name, folder)
-        if (kind === "Folders")
-            return "DIR"
-        if (kind === "Code")
-            return "CODE"
-        if (kind === "Documents") {
-            const extension = name.slice(name.lastIndexOf(".") + 1).toLowerCase()
-            return extension === "txt" || extension === "md" ? "TXT" : "DOC"
-        }
-        if (kind === "Media") {
-            const ext = name.slice(name.lastIndexOf(".") + 1).toLowerCase()
-            return ["mp4", "mkv", "webm", "mov"].indexOf(ext) >= 0 ? "VID"
-                 : ["mp3", "flac", "wav", "ogg"].indexOf(ext) >= 0 ? "AUD" : "IMG"
-        }
-        if (kind === "Archives")
-            return "ZIP"
-        return "TXT"
-    }
-    // Which of the four composition groups a tag counts towards.
-    function bucketOf(tag) {
-        return tag === "DIR" || tag === "CODE" || tag === "DOC" ? tag : "TXT"
-    }
 
-    // The Kind column: what a person would call the file.
-    function kindLabel(name, folder) {
-        if (folder)
-            return "Folder"
-        const dot = name.lastIndexOf(".")
-        const extension = dot > 0 ? name.slice(dot + 1).toLowerCase() : ""
-        const named = {
-            txt: "Plain text", md: "Markdown", pdf: "PDF document", odt: "Document", doc: "Document",
-            docx: "Document", rtf: "Rich text", csv: "Spreadsheet", ods: "Spreadsheet", xlsx: "Spreadsheet",
-            xls: "Spreadsheet", odp: "Presentation", pptx: "Presentation", json: "JSON data",
-            toml: "TOML source", yaml: "YAML source", yml: "YAML source", lock: "Lock file", sh: "Shell script",
-            png: "PNG image", jpg: "JPEG image", jpeg: "JPEG image", gif: "GIF image", webp: "WebP image",
-            svg: "SVG image", mp4: "Video", mkv: "Video", webm: "Video", mov: "Video", mp3: "Audio",
-            flac: "Audio", wav: "Audio", ogg: "Audio", zip: "Archive", tar: "Archive", gz: "Archive",
-            xz: "Archive", zst: "Archive", "7z": "Archive", deb: "Package", iso: "Disc image"
-        }
-        if (named[extension])
-            return named[extension]
-        if (root.kindOf(name, false) === "Code")
-            return extension.toUpperCase() + " source"
-        return extension.length > 0 ? extension.toUpperCase() + " file" : "File"
-    }
 
-    // Times as the Thallium 81 list writes them: Today, 09:58 · 31 Oct, 18:04.
-    function stampText(seconds) {
-        if (seconds <= 0)
-            return "—"
-        const value = new Date(seconds * 1000)
-        const now = new Date()
-        const day = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-        const then = new Date(value.getFullYear(), value.getMonth(), value.getDate())
-        const days = Math.round((day - then) / 86400000)
-        const time = Qt.formatTime(value, "HH:mm")
-        if (days === 0)
-            return "Today, " + time
-        if (days === 1)
-            return "Yesterday, " + time
-        if (value.getFullYear() === now.getFullYear())
-            return value.getDate() + " " + Qt.formatDate(value, "MMM") + ", " + time
-        return value.getDate() + " " + Qt.formatDate(value, "MMM yyyy")
-    }
 
     function modifiedText(seconds) {
         if (seconds <= 0)
@@ -1431,7 +1201,7 @@ ApplicationWindow {
 
         MenuHeader {
             text: entryMenu.held > 1 ? entryMenu.held + " items  //  held"
-                : entryMenu.name + "  //  " + root.kindLabel(entryMenu.name, entryMenu.folder)
+                : entryMenu.name + "  //  " + root.bridge.kindName(entryMenu.name, entryMenu.folder)
         }
         MenuLine {
             text: "Open"
@@ -2171,11 +1941,11 @@ ApplicationWindow {
             model: [
                 ["Type", propertiesSheet.text("type")],
                 ["Size", propertiesSheet.number("directory") === 1
-                    ? root.readableSize(propertiesSheet.number("size")) + " in "
+                    ? root.bridge.readableSize(propertiesSheet.number("size")) + " in "
                       + propertiesSheet.number("files")
                       + (propertiesSheet.number("files") === 1 ? " file" : " files")
                       + (propertiesSheet.number("measuring") === 1 ? " (counting…)" : "")
-                    : root.readableSize(propertiesSheet.number("size"))],
+                    : root.bridge.readableSize(propertiesSheet.number("size"))],
                 ["Location", propertiesSheet.text("folder")],
                 ["Links to", propertiesSheet.text("link")],
                 ["Modified", root.modifiedText(propertiesSheet.number("modified"))],
@@ -4594,7 +4364,7 @@ ApplicationWindow {
                 id: freeText
                 text: {
                     void root.revision
-                    return root.readableSize(root.bridge.storageTotal() - root.bridge.storageUsed()).toUpperCase() + " FREE"
+                    return root.bridge.readableSize(root.bridge.storageTotal() - root.bridge.storageUsed()).toUpperCase() + " FREE"
                 }
                 visible: {
                     void root.revision
@@ -5118,7 +4888,7 @@ ApplicationWindow {
                                 delegate: Rectangle {
                                     id: recentCard
                                     required property var modelData
-                                    readonly property string tag: root.tagOf(recentCard.modelData.name, recentCard.modelData.directory)
+                                    readonly property string tag: root.bridge.typeTag(recentCard.modelData.name, recentCard.modelData.directory)
                                     readonly property color tone: Theme.typeColor(recentCard.tag)
                                     width: (homeColumn.width - (recentCards.columns - 1) * 14) / recentCards.columns
                                     height: 156
@@ -5149,7 +4919,7 @@ ApplicationWindow {
                                         x: 16
                                         y: 90
                                         width: parent.width - 32
-                                        text: (recentCard.modelData.seconds >= 0 ? root.stampText(recentCard.modelData.seconds) + " · " : "")
+                                        text: (recentCard.modelData.seconds >= 0 ? root.bridge.stampText(recentCard.modelData.seconds) + " · " : "")
                                               + root.leafName(recentCard.modelData.folder)
                                         elide: Text.ElideRight
                                         color: Theme.cMuted
@@ -5368,7 +5138,7 @@ ApplicationWindow {
                     visible: root.transfers.length > 0
                     jobs: root.transfers
                     paused: root.transfersPaused
-                    format: root.readableSize
+                    format: function (bytes) { return root.bridge.readableSize(bytes) }
                     onPauseToggled: root.setTransfersPaused(!root.transfersPaused)
                     onCancelled: function (id) { root.bridge.cancelTask(id) }
                 }
@@ -5951,7 +5721,7 @@ ApplicationWindow {
                         TypeTag {
                             x: 16
                             anchors.verticalCenter: parent.verticalCenter
-                            kind: root.tagOf(resultRow.name, resultRow.folder)
+                            kind: root.bridge.typeTag(resultRow.name, resultRow.folder)
                         }
                         Row {
                             id: resultName
@@ -6127,7 +5897,7 @@ ApplicationWindow {
                         TypeTag {
                             x: 16
                             anchors.verticalCenter: parent.verticalCenter
-                            kind: root.inlineKind === "folder" ? "DIR" : root.tagOf(root.inlineSeed, false)
+                            kind: root.inlineKind === "folder" ? "DIR" : root.bridge.typeTag(root.inlineSeed, false)
                         }
                         Loader {
                             x: 62
@@ -6216,7 +5986,7 @@ ApplicationWindow {
                         // A hidden entry is shown at half strength.
                         readonly property real dim: root.isHidden(listRow.name) ? 0.5 : 1.0
 
-                        readonly property string tag: root.tagOf(listRow.name, listRow.folder)
+                        readonly property string tag: root.bridge.typeTag(listRow.name, listRow.folder)
 
                         width: ListView.view.width
                         height: root.rowHeight
@@ -6296,7 +6066,7 @@ ApplicationWindow {
                             width: columnHeads.sizeX - x - 12
                             anchors.verticalCenter: parent.verticalCenter
                             elide: Text.ElideRight
-                            text: root.kindLabel(listRow.name, listRow.folder)
+                            text: root.bridge.kindName(listRow.name, listRow.folder)
                             color: Theme.cFg
                             font.family: Theme.fontHuman
                             font.pixelSize: 13
@@ -6331,7 +6101,7 @@ ApplicationWindow {
                             elide: Text.ElideRight
                             text: {
                                 void root.revision
-                                return root.stampText(root.bridge.entryModified(listRow.entry))
+                                return root.bridge.stampText(root.bridge.entryModified(listRow.entry))
                             }
                             color: Theme.cFg
                             font.family: Theme.fontMono
@@ -6490,7 +6260,7 @@ ApplicationWindow {
                         height: gridBrowser.cellHeight
                         opacity: root.isHidden(tileHost.name) ? 0.5 : 1
 
-                        readonly property string tag: root.tagOf(tileHost.name, tileHost.folder)
+                        readonly property string tag: root.bridge.typeTag(tileHost.name, tileHost.folder)
 
                         // The Store's app card: the type tag set large, the
                         // name, what it is, and a flag at the foot.
@@ -6554,7 +6324,7 @@ ApplicationWindow {
                                     elide: Text.ElideRight
                                     text: {
                                         void root.revision
-                                        const when = root.stampText(root.bridge.entryModified(tileHost.entry))
+                                        const when = root.bridge.stampText(root.bridge.entryModified(tileHost.entry))
                                         if (tileHost.folder) {
                                             const held = root.bridge.entryTotal(root.bridge.entryPath(tileHost.entry), root.showHidden)
                                             return (held < 0 ? "Folder" : held + (held === 1 ? " item" : " items")) + "  ·  " + when
@@ -6992,11 +6762,11 @@ ApplicationWindow {
             }
             readonly property string sizeText: inspector.entryFolder
                 ? (inspector.number("measuring") === 1 && inspector.number("files") === 0 ? "Counting…"
-                   : root.readableSize(inspector.number("size")) + " in " + inspector.number("files")
+                   : root.bridge.readableSize(inspector.number("size")) + " in " + inspector.number("files")
                      + (inspector.number("files") === 1 ? " file" : " files"))
-                : root.readableSize(inspector.number("size"))
+                : root.bridge.readableSize(inspector.number("size"))
 
-            readonly property string entryTag: root.tagOf(inspector.entryName, inspector.entryFolder)
+            readonly property string entryTag: root.bridge.typeTag(inspector.entryName, inspector.entryFolder)
             readonly property string entryPath: {
                 void root.revision
                 return inspector.single ? root.bridge.entryPath(inspector.row) : ""
@@ -7266,7 +7036,7 @@ ApplicationWindow {
                                             font.letterSpacing: 3
                                         }
                                         Text {
-                                            text: root.readableSize(modelData[1])
+                                            text: root.bridge.readableSize(modelData[1])
                                             color: Theme.cFg
                                             font.family: Theme.fontMono
                                             font.pixelSize: 12
@@ -7529,7 +7299,7 @@ ApplicationWindow {
                                     anchors.verticalCenter: parent.verticalCenter
                                     spacing: 6
                                     Text {
-                                        text: root.kindLabel(inspector.entryName, inspector.entryFolder).toUpperCase()
+                                        text: root.bridge.kindName(inspector.entryName, inspector.entryFolder).toUpperCase()
                                         color: Theme.typeColor(inspector.entryTag)
                                         font.family: Theme.fontMono
                                         font.pixelSize: 10
@@ -7555,7 +7325,7 @@ ApplicationWindow {
                                 width: parent.width
                                 Repeater {
                                     model: [
-                                        { label: "MODIFIED", value: root.stampText(inspector.number("modified")) },
+                                        { label: "MODIFIED", value: root.bridge.stampText(inspector.number("modified")) },
                                         { label: "LOCATION", value: inspector.placeText }
                                     ]
                                     delegate: Column {
@@ -7721,7 +7491,7 @@ ApplicationWindow {
                             width: parent.width
                             used: storagePanel.used
                             total: storagePanel.total
-                            format: root.readableSize
+                            format: function (bytes) { return root.bridge.readableSize(bytes) }
                         }
                     }
 
@@ -7742,7 +7512,7 @@ ApplicationWindow {
                             visible: !root.folderFolded
                             width: parent.width
                             kinds: root.composition
-                            focusTag: inspector.single ? root.bucketOf(inspector.entryTag) : ""
+                            focusTag: inspector.single ? root.bridge.bucketOf(inspector.entryTag) : ""
                         }
                     }
 
