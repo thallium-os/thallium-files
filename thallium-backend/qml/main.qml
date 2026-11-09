@@ -24,7 +24,6 @@ ApplicationWindow {
     readonly property color inset: Theme.inset
 
     readonly property color line: Theme.line
-    readonly property color lineSoft: Theme.line
     readonly property color lineStrong: Theme.outline
 
     readonly property color ink: Theme.ink
@@ -33,7 +32,6 @@ ApplicationWindow {
     readonly property color inkGhost: Theme.inkFaint
 
     readonly property color spectral: Theme.accent
-    readonly property color spectralDim: Theme.accentWash
 
     readonly property color ember: Theme.accent
     readonly property color emberInk: Theme.ink
@@ -136,15 +134,10 @@ ApplicationWindow {
     property int sideWidth: parseInt(root.bridge.uiValue("sidebar.width", String(Theme.railOpenWidth)))
     readonly property int sidebarWidth: root.railShown
         ? Math.max(200, Math.min(root.sideWidth, 440, root.width - 420)) : Theme.railWidth
-    // In a narrow file pane the Kind and then the Size column give their
-    // width to the name.
-    readonly property bool kindColumn: main.width >= 760
-    readonly property bool sizeColumn: main.width >= 520
     // Every control on the header line is this tall, and every band
     // in the folder bar is the next one. Mixing 30 with 34 is what
     // made the top of the window look ragged.
     readonly property int controlHeight: 34
-    readonly property int bandHeight: 52
     // The right-hand panel: dragged wider or narrower by its left edge, and
     // its Storage and This folder sections folded on their own. All three
     // are remembered in files.conf.
@@ -2987,14 +2980,6 @@ ApplicationWindow {
 
     // ---- Small shared pieces -------------------------------------------
 
-    component Glyph: Text {
-        color: root.inkMuted
-        font.family: root.sansFamily
-        font.pixelSize: 15
-        horizontalAlignment: Text.AlignHCenter
-        verticalAlignment: Text.AlignVCenter
-    }
-
     // A bordered single-line input, used by the remote sheet.
     component Field: Rectangle {
         id: field
@@ -3088,44 +3073,6 @@ ApplicationWindow {
         }
     }
 
-    component SectionTitle: Text {
-        color: root.ink
-        font.family: root.sansFamily
-        font.pixelSize: 17
-        font.weight: Font.DemiBold
-        font.letterSpacing: -0.2
-    }
-
-    // A chart key: swatch, name, and the figure at the right.
-    component Legend: Row {
-        required property var modelData
-        spacing: 8
-        Rectangle {
-            anchors.verticalCenter: parent.verticalCenter
-            width: 10
-            height: 10
-            radius: 0
-            color: parent.modelData.color
-            border.width: 1
-            border.color: Theme.outlineSoft
-        }
-        Text {
-            anchors.verticalCenter: parent.verticalCenter
-            width: 76
-            text: parent.modelData.label
-            color: Theme.inkSoft
-            font.family: Theme.family
-            font.pixelSize: 12
-        }
-        Text {
-            anchors.verticalCenter: parent.verticalCenter
-            text: parent.modelData.value
-            color: Theme.ink
-            font.family: Theme.mono
-            font.pixelSize: 11
-        }
-    }
-
     component Overline: Text {
         color: Theme.cMuted
         font.family: Theme.fontMono
@@ -3140,113 +3087,6 @@ ApplicationWindow {
         font.pixelSize: 13
         elide: Text.ElideRight
         verticalAlignment: Text.AlignVCenter
-    }
-
-    component IconAction: Rectangle {
-        id: iconAction
-        property string glyph: ""
-        property string hint: ""
-        property bool enabled: true
-        property bool active: false
-        signal activated
-
-        implicitWidth: 30
-        implicitHeight: 30
-        radius: 0
-        color: iconAction.active
-               ? root.raisedHigh
-               : (mouse.containsMouse && iconAction.enabled ? root.hover : "transparent")
-        border.width: iconAction.active ? 1 : 0
-        border.color: root.lineStrong
-
-        Text {
-            anchors.centerIn: parent
-            text: iconAction.glyph
-            color: !iconAction.enabled
-                   ? root.inkGhost
-                   : (iconAction.active
-                      ? root.ink
-                      : (mouse.containsMouse ? root.ink : root.inkMuted))
-            font.family: root.sansFamily
-            font.pixelSize: 15
-        }
-
-        MouseArea {
-            id: mouse
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: iconAction.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-            onClicked: if (iconAction.enabled) iconAction.activated()
-        }
-
-        ToolTip.visible: mouse.containsMouse && iconAction.hint.length > 0
-        ToolTip.text: iconAction.hint
-        ToolTip.delay: 500
-    }
-
-    component TextAction: Rectangle {
-        id: textAction
-        property string label: ""
-        property bool danger: false
-        signal activated
-
-        implicitWidth: caption.implicitWidth + 22
-        implicitHeight: 26
-        radius: 0
-        color: textMouse.containsMouse ? root.hover : root.raisedHigh
-        border.width: 1
-        border.color: textMouse.containsMouse ? root.lineStrong : root.line
-
-        Text {
-            id: caption
-            anchors.centerIn: parent
-            text: textAction.label
-            color: textAction.danger ? root.destructive : root.ink
-            font.family: root.sansFamily
-            font.pixelSize: 12
-            font.weight: Font.Medium
-        }
-
-        MouseArea {
-            id: textMouse
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: textAction.activated()
-        }
-    }
-
-    component Tick: Rectangle {
-        id: tick
-        property bool checked: false
-        signal toggled
-
-        implicitWidth: 15
-        implicitHeight: 15
-        radius: 0
-        color: tick.checked ? root.ember : "transparent"
-        border.width: 1
-        border.color: tick.checked
-                      ? root.ember
-                      : (tickMouse.containsMouse ? root.lineStrong : root.line)
-
-        Text {
-            anchors.centerIn: parent
-            text: "✓"
-            visible: tick.checked
-            color: root.inset
-            font.family: root.sansFamily
-            font.pixelSize: 10
-            font.weight: Font.Bold
-        }
-
-        MouseArea {
-            id: tickMouse
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: tick.toggled()
-        }
     }
 
     // A dotted rule. Nothing OS draws its structure in dots rather than
@@ -3265,50 +3105,6 @@ ApplicationWindow {
                 radius: 0
                 color: root.lineStrong
             }
-        }
-    }
-
-    // A labelled action in the preview panel's foot.
-    component PanelAction: Item {
-        id: panelAction
-        property string glyph: ""
-        property string label: ""
-        property bool danger: false
-        signal activated
-
-        implicitHeight: 42
-
-        Column {
-            anchors.centerIn: parent
-            spacing: 4
-
-            Text {
-                anchors.horizontalCenter: parent.horizontalCenter
-                text: panelAction.glyph
-                color: panelAction.danger
-                       ? root.destructive
-                       : (panelMouse.containsMouse ? root.ink : root.inkMuted)
-                font.family: root.sansFamily
-                font.pixelSize: 14
-            }
-
-            Text {
-                anchors.horizontalCenter: parent.horizontalCenter
-                text: panelAction.label
-                color: panelAction.danger
-                       ? root.destructive
-                       : (panelMouse.containsMouse ? root.inkMuted : root.inkFaint)
-                font.family: root.sansFamily
-                font.pixelSize: 10
-            }
-        }
-
-        MouseArea {
-            id: panelMouse
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: panelAction.activated()
         }
     }
 

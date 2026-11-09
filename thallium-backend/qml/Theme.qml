@@ -283,7 +283,6 @@ QtObject {
     // Thallium 81 draws no rounded corners anywhere.
     readonly property int radius: 0
     readonly property int radiusSmall: 0
-    readonly property int gap: 12
     readonly property int railWidth: 64
     readonly property int railOpenWidth: 268
     readonly property int previewWidth: 330
@@ -295,7 +294,6 @@ QtObject {
     // Human: names and readable text. Machine: labels, sizes, times, paths.
     readonly property string family: "Albert Sans"
     readonly property string mono: "JetBrains Mono"
-    readonly property real letterSpace: 1.2
     readonly property int textSmall: 11
     readonly property int text: 13
     readonly property int textLarge: 15
