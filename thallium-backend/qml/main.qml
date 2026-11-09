@@ -185,7 +185,11 @@ ApplicationWindow {
             return []
         return root.folderRows(root.activePlace, 1)
     }
-    readonly property int sidebarWidth: root.railShown ? Theme.railOpenWidth : Theme.railWidth
+    // The open sidebar's width: dragged by its right edge (200–440px,
+    // double-click resets), remembered in files.conf.
+    property int sideWidth: parseInt(root.bridge.uiValue("sidebar.width", String(Theme.railOpenWidth)))
+    readonly property int sidebarWidth: root.railShown
+        ? Math.max(200, Math.min(root.sideWidth, 440, root.width - 420)) : Theme.railWidth
     // In a narrow file pane the Kind and then the Size column give their
     // width to the name.
     readonly property bool kindColumn: main.width >= 760
@@ -4624,6 +4628,43 @@ ApplicationWindow {
                 height: parent.height
                 color: Theme.cDead
                 z: 2
+            }
+
+            // Its right edge is a handle, as the right panel's left edge is.
+            Rectangle {
+                z: 30
+                visible: root.railShown
+                anchors.right: parent.right
+                width: 6
+                height: parent.height
+                color: sideDrag.containsMouse || sideDrag.pressed ? Theme.cGreen : "transparent"
+                opacity: sideDrag.pressed ? 0.9 : 0.5
+                MouseArea {
+                    id: sideDrag
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.SplitHCursor
+                    property real startX: 0
+                    property int startWidth: 0
+                    onPressed: function (mouse) {
+                        startX = mapToItem(null, mouse.x, 0).x
+                        startWidth = root.sidebarWidth
+                    }
+                    onPositionChanged: function (mouse) {
+                        if (!pressed)
+                            return
+                        const now = mapToItem(null, mouse.x, 0).x
+                        root.sideWidth = Math.round(Math.max(200, Math.min(440, startWidth + (now - startX))))
+                    }
+                    onReleased: {
+                        root.sideWidth = root.sidebarWidth
+                        root.bridge.setUiValue("sidebar.width", String(root.sideWidth))
+                    }
+                    onDoubleClicked: {
+                        root.sideWidth = Theme.railOpenWidth
+                        root.bridge.setUiValue("sidebar.width", String(root.sideWidth))
+                    }
+                }
             }
 
             Flickable {
