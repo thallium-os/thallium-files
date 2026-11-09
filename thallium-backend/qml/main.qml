@@ -62,6 +62,17 @@ ApplicationWindow {
     // sidebar's tab are remembered in files.conf.
     property bool railOpen: root.bridge.uiValue("sidebar.open", "true") === "true"
     onRailOpenChanged: root.bridge.setUiValue("sidebar.open", root.railOpen ? "true" : "false")
+    // A narrow window folds the sidebar into the rail by itself, without
+    // touching the saved choice; Ctrl B there opens it just for now.
+    readonly property bool narrow: root.width < 900
+    property bool railNarrowOpen: false
+    readonly property bool railShown: root.narrow ? root.railNarrowOpen : root.railOpen
+    function toggleRail() {
+        if (root.narrow)
+            root.railNarrowOpen = !root.railNarrowOpen
+        else
+            root.railOpen = !root.railOpen
+    }
     property string sidebarTab: root.bridge.uiValue("sidebar.tab", "places")
     onSidebarTabChanged: root.bridge.setUiValue("sidebar.tab", root.sidebarTab)
 
@@ -157,14 +168,14 @@ ApplicationWindow {
     readonly property var placeRows: {
         void root.revision
         void root.treeToggled
-        if (root.activePlace.length === 0 || !root.railOpen)
+        if (root.activePlace.length === 0 || !root.railShown)
             return []
         return root.folderRows(root.activePlace, 1)
     }
     readonly property var homeTree: {
         void root.revision
         void root.treeToggled
-        if (root.sidebarTab !== "tree" || !root.railOpen)
+        if (root.sidebarTab !== "tree" || !root.railShown)
             return []
         const home = root.bridge.homePath
         let out = []
@@ -181,7 +192,7 @@ ApplicationWindow {
                        here: false, onPath: false })
         return out
     }
-    readonly property int sidebarWidth: root.railOpen ? Theme.railOpenWidth : Theme.railWidth
+    readonly property int sidebarWidth: root.railShown ? Theme.railOpenWidth : Theme.railWidth
     // In a narrow file pane the Kind and then the Size column give their
     // width to the name.
     readonly property bool kindColumn: main.width >= 760
@@ -3044,7 +3055,7 @@ ApplicationWindow {
         }
     }
     Shortcut { sequences: [StandardKey.Undo]; enabled: !root.typing; onActivated: root.bridge.undo() }
-    Shortcut { sequences: ["Ctrl+B"]; enabled: !root.typing; onActivated: root.railOpen = !root.railOpen }
+    Shortcut { sequences: ["Ctrl+B"]; enabled: !root.typing; onActivated: root.toggleRail() }
     Shortcut { sequences: ["Ctrl+1"]; onActivated: root.view = "list" }
     Shortcut { sequences: ["Ctrl+2"]; onActivated: root.view = "grid" }
 
@@ -3534,7 +3545,7 @@ ApplicationWindow {
         property string dropTarget: ""
 
         width: parent ? parent.width : 0
-        implicitHeight: navItem.share >= 0 && root.railOpen ? 50 : 36
+        implicitHeight: navItem.share >= 0 && root.railShown ? 50 : 36
         radius: 0
         color: navItem.active ? Theme.cWash : (navMouse.containsMouse ? Theme.cDim : "transparent")
 
@@ -3553,7 +3564,7 @@ ApplicationWindow {
         Item {
             id: navGlyph
             anchors.left: parent.left
-            anchors.leftMargin: root.railOpen ? 12 : (navItem.width - width) / 2
+            anchors.leftMargin: root.railShown ? 12 : (navItem.width - width) / 2
             anchors.top: parent.top
             anchors.topMargin: (36 - height) / 2
             width: 16
@@ -3578,7 +3589,7 @@ ApplicationWindow {
 
         Text {
             id: navLabel
-            visible: root.railOpen
+            visible: root.railShown
             anchors.left: navGlyph.right
             anchors.leftMargin: 12
             anchors.right: navMeta.visible ? navMeta.left : parent.right
@@ -3593,7 +3604,7 @@ ApplicationWindow {
         }
         Text {
             id: navMeta
-            visible: root.railOpen && navItem.meta.length > 0
+            visible: root.railShown && navItem.meta.length > 0
             anchors.right: parent.right
             anchors.rightMargin: 12
             anchors.verticalCenter: navGlyph.verticalCenter
@@ -3604,7 +3615,7 @@ ApplicationWindow {
             font.letterSpacing: 1.5
         }
         SegmentBar {
-            visible: root.railOpen && navItem.share >= 0
+            visible: root.railShown && navItem.share >= 0
             anchors.left: navLabel.left
             anchors.right: parent.right
             anchors.rightMargin: 14
@@ -3633,7 +3644,7 @@ ApplicationWindow {
         // and an arrow pointing back at the icon.
         Popup {
             id: railTip
-            visible: !root.railOpen && navMouse.containsMouse && navItem.label.length > 0
+            visible: !root.railShown && navMouse.containsMouse && navItem.label.length > 0
             x: navItem.width + 12
             y: (navItem.height - height) / 2
             padding: 0
@@ -4144,6 +4155,7 @@ ApplicationWindow {
             anchors.rightMargin: 18
             anchors.top: parent.top
             anchors.bottom: parent.bottom
+            clip: true
 
             // Ctrl+L swaps the tabs for a field that takes a typed path;
             // Enter goes there, Escape puts the tabs back.
@@ -4250,11 +4262,21 @@ ApplicationWindow {
         // ---- Search ----
         Rectangle {
             id: headerSearch
-            anchors.right: viewTabs.left
-            anchors.rightMargin: 22
+            anchors.right: viewTabs.visible ? viewTabs.left : newButton.left
+            anchors.rightMargin: root.width < 1100 ? 12 : 22
             anchors.verticalCenter: parent.verticalCenter
-            width: Math.max(180, Math.min(280, parent.width * 0.2))
+            // In a narrow window the field folds to its glass until it is
+            // used, so the path keeps its room.
+            readonly property bool folded: root.width < 1100 && !searchInput.activeFocus && root.query.length === 0
+            width: headerSearch.folded ? 36 : Math.max(180, Math.min(280, parent.width * 0.2))
             height: 36
+            Behavior on width { NumberAnimation { duration: Theme.tFast } }
+            MouseArea {
+                anchors.fill: parent
+                visible: headerSearch.folded
+                cursorShape: Qt.PointingHandCursor
+                onClicked: searchInput.forceActiveFocus()
+            }
             color: Theme.cDim
             border.width: 1
             border.color: searchInput.activeFocus ? Theme.cGreen : Theme.cLine
@@ -4322,7 +4344,7 @@ ApplicationWindow {
                 anchors.right: parent.right
                 anchors.rightMargin: 12
                 anchors.verticalCenter: parent.verticalCenter
-                visible: root.query.length === 0
+                visible: root.query.length === 0 && !headerSearch.folded
                 text: "CTRL K"
             }
             Text {
@@ -4356,7 +4378,8 @@ ApplicationWindow {
             anchors.rightMargin: 22
             anchors.top: parent.top
             anchors.bottom: parent.bottom
-            visible: !root.trashOpen && !root.recentOpen
+            // Ctrl 1 / Ctrl 2 still switch views when there is no room.
+            visible: !root.trashOpen && !root.recentOpen && root.width >= 1000
             Tab { height: parent.height; text: "Grid"; active: root.view === "grid"; onClicked: root.view = "grid" }
             Tab { height: parent.height; text: "List"; active: root.view !== "grid"; onClicked: root.view = "list" }
         }
@@ -4369,7 +4392,7 @@ ApplicationWindow {
             anchors.verticalCenter: parent.verticalCenter
             primary: true
             height: 36
-            text: "+ New"
+            text: root.width < 760 ? "+" : "+ New"
             visible: !root.trashOpen && !root.recentOpen
             onClicked: newMenu.popup(newButton, newButton.width - newMenu.implicitWidth, newButton.height + 6)
         }
@@ -4576,7 +4599,7 @@ ApplicationWindow {
 
                     // ---- Today, and whose machine this is ----
                     Column {
-                        visible: root.railOpen
+                        visible: root.railShown
                         width: parent.width
                         leftPadding: 6
                         spacing: 6
@@ -4595,12 +4618,12 @@ ApplicationWindow {
                             font.weight: Font.DemiBold
                         }
                     }
-                    Item { width: 1; height: root.railOpen ? 20 : 0 }
+                    Item { width: 1; height: root.railShown ? 20 : 0 }
 
                     // PLACES | TREE
                     Row {
                         id: sidebarTabs
-                        visible: root.railOpen
+                        visible: root.railShown
                         x: 6
                         width: parent.width - 6
                         height: visible ? 32 : 0
@@ -4641,18 +4664,18 @@ ApplicationWindow {
                             }
                         }
                     }
-                    Item { width: 1; height: root.railOpen ? 22 : 0 }
+                    Item { width: 1; height: root.railShown ? 22 : 0 }
 
                     // ---- Tree ----
                     HudHeader {
-                        visible: root.railOpen && root.sidebarTab === "tree"
+                        visible: root.railShown && root.sidebarTab === "tree"
                         x: 6
                         width: parent.width - 6
                         title: "Tree"
                         sub: "~"
                         titleSize: 12
                     }
-                    Item { width: 1; height: root.railOpen && root.sidebarTab === "tree" ? 12 : 0 }
+                    Item { width: 1; height: root.railShown && root.sidebarTab === "tree" ? 12 : 0 }
                     Repeater {
                         model: root.homeTree
                         delegate: TreeRow {
@@ -4675,16 +4698,16 @@ ApplicationWindow {
 
                     // ---- Places ----
                     HudHeader {
-                        visible: root.railOpen && root.sidebarTab === "places"
+                        visible: root.railShown && root.sidebarTab === "places"
                         x: 6
                         width: parent.width - 6
                         title: "Places"
                         titleSize: 12
                     }
-                    Item { width: 1; height: root.railOpen && root.sidebarTab === "places" ? 12 : 0 }
+                    Item { width: 1; height: root.railShown && root.sidebarTab === "places" ? 12 : 0 }
 
                     Repeater {
-                        model: root.sidebarTab === "places" || !root.railOpen
+                        model: root.sidebarTab === "places" || !root.railShown
                                ? root.places.filter(function (place) { return place.section === "" }) : []
                         delegate: Column {
                             id: placeBlock
@@ -4697,7 +4720,7 @@ ApplicationWindow {
                                                          : placeBlock.trash ? root.trashOpen
                                                          : !root.recentOpen && !root.trashOpen && !root.settingsOpen
                                                            && placeBlock.target === root.activePlace
-                            readonly property bool expanded: placeBlock.active && root.railOpen && root.placeTree.length > 0
+                            readonly property bool expanded: placeBlock.active && root.railShown && root.placeTree.length > 0
                                                              && !placeBlock.recent && !placeBlock.trash
                             width: placesColumn.width
 
@@ -4743,27 +4766,27 @@ ApplicationWindow {
                         }
                     }
 
-                    Item { width: 1; height: root.railOpen ? (root.sidebarTab === "places" ? 26 : 0) : 10 }
+                    Item { width: 1; height: root.railShown ? (root.sidebarTab === "places" ? 26 : 0) : 10 }
                     // In the rail, a short rule parts places from locations.
                     Rectangle {
-                        visible: !root.railOpen
+                        visible: !root.railShown
                         x: (placesColumn.width - width) / 2
                         width: 22
                         height: 1
                         color: Theme.cLine
                     }
-                    Item { width: 1; height: root.railOpen ? 0 : 10 }
+                    Item { width: 1; height: root.railShown ? 0 : 10 }
                     HudHeader {
-                        visible: root.railOpen && root.sidebarTab === "places"
+                        visible: root.railShown && root.sidebarTab === "places"
                         x: 6
                         width: parent.width - 6
                         title: "Locations"
                         titleSize: 12
                     }
-                    Item { width: 1; height: root.railOpen && root.sidebarTab === "places" ? 12 : 0 }
+                    Item { width: 1; height: root.railShown && root.sidebarTab === "places" ? 12 : 0 }
 
                     Repeater {
-                        model: root.sidebarTab === "places" || !root.railOpen
+                        model: root.sidebarTab === "places" || !root.railShown
                                ? root.places.filter(function (place) { return place.section !== "" }) : []
                         delegate: NavItem {
                             id: location
@@ -4825,10 +4848,10 @@ ApplicationWindow {
                 }
                 NavItem {
                     id: railToggle
-                    glyph: root.railOpen ? "«" : "»"
+                    glyph: root.railShown ? "«" : "»"
                     label: "Collapse"
                     meta: "CTRL B"
-                    onActivated: root.railOpen = !root.railOpen
+                    onActivated: root.toggleRail()
                 }
             }
         }
@@ -5046,7 +5069,7 @@ ApplicationWindow {
                             }
                             Tab {
                                 anchors.right: parent.right
-                                anchors.bottom: homeTitle.bottom
+                                y: -10
                                 text: "Browse files  →"
                                 textSize: 10
                                 onClicked: root.homeBrowsing = true
@@ -5074,14 +5097,16 @@ ApplicationWindow {
                             id: recentCards
                             visible: root.homeRecents.length > 0
                             spacing: 14
+                            // As many cards as fit at a readable width, up to four.
+                            readonly property int columns: Math.max(1, Math.min(4, Math.floor((homeColumn.width + 14) / 184)))
                             Repeater {
-                                model: root.homeRecents
+                                model: root.homeRecents.slice(0, recentCards.columns)
                                 delegate: Rectangle {
                                     id: recentCard
                                     required property var modelData
                                     readonly property string tag: root.tagOf(recentCard.modelData.name, recentCard.modelData.directory)
                                     readonly property color tone: Theme.typeColor(recentCard.tag)
-                                    width: (homeColumn.width - 3 * 14) / 4
+                                    width: (homeColumn.width - (recentCards.columns - 1) * 14) / recentCards.columns
                                     height: 156
                                     color: recentMouse.containsMouse ? Theme.cDim : Theme.cPanel
                                     border.width: 1
@@ -5150,7 +5175,7 @@ ApplicationWindow {
 
                         Grid {
                             id: homeTiles
-                            columns: 3
+                            columns: homeColumn.width >= 660 ? 3 : homeColumn.width >= 400 ? 2 : 1
                             spacing: 12
                             // The place Back would return to: where you just were.
                             readonly property string cameFrom: {
@@ -5166,7 +5191,7 @@ ApplicationWindow {
                                     readonly property bool lit: homeTiles.cameFrom.length > 0
                                                                 && (homeTiles.cameFrom === tile.path
                                                                     || homeTiles.cameFrom.startsWith(tile.path + "/"))
-                                    width: (homeColumn.width - 2 * 12) / 3
+                                    width: (homeColumn.width - (homeTiles.columns - 1) * 12) / homeTiles.columns
                                     height: 76
                                     color: tile.lit ? Theme.cWash : tileMouse.containsMouse ? Theme.cDim : Theme.cPanel
                                     border.width: 1
