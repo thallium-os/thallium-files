@@ -108,6 +108,17 @@ ApplicationWindow {
         }
         return out
     }
+    // Every folder in the home folder, for Home's own section.
+    readonly property var homeFolderRows: {
+        void root.revision
+        if (!root.homeOpen)
+            return []
+        const text = root.bridge.subfolders(root.bridge.homePath, root.showHidden)
+        return text.length === 0 ? [] : text.split("\n").map(function (line) {
+            const cut = line.lastIndexOf("\t")
+            return { name: line.substring(0, cut), count: parseInt(line.substring(cut + 1)) }
+        })
+    }
     // The places Home offers as tiles: the folders in the sidebar's first
     // group, less Home itself, Recent and Trash.
     readonly property var homeTiles: root.places.filter(function (place) {
@@ -165,6 +176,10 @@ ApplicationWindow {
         walk(base, firstDepth, [])
         return out
     }
+    // The active place's branch folded away by hand; it opens again when
+    // another place is chosen.
+    property bool placeFolded: false
+    onActivePlaceChanged: root.placeFolded = false
     readonly property var placeRows: {
         void root.revision
         void root.treeToggled
@@ -448,13 +463,13 @@ ApplicationWindow {
         const counts = { DIR: 0, CODE: 0, DOC: 0, TXT: 0 }
         for (let i = 0; i < root.rows.length; ++i) {
             const at = root.rows[i]
-            counts[root.tagOf(root.bridge.entryName(at), root.bridge.entryIsDirectory(at))] += 1
+            counts[root.bucketOf(root.tagOf(root.bridge.entryName(at), root.bridge.entryIsDirectory(at)))] += 1
         }
         return [
             { tag: "DIR", label: "Folders", short: "Folders", sym: "Fd", count: counts.DIR, color: Theme.tDir },
             { tag: "CODE", label: "Code", short: "Code", sym: "Cd", count: counts.CODE, color: Theme.tCode },
             { tag: "DOC", label: "Documents", short: "Docs", sym: "Dc", count: counts.DOC, color: Theme.tDoc },
-            { tag: "TXT", label: "Text", short: "Text", sym: "Tx", count: counts.TXT, color: Theme.tText }
+            { tag: "TXT", label: "Text & media", short: "Other", sym: "Tx", count: counts.TXT, color: Theme.tText }
         ]
     }
 
@@ -709,8 +724,9 @@ ApplicationWindow {
         return "Other"
     }
 
-    // The Thallium 81 type tag: DIR, CODE, DOC, or TXT for plain text and
-    // everything else.
+    // The Thallium 81 type tag: DIR, CODE, DOC, TXT for plain text, IMG /
+    // VID / AUD for media, ZIP for archives, and TXT for anything else.
+    // The last group shares the text colour.
     function tagOf(name, folder) {
         const kind = root.kindOf(name, folder)
         if (kind === "Folders")
@@ -721,7 +737,18 @@ ApplicationWindow {
             const extension = name.slice(name.lastIndexOf(".") + 1).toLowerCase()
             return extension === "txt" || extension === "md" ? "TXT" : "DOC"
         }
+        if (kind === "Media") {
+            const ext = name.slice(name.lastIndexOf(".") + 1).toLowerCase()
+            return ["mp4", "mkv", "webm", "mov"].indexOf(ext) >= 0 ? "VID"
+                 : ["mp3", "flac", "wav", "ogg"].indexOf(ext) >= 0 ? "AUD" : "IMG"
+        }
+        if (kind === "Archives")
+            return "ZIP"
         return "TXT"
+    }
+    // Which of the four composition groups a tag counts towards.
+    function bucketOf(tag) {
+        return tag === "DIR" || tag === "CODE" || tag === "DOC" ? tag : "TXT"
     }
 
     // The Kind column: what a person would call the file.
@@ -3539,8 +3566,11 @@ ApplicationWindow {
         property bool active: false
         // A segment bar under the label (the Filesystem's fill), 0..1; -1 for none.
         property real share: -1
+        // A fold control at the right: "open", "closed", or "" for none.
+        property string fold: ""
         signal activated
         signal menuRequested
+        signal foldToggled
         // A folder this item names, so files can be dropped on it.
         property string dropTarget: ""
 
@@ -3605,14 +3635,43 @@ ApplicationWindow {
         Text {
             id: navMeta
             visible: root.railShown && navItem.meta.length > 0
-            anchors.right: parent.right
-            anchors.rightMargin: 12
+            anchors.right: navFold.visible ? navFold.left : parent.right
+            anchors.rightMargin: navFold.visible ? 6 : 12
             anchors.verticalCenter: navGlyph.verticalCenter
             text: navItem.meta
             color: navItem.metaColor
             font.family: Theme.fontMono
             font.pixelSize: 11
             font.letterSpacing: 1.5
+        }
+        // Folds the branch under this place away, and back.
+        Rectangle {
+            id: navFold
+            z: 2
+            visible: root.railShown && navItem.fold.length > 0
+            anchors.right: parent.right
+            anchors.rightMargin: 6
+            anchors.verticalCenter: navGlyph.verticalCenter
+            width: 22
+            height: 22
+            color: foldMouse.containsMouse ? Theme.cDim : "transparent"
+            border.width: 1
+            border.color: foldMouse.containsMouse ? Theme.cGreen : "transparent"
+            Text {
+                anchors.centerIn: parent
+                text: navItem.fold === "open" ? "▾" : "▸"
+                color: foldMouse.containsMouse || navItem.fold === "open" ? Theme.cGreen : Theme.cMuted
+                font.family: Theme.fontMono
+                font.pixelSize: 11
+            }
+            MouseArea {
+                id: foldMouse
+                anchors.fill: parent
+                anchors.margins: -4
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: navItem.foldToggled()
+            }
         }
         SegmentBar {
             visible: root.railShown && navItem.share >= 0
@@ -4720,7 +4779,9 @@ ApplicationWindow {
                                                          : placeBlock.trash ? root.trashOpen
                                                          : !root.recentOpen && !root.trashOpen && !root.settingsOpen
                                                            && placeBlock.target === root.activePlace
-                            readonly property bool expanded: placeBlock.active && root.railShown && root.placeTree.length > 0
+                            readonly property bool branchy: placeBlock.active && root.railShown && root.placeTree.length > 0
+                                                            && !placeBlock.recent && !placeBlock.trash
+                            readonly property bool expanded: placeBlock.branchy && !root.placeFolded
                                                              && !placeBlock.recent && !placeBlock.trash
                             width: placesColumn.width
 
@@ -4730,7 +4791,9 @@ ApplicationWindow {
                                 label: placeBlock.modelData.label
                                 active: placeBlock.active
                                 meta: placeBlock.active && !placeBlock.recent && !placeBlock.trash && root.placeTotal >= 0
-                                      ? root.pad2(root.placeTotal) + (placeBlock.expanded ? "  ▾" : "") : ""
+                                      ? root.pad2(root.placeTotal) : ""
+                                fold: placeBlock.branchy ? (placeBlock.expanded ? "open" : "closed") : ""
+                                onFoldToggled: root.placeFolded = !root.placeFolded
                                 dropTarget: placeBlock.recent || placeBlock.trash ? "" : placeBlock.target
                                 onMenuRequested: {
                                     if (!placeBlock.marked)
@@ -5263,6 +5326,76 @@ ApplicationWindow {
                                     DropArea {
                                         anchors.fill: parent
                                         onDropped: function (drop) { root.dropInto(drop, tile.path) }
+                                    }
+                                }
+                            }
+                        }
+
+                        Item { width: 1; height: 30 }
+                        HudHeader {
+                            width: parent.width
+                            title: "Home folder"
+                            sub: root.homeFolderRows.length + (root.homeFolderRows.length === 1 ? " folder" : " folders")
+                            trailing: "BROWSE ALL"
+                            onTrailingClicked: root.homeBrowsing = true
+                        }
+                        Item { width: 1; height: 18 }
+                        Grid {
+                            id: homeFolderGrid
+                            columns: Math.max(1, Math.floor((homeColumn.width + 10) / 210))
+                            spacing: 10
+                            Repeater {
+                                model: root.homeFolderRows
+                                delegate: Rectangle {
+                                    id: homeFolder
+                                    required property var modelData
+                                    readonly property string path: root.bridge.homePath + "/" + homeFolder.modelData.name
+                                    width: (homeColumn.width - (homeFolderGrid.columns - 1) * 10) / homeFolderGrid.columns
+                                    height: 44
+                                    color: homeFolderMouse.containsMouse ? Theme.cDim : Theme.cPanel
+                                    border.width: 1
+                                    border.color: homeFolderMouse.containsMouse ? Theme.cGreen : Theme.cDead
+                                    Icon {
+                                        id: homeFolderIcon
+                                        x: 14
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        name: homeFolderMouse.containsMouse ? "folder-open" : "folder"
+                                        size: 15
+                                        tint: homeFolderMouse.containsMouse ? Theme.cGreen : "transparent"
+                                    }
+                                    Text {
+                                        anchors.left: homeFolderIcon.right
+                                        anchors.leftMargin: 12
+                                        anchors.right: homeFolderCount.left
+                                        anchors.rightMargin: 8
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: homeFolder.modelData.name
+                                        elide: Text.ElideMiddle
+                                        color: Theme.cFg
+                                        font.family: Theme.fontHuman
+                                        font.pixelSize: 13
+                                        font.weight: Font.DemiBold
+                                    }
+                                    Text {
+                                        id: homeFolderCount
+                                        anchors.right: parent.right
+                                        anchors.rightMargin: 14
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: root.pad2(homeFolder.modelData.count)
+                                        color: Theme.cMuted
+                                        font.family: Theme.fontMono
+                                        font.pixelSize: 10
+                                    }
+                                    MouseArea {
+                                        id: homeFolderMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: root.bridge.navigate(homeFolder.path)
+                                    }
+                                    DropArea {
+                                        anchors.fill: parent
+                                        onDropped: function (drop) { root.dropInto(drop, homeFolder.path) }
                                     }
                                 }
                             }
@@ -7596,7 +7729,7 @@ ApplicationWindow {
                         CompositionCard {
                             width: parent.width
                             kinds: root.composition
-                            focusTag: inspector.single ? inspector.entryTag : ""
+                            focusTag: inspector.single ? root.bucketOf(inspector.entryTag) : ""
                         }
                     }
 
