@@ -10,7 +10,12 @@ Item {
     property string trailing: ""
     property color trailingColor: Theme.cFg
     property int titleSize: 13
+    // A fold control at the far right: when `foldable`, ▾ while open and ▸
+    // while folded; the owner flips `folded` on `foldToggled`.
+    property bool foldable: false
+    property bool folded: false
     signal trailingClicked
+    signal foldToggled
 
     implicitHeight: 22
 
@@ -49,15 +54,16 @@ Item {
     Rectangle {
         anchors.left: subText.visible ? subText.right : titleText.right
         anchors.leftMargin: 12
-        anchors.right: trailingText.visible ? trailingText.left : parent.right
-        anchors.rightMargin: trailingText.visible ? 12 : 0
+        anchors.right: trailingText.visible ? trailingText.left : foldButton.visible ? foldButton.left : parent.right
+        anchors.rightMargin: trailingText.visible || foldButton.visible ? 12 : 0
         anchors.verticalCenter: parent.verticalCenter
         height: 1
         color: Theme.cLine
     }
     Text {
         id: trailingText
-        anchors.right: parent.right
+        anchors.right: foldButton.visible ? foldButton.left : parent.right
+        anchors.rightMargin: foldButton.visible ? 10 : 0
         anchors.verticalCenter: parent.verticalCenter
         visible: hud.trailing.length > 0
         text: hud.trailing
@@ -72,6 +78,32 @@ Item {
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
             onClicked: hud.trailingClicked()
+        }
+    }
+    Rectangle {
+        id: foldButton
+        visible: hud.foldable
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        width: 22
+        height: 22
+        color: foldMouse.containsMouse ? Theme.cDim : "transparent"
+        border.width: 1
+        border.color: foldMouse.containsMouse ? Theme.cGreen : Theme.cDead
+        Text {
+            anchors.centerIn: parent
+            text: hud.folded ? "▸" : "▾"
+            color: foldMouse.containsMouse || !hud.folded ? Theme.cGreen : Theme.cMuted
+            font.family: Theme.fontMono
+            font.pixelSize: 11
+        }
+        MouseArea {
+            id: foldMouse
+            anchors.fill: parent
+            anchors.margins: -4
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: hud.foldToggled()
         }
     }
 }

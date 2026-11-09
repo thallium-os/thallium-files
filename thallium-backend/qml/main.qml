@@ -195,7 +195,17 @@ ApplicationWindow {
     // made the top of the window look ragged.
     readonly property int controlHeight: 34
     readonly property int bandHeight: 52
-    readonly property int inspectorWidth: Theme.previewWidth + 10
+    // The right-hand panel: dragged wider or narrower by its left edge, and
+    // its Storage and This folder sections folded on their own. All three
+    // are remembered in files.conf.
+    property int asideWidth: parseInt(root.bridge.uiValue("aside.width", String(Theme.previewWidth + 10)))
+    property bool asideDragging: false
+    readonly property int inspectorWidth: Math.max(280, Math.min(root.asideWidth, 560,
+                                                   root.width - root.sidebarWidth - 420))
+    property bool storageFolded: root.bridge.uiValue("aside.storage", "open") === "folded"
+    onStorageFoldedChanged: root.bridge.setUiValue("aside.storage", root.storageFolded ? "folded" : "open")
+    property bool folderFolded: root.bridge.uiValue("aside.folder", "open") === "folded"
+    onFolderFoldedChanged: root.bridge.setUiValue("aside.folder", root.folderFolded ? "folded" : "open")
     readonly property int rowHeight: root.view === "dense" ? Theme.rowHeightDense : 44
 
     property string view: "list"
@@ -6863,7 +6873,49 @@ ApplicationWindow {
             color: Theme.cBase
 
             Behavior on width {
+                enabled: !root.asideDragging
                 NumberAnimation { duration: Theme.tMed; easing.type: Easing.OutCubic }
+            }
+
+            // Its left edge is a handle: drag to make the panel wider or
+            // narrower; double-click puts it back to the standard width.
+            Rectangle {
+                id: asideHandle
+                z: 30
+                x: 0
+                width: 6
+                height: parent.height
+                color: asideDrag.containsMouse || root.asideDragging ? Theme.cGreen : "transparent"
+                opacity: root.asideDragging ? 0.9 : 0.5
+                MouseArea {
+                    id: asideDrag
+                    anchors.fill: parent
+                    anchors.leftMargin: -3
+                    hoverEnabled: true
+                    cursorShape: Qt.SplitHCursor
+                    property real startX: 0
+                    property int startWidth: 0
+                    onPressed: function (mouse) {
+                        startX = mapToItem(null, mouse.x, 0).x
+                        startWidth = root.inspectorWidth
+                        root.asideDragging = true
+                    }
+                    onPositionChanged: function (mouse) {
+                        if (!pressed)
+                            return
+                        const now = mapToItem(null, mouse.x, 0).x
+                        root.asideWidth = Math.round(Math.max(280, Math.min(560, startWidth - (now - startX))))
+                    }
+                    onReleased: {
+                        root.asideDragging = false
+                        root.asideWidth = root.inspectorWidth
+                        root.bridge.setUiValue("aside.width", String(root.asideWidth))
+                    }
+                    onDoubleClicked: {
+                        root.asideWidth = Theme.previewWidth + 10
+                        root.bridge.setUiValue("aside.width", String(root.asideWidth))
+                    }
+                }
             }
 
             // The entry described: the one held, or none.
@@ -7089,9 +7141,17 @@ ApplicationWindow {
                         width: parent.width
                         spacing: 16
 
-                        HudHeader { width: parent.width; title: "Storage"; sub: "/"; visible: root.storageKnown }
-                        Item {
+                        HudHeader {
+                            width: parent.width
+                            title: "Storage"
+                            sub: "/"
                             visible: root.storageKnown
+                            foldable: true
+                            folded: root.storageFolded
+                            onFoldToggled: root.storageFolded = !root.storageFolded
+                        }
+                        Item {
+                            visible: root.storageKnown && !root.storageFolded
                             width: parent.width
                             height: visible ? 146 : 0
                             readonly property real total: {
@@ -7611,8 +7671,12 @@ ApplicationWindow {
                             sub: "/"
                             trailing: "■ ONLINE"
                             trailingColor: Theme.cGreen
+                            foldable: true
+                            folded: root.storageFolded
+                            onFoldToggled: root.storageFolded = !root.storageFolded
                         }
                         StorageGauge {
+                            visible: !root.storageFolded
                             width: parent.width
                             used: storagePanel.used
                             total: storagePanel.total
@@ -7625,8 +7689,16 @@ ApplicationWindow {
                         width: parent.width
                         spacing: 16
                         visible: !root.trashOpen && !root.recentOpen && root.asideMode === "files"
-                        HudHeader { width: parent.width; title: "This folder"; sub: "composition" }
+                        HudHeader {
+                            width: parent.width
+                            title: "This folder"
+                            sub: "composition"
+                            foldable: true
+                            folded: root.folderFolded
+                            onFoldToggled: root.folderFolded = !root.folderFolded
+                        }
                         CompositionCard {
+                            visible: !root.folderFolded
                             width: parent.width
                             kinds: root.composition
                             focusTag: inspector.single ? root.bucketOf(inspector.entryTag) : ""
