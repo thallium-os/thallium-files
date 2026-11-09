@@ -73,8 +73,6 @@ ApplicationWindow {
         else
             root.railOpen = !root.railOpen
     }
-    property string sidebarTab: root.bridge.uiValue("sidebar.tab", "places")
-    onSidebarTabChanged: root.bridge.setUiValue("sidebar.tab", root.sidebarTab)
 
     // ---- Home: the home folder shown as an overview ----
     // Opening Home shows recent files and the places at a glance; "Browse
@@ -186,26 +184,6 @@ ApplicationWindow {
         if (root.activePlace.length === 0 || !root.railShown)
             return []
         return root.folderRows(root.activePlace, 1)
-    }
-    readonly property var homeTree: {
-        void root.revision
-        void root.treeToggled
-        if (root.sidebarTab !== "tree" || !root.railShown)
-            return []
-        const home = root.bridge.homePath
-        let out = []
-        if (home.length === 0)
-            return out
-        out.push({ path: home, name: root.leafName(home), depth: 0, count: -1, open: true,
-                   last: false, rails: [], remote: false, top: true,
-                   here: root.bridge.currentPath === home, onPath: true })
-        out = out.concat(root.folderRows(home, 1))
-        const remotes = root.places.filter(function (place) { return place.remote === true })
-        for (let r = 0; r < remotes.length; ++r)
-            out.push({ path: remotes[r].target || "", name: remotes[r].label + ":", depth: 0, count: -1,
-                       open: false, last: false, rails: [], remote: true, top: true, place: remotes[r],
-                       here: false, onPath: false })
-        return out
     }
     readonly property int sidebarWidth: root.railShown ? Theme.railOpenWidth : Theme.railWidth
     // In a narrow file pane the Kind and then the Size column give their
@@ -4677,97 +4655,20 @@ ApplicationWindow {
                             font.weight: Font.DemiBold
                         }
                     }
-                    Item { width: 1; height: root.railShown ? 20 : 0 }
-
-                    // PLACES | TREE
-                    Row {
-                        id: sidebarTabs
-                        visible: root.railShown
-                        x: 6
-                        width: parent.width - 6
-                        height: visible ? 32 : 0
-                        Repeater {
-                            model: [["places", "Places"], ["tree", "Tree"]]
-                            delegate: Rectangle {
-                                id: sideTab
-                                required property var modelData
-                                readonly property bool on: root.sidebarTab === sideTab.modelData[0]
-                                width: sidebarTabs.width / 2
-                                height: 32
-                                color: sideTab.on ? Theme.cWash : "transparent"
-                                border.width: 1
-                                border.color: Theme.cLine
-                                Text {
-                                    anchors.centerIn: parent
-                                    text: sideTab.modelData[1].toUpperCase()
-                                    color: sideTab.on || sideTabMouse.containsMouse ? Theme.cGreen : Theme.cMuted
-                                    font.family: Theme.fontMono
-                                    font.pixelSize: 9
-                                    font.bold: sideTab.on
-                                    font.letterSpacing: 3
-                                }
-                                Rectangle {
-                                    anchors.bottom: parent.bottom
-                                    width: parent.width
-                                    height: 2
-                                    color: Theme.cGreen
-                                    visible: sideTab.on
-                                }
-                                MouseArea {
-                                    id: sideTabMouse
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: root.sidebarTab = sideTab.modelData[0]
-                                }
-                            }
-                        }
-                    }
-                    Item { width: 1; height: root.railShown ? 22 : 0 }
-
-                    // ---- Tree ----
-                    HudHeader {
-                        visible: root.railShown && root.sidebarTab === "tree"
-                        x: 6
-                        width: parent.width - 6
-                        title: "Tree"
-                        sub: "~"
-                        titleSize: 12
-                    }
-                    Item { width: 1; height: root.railShown && root.sidebarTab === "tree" ? 12 : 0 }
-                    Repeater {
-                        model: root.homeTree
-                        delegate: TreeRow {
-                            id: node
-                            required property var modelData
-                            width: placesColumn.width
-                            row: node.modelData
-                            onActivated: {
-                                if (node.modelData.remote) {
-                                    root.openPlace(node.modelData.place)
-                                    return
-                                }
-                                root.settingsOpen = false
-                                root.recentOpen = false
-                                root.trashOpen = false
-                                root.bridge.navigate(node.modelData.path)
-                            }
-                        }
-                    }
+                    Item { width: 1; height: root.railShown ? 26 : 0 }
 
                     // ---- Places ----
                     HudHeader {
-                        visible: root.railShown && root.sidebarTab === "places"
+                        visible: root.railShown
                         x: 6
                         width: parent.width - 6
                         title: "Places"
                         titleSize: 12
                     }
-                    Item { width: 1; height: root.railShown && root.sidebarTab === "places" ? 12 : 0 }
+                    Item { width: 1; height: root.railShown ? 12 : 0 }
 
                     Repeater {
-                        model: root.sidebarTab === "places" || !root.railShown
-                               ? root.places.filter(function (place) { return place.section === "" }) : []
+                        model: root.places.filter(function (place) { return place.section === "" })
                         delegate: Column {
                             id: placeBlock
                             required property var modelData
@@ -4829,7 +4730,7 @@ ApplicationWindow {
                         }
                     }
 
-                    Item { width: 1; height: root.railShown ? (root.sidebarTab === "places" ? 26 : 0) : 10 }
+                    Item { width: 1; height: root.railShown ? 26 : 10 }
                     // In the rail, a short rule parts places from locations.
                     Rectangle {
                         visible: !root.railShown
@@ -4840,17 +4741,16 @@ ApplicationWindow {
                     }
                     Item { width: 1; height: root.railShown ? 0 : 10 }
                     HudHeader {
-                        visible: root.railShown && root.sidebarTab === "places"
+                        visible: root.railShown
                         x: 6
                         width: parent.width - 6
                         title: "Locations"
                         titleSize: 12
                     }
-                    Item { width: 1; height: root.railShown && root.sidebarTab === "places" ? 12 : 0 }
+                    Item { width: 1; height: root.railShown ? 12 : 0 }
 
                     Repeater {
-                        model: root.sidebarTab === "places" || !root.railShown
-                               ? root.places.filter(function (place) { return place.section !== "" }) : []
+                        model: root.places.filter(function (place) { return place.section !== "" })
                         delegate: NavItem {
                             id: location
                             required property var modelData
