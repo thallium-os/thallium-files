@@ -5,7 +5,7 @@
 //! (or `~/.config/thallium/files.conf`), next to the shared Thallium theme
 //! file, so they are plain text a person can read and edit.
 
-use std::{collections::BTreeMap, path::{Path, PathBuf}};
+use std::{collections::BTreeMap, fmt::Write as _, path::{Path, PathBuf}};
 
 /// The preference file, or `None` without a home folder.
 #[must_use]
@@ -49,7 +49,7 @@ fn render(values: &BTreeMap<String, String>) -> String {
 	for (key, value) in values {
 		// One line per value: anything after a newline would read as a key.
 		let value = value.replace(['\n', '\r'], " ");
-		out.push_str(&format!("{key} = {value}\n"));
+		let _ = writeln!(out, "{key} = {value}");
 	}
 	out
 }
