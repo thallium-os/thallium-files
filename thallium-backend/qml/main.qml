@@ -119,40 +119,66 @@ ApplicationWindow {
         next[path] = !root.treeIsOpen(path)
         root.treeToggled = next
     }
+    // The folders beneath `base` as tree rows, opening every branch that is
+    // open (by hand, or because the current folder is inside it). Each row
+    // knows which guides of the levels above run past it, and which of its
+    // lines are lit because the current folder lies further down.
+    function folderRows(base, firstDepth) {
+        const out = []
+        const here = root.bridge.currentPath
+        function under(path) { return here === path || here.startsWith(path + "/") }
+        function walk(path, depth, rails) {
+            const text = root.bridge.subfolders(path, root.showHidden)
+            const lines = text.length > 0 ? text.split("\n") : []
+            const kids = lines.map(function (line) {
+                const cut = line.lastIndexOf("\t")
+                return { name: line.substring(0, cut), count: parseInt(line.substring(cut + 1)) }
+            })
+            // The child the current folder is in, if any.
+            let litTo = -1
+            for (let k = 0; k < kids.length; ++k)
+                if (under(path + "/" + kids[k].name))
+                    litTo = k
+            for (let i = 0; i < kids.length; ++i) {
+                const child = path + "/" + kids[i].name
+                const last = i === kids.length - 1
+                const open = root.treeIsOpen(child)
+                out.push({ path: child, name: kids[i].name, depth: depth, count: kids[i].count, open: open,
+                           last: last, rails: rails, remote: false, top: false,
+                           here: here === child, onPath: under(child),
+                           topLit: i <= litTo, restLit: i < litTo })
+                if (open && depth < 12)
+                    walk(child, depth + 1, rails.concat([{ show: !last, lit: i < litTo }]))
+            }
+        }
+        walk(base, firstDepth, [])
+        return out
+    }
+    readonly property var placeRows: {
+        void root.revision
+        void root.treeToggled
+        if (root.activePlace.length === 0 || !root.railOpen)
+            return []
+        return root.folderRows(root.activePlace, 1)
+    }
     readonly property var homeTree: {
         void root.revision
         void root.treeToggled
         if (root.sidebarTab !== "tree" || !root.railOpen)
             return []
         const home = root.bridge.homePath
-        const out = []
+        let out = []
         if (home.length === 0)
             return out
-        // `rails` says, for each ancestor level, whether its guide carries on
-        // past this row.
-        function walk(path, depth, rails) {
-            const text = root.bridge.subfolders(path, root.showHidden)
-            const lines = text.length > 0 ? text.split("\n") : []
-            for (let i = 0; i < lines.length; ++i) {
-                const cut = lines[i].lastIndexOf("\t")
-                const name = lines[i].substring(0, cut)
-                const count = parseInt(lines[i].substring(cut + 1))
-                const child = path + "/" + name
-                const last = i === lines.length - 1
-                const open = root.treeIsOpen(child)
-                out.push({ path: child, name: name, depth: depth, count: count, open: open,
-                           last: last, rails: rails, remote: false, top: false })
-                if (open && depth < 12)
-                    walk(child, depth + 1, rails.concat([!last]))
-            }
-        }
         out.push({ path: home, name: root.leafName(home), depth: 0, count: -1, open: true,
-                   last: false, rails: [], remote: false, top: true })
-        walk(home, 1, [])
+                   last: false, rails: [], remote: false, top: true,
+                   here: root.bridge.currentPath === home, onPath: true })
+        out = out.concat(root.folderRows(home, 1))
         const remotes = root.places.filter(function (place) { return place.remote === true })
         for (let r = 0; r < remotes.length; ++r)
             out.push({ path: remotes[r].target || "", name: remotes[r].label + ":", depth: 0, count: -1,
-                       open: false, last: false, rails: [], remote: true, top: true, place: remotes[r] })
+                       open: false, last: false, rails: [], remote: true, top: true, place: remotes[r],
+                       here: false, onPath: false })
         return out
     }
     readonly property int sidebarWidth: root.railOpen ? Theme.railOpenWidth : Theme.railWidth
@@ -393,17 +419,6 @@ ApplicationWindow {
     readonly property int placeTotal: {
         void root.revision
         return root.activePlace.length > 0 ? root.bridge.entryTotal(root.activePlace, root.showHidden) : -1
-    }
-    // How many tree rows the lit guide runs through: down to the row on the
-    // open folder's path, or none.
-    readonly property int placeTreeLit: {
-        const path = root.bridge.currentPath
-        for (let i = 0; i < root.placeTree.length; ++i) {
-            const branch = root.activePlace + "/" + root.placeTree[i].name
-            if (path === branch || path.startsWith(branch + "/"))
-                return i + 1
-        }
-        return 0
     }
     readonly property bool storageKnown: {
         void root.revision
@@ -3692,88 +3707,156 @@ ApplicationWindow {
     // One folder in the sidebar's tree: a guide line down the left, an
     // elbow, a square node, the name and how many entries it holds. The row
     // on the way to the open folder lights the guide, elbow and node green.
+    // One folder in a sidebar tree. `row` comes from `folderRows`: its
+    // depth, whether it is open, and which guides run past it. The guide
+    // lights green from the top of the tree down to the folder you are in,
+    // and each branch leaves its parent's line on a soft curve.
     component TreeRow: Rectangle {
         id: treeRow
-        property string label: ""
-        property int count: 0
-        property bool onPath: false
-        property bool last: false
-        property bool lit: false
-        property string target: ""
+        property var row: ({})
+        readonly property int depth: treeRow.row.depth || 0
+        readonly property bool here: treeRow.row.here === true
+        readonly property bool onPath: treeRow.row.onPath === true
+        readonly property real unit: 18
+        // Where this row's own guide runs, and where its icon sits.
+        readonly property real guideX: 14 + (treeRow.depth - 1) * treeRow.unit
+        readonly property real iconX: treeRow.depth > 0 ? treeRow.guideX + 16 : 10
+        readonly property real mid: treeRow.height / 2
+        readonly property color lineDead: Theme.cLine
         signal activated
 
         width: parent ? parent.width : 0
-        height: 30
-        color: treeRow.onPath ? Theme.cWash : (treeMouse.containsMouse ? Theme.cDim : "transparent")
+        height: 32
+        color: treeRow.here ? Theme.cWash : (treeMouse.containsMouse ? Theme.cDim : "transparent")
 
-        readonly property int guideX: 20
-        // The guide runs the full row, or stops at the elbow on the last one.
-        Rectangle {
-            x: treeRow.guideX
-            y: 0
-            width: 1
-            height: treeRow.last ? treeRow.height / 2 : treeRow.height
-            color: treeRow.lit ? Theme.cGreen : Theme.cLine
-        }
-        Rectangle {
-            x: treeRow.guideX
-            y: treeRow.height / 2
-            width: 12
-            height: 1
-            color: treeRow.onPath ? Theme.cGreen : Theme.cLine
-        }
-        Rectangle {
-            id: treeNode
-            x: treeRow.guideX + 12
-            anchors.verticalCenter: parent.verticalCenter
-            width: 7
-            height: 7
-            color: treeRow.onPath ? Theme.cGreen : Theme.cBase
-            border.width: 1
-            border.color: treeRow.onPath ? Theme.cGreen : Theme.cMuted
-        }
-        Text {
-            id: treeToggle
-            anchors.left: treeNode.right
-            anchors.leftMargin: 8
-            anchors.verticalCenter: parent.verticalCenter
-            text: treeRow.onPath ? "▾" : "▸"
-            color: treeRow.onPath ? Theme.cGreen : Theme.cLine
-            font.family: Theme.fontMono
-            font.pixelSize: 9
-        }
-        Text {
-            anchors.left: treeToggle.right
-            anchors.leftMargin: 8
-            anchors.right: treeCount.left
-            anchors.rightMargin: 8
-            anchors.verticalCenter: parent.verticalCenter
-            text: treeRow.label
-            elide: Text.ElideRight
-            color: Theme.cFg
-            font.family: Theme.fontHuman
-            font.pixelSize: 13
-        }
-        Text {
-            id: treeCount
-            anchors.right: parent.right
-            anchors.rightMargin: 12
-            anchors.verticalCenter: parent.verticalCenter
-            text: treeRow.count < 10 ? "0" + treeRow.count : String(treeRow.count)
-            color: treeRow.onPath ? Theme.cGreen : Theme.cMuted
-            font.family: Theme.fontMono
-            font.pixelSize: 11
-        }
         MouseArea {
             id: treeMouse
             anchors.fill: parent
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
+            acceptedButtons: Qt.LeftButton
             onClicked: treeRow.activated()
+            onDoubleClicked: if (!treeRow.row.remote) root.toggleTree(treeRow.row.path)
         }
         DropArea {
             anchors.fill: parent
-            onDropped: function (drop) { root.dropInto(drop, treeRow.target) }
+            enabled: !treeRow.row.remote && (treeRow.row.path || "").length > 0
+            onDropped: function (drop) { root.dropInto(drop, treeRow.row.path) }
+        }
+
+        Rectangle {
+            visible: treeRow.here
+            width: 2
+            height: parent.height
+            color: Theme.cGreen
+        }
+
+        // Guides of the levels above that carry on past this row.
+        Repeater {
+            model: treeRow.row.rails || []
+            delegate: Rectangle {
+                required property var modelData
+                required property int index
+                visible: modelData.show
+                x: 14 + index * treeRow.unit
+                width: 1
+                height: treeRow.height
+                color: modelData.lit ? Theme.cGreen : treeRow.lineDead
+            }
+        }
+
+        // This row's guide: down from the top, curving into a short arm.
+        Shape {
+            visible: treeRow.depth > 0
+            anchors.fill: parent
+            preferredRendererType: Shape.CurveRenderer
+            ShapePath {
+                strokeColor: treeRow.row.topLit ? Theme.cGreen : treeRow.lineDead
+                strokeWidth: 1
+                fillColor: "transparent"
+                capStyle: ShapePath.FlatCap
+                startX: treeRow.guideX + 0.5; startY: 0
+                PathLine { x: treeRow.guideX + 0.5; y: treeRow.mid - 6 }
+                PathQuad { x: treeRow.guideX + 6.5; y: treeRow.mid + 0.5; controlX: treeRow.guideX + 0.5; controlY: treeRow.mid + 0.5 }
+                PathLine { x: treeRow.guideX + 11; y: treeRow.mid + 0.5 }
+            }
+            // The line carries on to the next sibling.
+            ShapePath {
+                strokeColor: treeRow.row.restLit ? Theme.cGreen : treeRow.lineDead
+                strokeWidth: treeRow.row.last ? 0 : 1
+                fillColor: "transparent"
+                capStyle: ShapePath.FlatCap
+                startX: treeRow.guideX + 0.5; startY: treeRow.mid - 6
+                PathLine { x: treeRow.guideX + 0.5; y: treeRow.height }
+            }
+        }
+        // The node where the arm meets the folder.
+        Rectangle {
+            visible: treeRow.depth > 0
+            x: treeRow.guideX + 10
+            y: treeRow.mid - 1.5
+            width: 3
+            height: 3
+            color: treeRow.onPath ? Theme.cGreen : treeRow.lineDead
+        }
+
+        // Folder icon: open when expanded. Clicking it opens or closes the
+        // branch without leaving the current folder.
+        Item {
+            id: treeIcon
+            x: treeRow.iconX
+            anchors.verticalCenter: parent.verticalCenter
+            width: 16
+            height: 16
+            Icon {
+                anchors.centerIn: parent
+                name: treeRow.row.remote ? "globe" : treeRow.row.open ? "folder-open" : "folder"
+                size: 15
+                tint: treeRow.row.remote ? Theme.tCode : treeRow.onPath ? Theme.cGreen : "transparent"
+                shade: treeRow.onPath ? 1 : 0.62
+            }
+            MouseArea {
+                anchors.fill: parent
+                anchors.margins: -5
+                enabled: !treeRow.row.remote && !treeRow.row.top
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.toggleTree(treeRow.row.path)
+            }
+        }
+        Text {
+            anchors.left: treeIcon.right
+            anchors.leftMargin: 10
+            anchors.right: treeCount.visible ? treeCount.left : parent.right
+            anchors.rightMargin: 8
+            anchors.verticalCenter: parent.verticalCenter
+            text: treeRow.row.name || ""
+            elide: Text.ElideRight
+            color: treeRow.row.remote ? Theme.tCode : treeRow.onPath || treeRow.row.top ? Theme.cFg : Theme.cMuted
+            font.family: Theme.fontHuman
+            font.pixelSize: 13
+            font.weight: treeRow.onPath || treeRow.row.top ? Font.DemiBold : Font.Normal
+        }
+        // The count, in a small square chip.
+        Rectangle {
+            id: treeCount
+            visible: treeRow.row.count !== undefined && treeRow.row.count >= 0
+            anchors.right: parent.right
+            anchors.rightMargin: 8
+            anchors.verticalCenter: parent.verticalCenter
+            width: Math.max(24, countText.implicitWidth + 10)
+            height: 18
+            color: treeRow.here ? Theme.cGreen : Theme.cDim
+            border.width: 1
+            border.color: treeRow.here ? Theme.cGreen : treeRow.onPath ? Theme.cGreen : Theme.cDead
+            Text {
+                id: countText
+                anchors.centerIn: parent
+                text: treeRow.row.count < 10 ? "0" + treeRow.row.count : String(treeRow.row.count)
+                color: treeRow.here ? Theme.cBase : treeRow.onPath ? Theme.cGreen : Theme.cMuted
+                font.family: Theme.fontMono
+                font.pixelSize: 10
+                font.bold: treeRow.here
+            }
         }
     }
 
@@ -4572,106 +4655,20 @@ ApplicationWindow {
                     Item { width: 1; height: root.railOpen && root.sidebarTab === "tree" ? 12 : 0 }
                     Repeater {
                         model: root.homeTree
-                        delegate: Rectangle {
+                        delegate: TreeRow {
                             id: node
                             required property var modelData
-                            readonly property bool here: root.bridge.currentPath === node.modelData.path
-                                                         && !root.recentOpen && !root.trashOpen && !root.settingsOpen
-                            readonly property real indent: 10 + node.modelData.depth * 16
                             width: placesColumn.width
-                            height: 30
-                            color: node.here ? Theme.cWash : nodeMouse.containsMouse ? Theme.cDim : "transparent"
-
-                            MouseArea {
-                                id: nodeMouse
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: {
-                                    if (node.modelData.remote) {
-                                        root.openPlace(node.modelData.place)
-                                        return
-                                    }
-                                    root.settingsOpen = false
-                                    root.recentOpen = false
-                                    root.trashOpen = false
-                                    root.bridge.navigate(node.modelData.path)
+                            row: node.modelData
+                            onActivated: {
+                                if (node.modelData.remote) {
+                                    root.openPlace(node.modelData.place)
+                                    return
                                 }
-                            }
-                            DropArea {
-                                anchors.fill: parent
-                                enabled: !node.modelData.remote
-                                onDropped: function (drop) { root.dropInto(drop, node.modelData.path) }
-                            }
-                            // Ancestors' guides that carry on past this row.
-                            Repeater {
-                                model: node.modelData.rails
-                                delegate: Rectangle {
-                                    required property bool modelData
-                                    required property int index
-                                    visible: modelData
-                                    x: 14 + index * 16
-                                    width: 1
-                                    height: node.height
-                                    color: Theme.cLine
-                                }
-                            }
-                            // This row's own guide and elbow.
-                            Rectangle {
-                                visible: node.modelData.depth > 0
-                                x: node.indent - 12
-                                width: 1
-                                height: node.modelData.last ? node.height / 2 : node.height
-                                color: node.here ? Theme.cGreen : Theme.cLine
-                            }
-                            Rectangle {
-                                visible: node.modelData.depth > 0
-                                x: node.indent - 12
-                                y: node.height / 2
-                                width: 8
-                                height: 1
-                                color: node.here ? Theme.cGreen : Theme.cLine
-                            }
-                            Text {
-                                id: nodeGlyph
-                                x: node.indent
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: node.modelData.open ? "▾" : "▸"
-                                color: node.here || node.modelData.top ? Theme.cGreen : Theme.cLine
-                                font.family: Theme.fontMono
-                                font.pixelSize: 9
-                                MouseArea {
-                                    anchors.fill: parent
-                                    anchors.margins: -6
-                                    enabled: !node.modelData.remote && !node.modelData.top
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: root.toggleTree(node.modelData.path)
-                                }
-                            }
-                            Text {
-                                anchors.left: nodeGlyph.right
-                                anchors.leftMargin: 8
-                                anchors.right: nodeCount.left
-                                anchors.rightMargin: 8
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: node.modelData.name
-                                elide: Text.ElideRight
-                                color: node.modelData.remote ? Theme.tCode
-                                     : node.here || node.modelData.top ? Theme.cFg : Theme.cMuted
-                                font.family: Theme.fontHuman
-                                font.pixelSize: 13
-                                font.weight: node.modelData.top || node.here ? Font.DemiBold : Font.Normal
-                            }
-                            Text {
-                                id: nodeCount
-                                anchors.right: parent.right
-                                anchors.rightMargin: 12
-                                anchors.verticalCenter: parent.verticalCenter
-                                visible: node.modelData.count >= 0 && (node.here || node.modelData.open)
-                                text: root.pad2(node.modelData.count)
-                                color: node.here ? Theme.cGreen : Theme.cMuted
-                                font.family: Theme.fontMono
-                                font.pixelSize: 11
+                                root.settingsOpen = false
+                                root.recentOpen = false
+                                root.trashOpen = false
+                                root.bridge.navigate(node.modelData.path)
                             }
                         }
                     }
@@ -4733,21 +4730,13 @@ ApplicationWindow {
                                 topPadding: 2
                                 bottomPadding: 6
                                 Repeater {
-                                    model: placeBlock.expanded ? root.placeTree : []
+                                    model: placeBlock.expanded ? root.placeRows : []
                                     delegate: TreeRow {
                                         id: branch
                                         required property var modelData
-                                        required property int index
-                                        readonly property string path: placeBlock.target + "/" + branch.modelData.name
                                         width: placesColumn.width
-                                        label: branch.modelData.name
-                                        count: branch.modelData.count
-                                        target: branch.path
-                                        last: branch.index === root.placeTree.length - 1
-                                        onPath: root.bridge.currentPath === branch.path
-                                                || root.bridge.currentPath.startsWith(branch.path + "/")
-                                        lit: root.placeTreeLit > branch.index
-                                        onActivated: root.bridge.navigate(branch.path)
+                                        row: branch.modelData
+                                        onActivated: root.bridge.navigate(branch.modelData.path)
                                     }
                                 }
                             }
