@@ -47,6 +47,7 @@ impl BrowserState {
 			tasks:            self.ordered_tasks().cloned().collect(),
 			can_go_back:      self.history.can_go_back(),
 			can_go_forward:   self.history.can_go_forward(),
+			back_history:     self.history.back.iter().rev().map(LocationDto::from).collect(),
 		}
 	}
 }

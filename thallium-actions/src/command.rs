@@ -18,6 +18,10 @@ pub struct CommandEnvelope {
 pub enum Command {
 	Navigate(Location),
 	NavigateBack,
+	/// Go back this many steps at once (1 is the same as `NavigateBack`).
+	NavigateBackSteps(usize),
+	/// Forget the back and forward history.
+	ClearHistory,
 	NavigateForward,
 	Refresh,
 	SetSelection {

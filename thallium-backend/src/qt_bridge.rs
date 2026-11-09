@@ -86,6 +86,36 @@ pub mod ffi {
 		fn up(self: Pin<&mut Self>);
 		#[qinvokable]
 		fn back(self: Pin<&mut Self>);
+		/// How many places Back can walk through.
+		#[qinvokable]
+		#[rust_name = "history_count"]
+		fn historyCount(&self) -> i32;
+		/// The place `index` steps back, the next one first.
+		#[qinvokable]
+		#[rust_name = "history_path"]
+		fn historyPath(&self, index: i32) -> QString;
+		/// Seconds since that place was left, or -1 if this session never saw
+		/// it left.
+		#[qinvokable]
+		#[rust_name = "history_age"]
+		fn historyAge(&self, index: i32) -> f64;
+		/// Jump straight to the place `index` steps back.
+		#[qinvokable]
+		#[rust_name = "go_back_to"]
+		fn goBackTo(self: Pin<&mut Self>, index: i32);
+		/// Select the entry called `name` in this folder as soon as it is
+		/// listed: now if it already is, or when it appears.
+		#[qinvokable]
+		#[rust_name = "select_named"]
+		fn selectNamed(self: Pin<&mut Self>, name: &QString);
+		/// Forget the back and forward history.
+		#[qinvokable]
+		#[rust_name = "clear_history"]
+		fn clearHistory(self: Pin<&mut Self>);
+		/// Open a terminal in `path`, or in its folder when it is a file.
+		#[qinvokable]
+		#[rust_name = "open_terminal"]
+		fn openTerminal(self: Pin<&mut Self>, path: &QString);
 		#[qinvokable]
 		fn forward(self: Pin<&mut Self>);
 		#[qinvokable]
@@ -438,6 +468,10 @@ pub mod ffi {
 		#[qinvokable]
 		#[rust_name = "template_path"]
 		fn templatePath(&self, row: i32) -> QString;
+		/// Where templates live, or empty when they are switched off.
+		#[qinvokable]
+		#[rust_name = "templates_folder_path"]
+		fn templatesFolder(&self) -> QString;
 
 		/// The login name and the machine's name, for the sidebar's
 		/// `user@host` line. Read at run time, never stored.
@@ -528,6 +562,11 @@ pub mod ffi {
 		#[qinvokable]
 		#[rust_name = "remote_location"]
 		fn remoteLocation(&self, row: i32) -> QString;
+		/// A name for a new remote of `kind` that no remote has yet: the kind
+		/// itself, else the kind with 2, 3 and so on after it.
+		#[qinvokable]
+		#[rust_name = "free_remote_name"]
+		fn freeRemoteName(&self, kind: &QString) -> QString;
 
 		#[qinvokable]
 		#[rust_name = "task_count"]
@@ -584,6 +623,8 @@ pub struct BackendBridgeRust {
 	backend:        Option<Backend>,
 	/// Whether the transfers were last told to hold.
 	tasks_paused:   bool,
+	/// When each place was last left, for the back history's ages.
+	left_at:        std::collections::HashMap<String, std::time::Instant>,
 	snapshot:       BrowserStateSnapshot,
 	icons:          IconService,
 	/// Storage systems rclone offers, read once when the panel is opened.
@@ -668,6 +709,7 @@ impl Default for BackendBridgeRust {
 					model_revision: snapshot.revision.0,
 					backend: Some(backend),
 					tasks_paused: false,
+					left_at: std::collections::HashMap::new(),
 					snapshot,
 					icons: IconService::new(),
 					providers: Vec::new(),
@@ -704,6 +746,7 @@ impl Default for BackendBridgeRust {
 				model_revision: 0,
 				backend:        None,
 				tasks_paused:   false,
+				left_at:        std::collections::HashMap::new(),
 				snapshot:       BrowserStateSnapshot::default(),
 				icons:          IconService::new(),
 				providers:      Vec::new(),
@@ -1476,6 +1519,42 @@ impl ffi::BackendBridge {
 
 	pub fn back(self: Pin<&mut Self>) { self.submit_detached(Command::NavigateBack); }
 
+	pub fn history_count(&self) -> i32 { count(self.rust().snapshot.back_history.len()) }
+
+	pub fn history_path(&self, index: i32) -> QString {
+		let place =
+			usize::try_from(index).ok().and_then(|at| self.rust().snapshot.back_history.get(at));
+		self.display(place).into()
+	}
+
+	pub fn history_age(&self, index: i32) -> f64 {
+		let path = String::from(&self.history_path(index));
+		self.rust().left_at.get(&path).map_or(-1.0, |left| left.elapsed().as_secs_f64())
+	}
+
+	pub fn go_back_to(self: Pin<&mut Self>, index: i32) {
+		let Ok(at) = usize::try_from(index) else { return };
+		if at < self.rust().snapshot.back_history.len() {
+			self.submit_detached(Command::NavigateBackSteps(at + 1));
+		}
+	}
+
+	pub fn clear_history(self: Pin<&mut Self>) { self.submit(Command::ClearHistory); }
+
+	pub fn select_named(mut self: Pin<&mut Self>, name: &QString) {
+		self.as_mut().rust_mut().revealing = Some(String::from(name).into_bytes());
+		self.select_revealed();
+	}
+
+	pub fn open_terminal(mut self: Pin<&mut Self>, path: &QString) {
+		let place = PathBuf::from(String::from(path));
+		let folder =
+			if place.is_dir() { place } else { place.parent().map(PathBuf::from).unwrap_or(place) };
+		if let Err(error) = apps::open_terminal(&folder) {
+			self.as_mut().set_last_error(error.into());
+		}
+	}
+
 	pub fn forward(self: Pin<&mut Self>) { self.submit_detached(Command::NavigateForward); }
 
 	/// Re-read the directory, and count what it holds again.
@@ -1708,6 +1787,11 @@ impl ffi::BackendBridge {
 	}
 
 	pub fn template_count(&self) -> i32 { count(templates().len()) }
+
+	pub fn templates_folder_path(&self) -> QString {
+		templates_folder()
+			.map_or_else(QString::default, |folder| folder.to_string_lossy().as_ref().into())
+	}
 
 	pub fn template_name(&self, row: i32) -> QString {
 		template(row).map_or_else(QString::default, |path| {
@@ -2148,6 +2232,12 @@ impl ffi::BackendBridge {
 		self.remote(row).map_or_else(QString::default, |remote| remote.name.clone().into())
 	}
 
+	pub fn free_remote_name(&self, kind: &QString) -> QString {
+		let taken: BTreeSet<String> =
+			(0..self.remote_count()).map(|row| String::from(&self.remote_name(row))).collect();
+		unused_name(&String::from(kind), &taken).into()
+	}
+
 	/// The location string that navigates into a remote's root.
 	pub fn remote_location(&self, row: i32) -> QString {
 		self.remote(row).map_or_else(QString::default, |remote| format!("{}:/", remote.name).into())
@@ -2286,6 +2376,10 @@ impl ffi::BackendBridge {
 		match result {
 			Ok(snapshot) if snapshot != self.rust().snapshot => {
 				let path = self.display(snapshot.current_location.as_ref());
+				let previous = String::from(self.current_path());
+				if previous != path && !previous.is_empty() {
+					self.as_mut().rust_mut().left_at.insert(previous, std::time::Instant::now());
+				}
 				self.as_mut().rust_mut().snapshot = snapshot;
 				self.as_mut().set_current_path(path.into());
 				let revision = self.model_revision().saturating_add(1);
@@ -2569,6 +2663,14 @@ fn format_size(bytes: u64) -> String {
 	if unit == 0 { format!("{bytes} B") } else { format!("{value:.1} {}", UNITS[unit]) }
 }
 
+/// `base` if nothing in `taken` has it, else `base2`, `base3` and so on.
+fn unused_name(base: &str, taken: &BTreeSet<String>) -> String {
+	if !taken.contains(base) {
+		return base.to_owned();
+	}
+	(2..).map(|n| format!("{base}{n}")).find(|name| !taken.contains(name)).unwrap_or_default()
+}
+
 /// Average throughput of a transfer in bytes per second, from when it was
 /// queued to its latest progress report. Zero until it has moved a byte.
 #[allow(clippy::cast_precision_loss)]
@@ -2595,7 +2697,14 @@ fn status_text(status: TaskStatus) -> &'static str {
 mod tests {
 	use thallium_protocol::TaskStatus;
 
-	use super::{count, format_size, head_lines, status_text, subfolder_listing, transfer_rate};
+	use super::{count, format_size, head_lines, status_text, subfolder_listing, transfer_rate, unused_name};
+
+	#[test]
+	fn remote_names_count_up_past_the_taken_ones() {
+		let taken: std::collections::BTreeSet<String> = ["drive", "drive2"].map(String::from).into();
+		assert_eq!(unused_name("drive", &taken), "drive3");
+		assert_eq!(unused_name("s3", &taken), "s3");
+	}
 
 	#[test]
 	fn presentation_helpers_are_stable() {

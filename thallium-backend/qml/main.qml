@@ -1036,43 +1036,156 @@ ApplicationWindow {
         root.bridge.selectRows(root.rows)
     }
 
-    // A menu item drawn like everything else here; the platform style is light
-    // and would arrive as a white rectangle over a graphite window.
+    // A Thallium 81 menu item: icon, label and a right-aligned mono
+    // shortcut, 36px tall. The focused item is washed green with a 2px bar;
+    // disabled ones fade; `danger` letters it in red; a submenu shows ▸.
     component MenuLine: MenuItem {
         id: menuLine
-        implicitHeight: 30
-        contentItem: Text {
-            leftPadding: 10
-            rightPadding: 18
-            text: menuLine.text
-            elide: Text.ElideMiddle
-            color: menuLine.enabled ? root.ink : root.inkGhost
-            font.family: root.sansFamily
-            font.pixelSize: 13
-            verticalAlignment: Text.AlignVCenter
+        property string iconName: ""
+        property string shortcut: ""
+        property bool danger: false
+        implicitWidth: 300
+        implicitHeight: 36
+        arrow: null
+        indicator: null
+        readonly property color tone: !menuLine.enabled ? Theme.cDisabled
+                                    : menuLine.danger ? Theme.cRed : Theme.cFg
+        contentItem: Item {
+            Icon {
+                id: lineIcon
+                visible: menuLine.iconName.length > 0
+                x: 6
+                anchors.verticalCenter: parent.verticalCenter
+                name: menuLine.iconName.length > 0 ? menuLine.iconName : "file"
+                size: 14
+                tint: menuLine.danger && menuLine.enabled ? Theme.cRed
+                    : menuLine.highlighted && menuLine.enabled ? Theme.cGreen : "transparent"
+                shade: menuLine.enabled ? 0.7 : 0.3
+            }
+            Text {
+                anchors.left: parent.left
+                anchors.leftMargin: menuLine.iconName.length > 0 ? 32 : 6
+                anchors.right: lineShortcut.left
+                anchors.rightMargin: 12
+                anchors.verticalCenter: parent.verticalCenter
+                text: menuLine.text
+                elide: Text.ElideMiddle
+                color: menuLine.tone
+                font.family: Theme.fontHuman
+                font.pixelSize: 13
+                font.weight: Font.Medium
+            }
+            Text {
+                id: lineShortcut
+                anchors.right: parent.right
+                anchors.rightMargin: 4
+                anchors.verticalCenter: parent.verticalCenter
+                text: menuLine.subMenu ? "▸" : menuLine.shortcut
+                color: menuLine.danger && menuLine.enabled ? Theme.cRed : Theme.cMuted
+                font.family: Theme.fontMono
+                font.pixelSize: 9
+                font.letterSpacing: 2
+            }
         }
+        leftPadding: 12
+        rightPadding: 14
         background: Rectangle {
-            color: menuLine.highlighted ? root.hover : "transparent"
-            radius: 0
+            color: !menuLine.enabled ? "transparent"
+                 : menuLine.highlighted ? (menuLine.danger ? Qt.rgba(Theme.cRed.r, Theme.cRed.g, Theme.cRed.b, 0.12) : Theme.cWash)
+                 : "transparent"
+            Rectangle {
+                width: 2
+                height: parent.height
+                color: menuLine.danger ? Theme.cRed : Theme.cGreen
+                visible: menuLine.highlighted && menuLine.enabled
+            }
         }
     }
 
+    // A section label inside a menu: spaced mono capitals, with an optional
+    // figure in green at the right.
+    component MenuHeader: Item {
+        property string text: ""
+        property string figure: ""
+        implicitWidth: 300
+        implicitHeight: 30
+        width: parent ? parent.width : implicitWidth
+        Text {
+            x: 16
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.verticalCenterOffset: 2
+            width: parent.width - 32 - headerFigure.width
+            elide: Text.ElideRight
+            text: parent.text.toUpperCase()
+            color: Theme.cMuted
+            font.family: Theme.fontMono
+            font.pixelSize: 9
+            font.letterSpacing: 3
+            textFormat: Text.PlainText
+        }
+        Text {
+            id: headerFigure
+            anchors.right: parent.right
+            anchors.rightMargin: 16
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.verticalCenterOffset: 2
+            text: parent.figure
+            color: Theme.cGreen
+            font.family: Theme.fontMono
+            font.pixelSize: 9
+            font.bold: true
+            font.letterSpacing: 2
+        }
+    }
+
+    component MenuRule: MenuSeparator {
+        topPadding: 6
+        bottomPadding: 6
+        leftPadding: 0
+        rightPadding: 0
+        contentItem: Rectangle { implicitHeight: 1; color: Theme.cDead }
+    }
+
+    // The menu surface: the raised panel with a cut corner, over a deep
+    // shadow.
     component MenuSurface: Menu {
         id: menuSurface
-        implicitWidth: 232
-        padding: 5
-        // Submenu titles are drawn by this delegate, not the platform style.
-        delegate: MenuLine {}
-        background: Rectangle {
-            color: root.raisedHigh
-            radius: 0
-            border.width: 1
-            border.color: root.line
+        implicitWidth: 300
+        padding: 0
+        topPadding: 4
+        bottomPadding: 4
+        overlap: 0
+        // Items a Repeater adds while the menu is closed are not laid out
+        // until it opens, so it would open at its old height; lay them out
+        // first.
+        Connections {
+            target: menuSurface
+            function onAboutToShow() { menuSurface.contentItem.forceLayout() }
+        }
+        // Only submenu titles use this delegate.
+        delegate: MenuLine { iconName: "layout-grid" }
+        background: Item {
+            implicitWidth: 300
+            Rectangle {
+                anchors.fill: parent
+                anchors.topMargin: 10
+                anchors.leftMargin: -6
+                anchors.rightMargin: -6
+                anchors.bottomMargin: -22
+                color: Theme.cBase
+                opacity: 0.55
+            }
+            ChamferPanel {
+                anchors.fill: parent
+                cut: 12
+                accentEdge: false
+            }
         }
     }
 
-    // Right-click on an entry. One instance serves both views: the row it acts
-    // on is set just before it opens.
+    // The "···" menu: right-click on an entry, or the ··· on the record
+    // card. One instance serves every view: the row it acts on is set just
+    // before it opens.
     MenuSurface {
         id: entryMenu
         property int row: -1
@@ -1081,9 +1194,14 @@ ApplicationWindow {
             root.bridge.offerActions()
             root.offerTick++
         }
+        onClosed: trashLine.disarm()
         readonly property bool folder: {
             void root.revision
             return entryMenu.row >= 0 && root.bridge.entryIsDirectory(entryMenu.row)
+        }
+        readonly property string name: {
+            void root.revision
+            return entryMenu.row >= 0 ? root.bridge.entryName(entryMenu.row) : ""
         }
         readonly property int held: root.selectedCount
         readonly property bool archive: {
@@ -1091,14 +1209,14 @@ ApplicationWindow {
             return entryMenu.row >= 0 && root.bridge.isArchive(entryMenu.row)
         }
 
-        MenuLine {
-            text: "Open in new tab"
-            visible: entryMenu.folder
-            height: visible ? implicitHeight : 0
-            onTriggered: root.newTab(root.bridge.entryPath(entryMenu.row))
+        MenuHeader {
+            text: entryMenu.held > 1 ? entryMenu.held + " items  //  held"
+                : entryMenu.name + "  //  " + root.kindLabel(entryMenu.name, entryMenu.folder)
         }
         MenuLine {
-            text: entryMenu.folder ? "Open" : "Open with default application"
+            text: "Open"
+            iconName: "external-link"
+            shortcut: "↵"
             onTriggered: {
                 if (entryMenu.folder)
                     root.bridge.navigateRow(entryMenu.row)
@@ -1106,9 +1224,17 @@ ApplicationWindow {
                     root.bridge.openEntry(entryMenu.row)
             }
         }
+        MenuLine {
+            text: "Open in new tab"
+            iconName: "panel-right"
+            visible: entryMenu.folder
+            height: visible ? implicitHeight : 0
+            onTriggered: root.newTab(root.bridge.entryPath(entryMenu.row))
+        }
         MenuSurface {
             id: openWithMenu
             title: "Open with"
+            MenuHeader { text: "Open with" }
             Repeater {
                 model: {
                     void root.offerTick
@@ -1119,20 +1245,70 @@ ApplicationWindow {
                     text: {
                         void root.offerTick
                         return root.bridge.offeredName(index)
-                               + (root.bridge.offeredIsDefault(index) ? "  (default)" : "")
+                    }
+                    shortcut: {
+                        void root.offerTick
+                        return root.bridge.offeredIsDefault(index) ? "DEFAULT" : ""
                     }
                     onTriggered: root.bridge.launchOffered(index, false)
                 }
             }
-            MenuSeparator {
-                contentItem: Rectangle { implicitHeight: 1; color: root.line }
-            }
-            MenuLine { text: "Other application…"; onTriggered: root.pickApp() }
+            MenuRule {}
+            MenuLine { text: "Other application…"; iconName: "layout-grid"; onTriggered: root.pickApp() }
+        }
+        MenuRule {}
+        MenuLine {
+            text: "Open in terminal"
+            iconName: "terminal"
+            shortcut: "CTRL ALT T"
+            onTriggered: root.bridge.openTerminal(root.bridge.entryPath(entryMenu.row))
         }
         MenuLine {
             text: "Copy path"
+            iconName: "copy"
+            shortcut: "CTRL ⇧ C"
             onTriggered: root.copyToClipboard(root.bridge.entryPath(entryMenu.row))
         }
+        MenuLine {
+            text: entryMenu.held > 1 ? "Duplicate " + entryMenu.held + " items" : "Duplicate"
+            iconName: "copy"
+            shortcut: "CTRL D"
+            onTriggered: root.duplicateSelected()
+        }
+        MenuLine {
+            text: entryMenu.held > 1 ? "Rename " + entryMenu.held + " items…" : "Rename"
+            iconName: "pencil"
+            shortcut: "F2"
+            onTriggered: entryMenu.held > 1 ? root.beginBulkRename() : root.beginRename(entryMenu.row)
+        }
+        MenuLine {
+            text: "Compress…"
+            iconName: "file-archive"
+            onTriggered: root.beginCompress()
+        }
+        MenuLine {
+            text: "Extract here"
+            iconName: "file-archive"
+            visible: entryMenu.archive
+            height: visible ? implicitHeight : 0
+            onTriggered: root.bridge.extractSelected()
+        }
+        MenuLine {
+            text: "Pin to Places"
+            iconName: "bookmark"
+            enabled: entryMenu.folder && entryMenu.held <= 1
+            onTriggered: root.bridge.addBookmark(root.bridge.entryPath(entryMenu.row))
+        }
+        MenuLine {
+            text: "Properties"
+            iconName: "info"
+            shortcut: "ALT ↵"
+            enabled: entryMenu.held <= 1
+            onTriggered: root.showProperties(entryMenu.row)
+        }
+        MenuRule {}
+        MenuLine { text: "Cut"; iconName: "scissors"; shortcut: "CTRL X"; onTriggered: root.bridge.offerSelected(true) }
+        MenuLine { text: "Copy"; iconName: "copy"; shortcut: "CTRL C"; onTriggered: root.bridge.offerSelected(false) }
         // Only with split view open; a hidden menu item still takes room
         // unless its height goes too.
         MenuLine {
@@ -1147,21 +1323,6 @@ ApplicationWindow {
             height: visible ? implicitHeight : 0
             onTriggered: root.sendToSplit(true)
         }
-        MenuSeparator {
-            contentItem: Rectangle { implicitHeight: 1; color: root.line }
-        }
-        MenuLine { text: "Cut"; onTriggered: root.bridge.offerSelected(true) }
-        MenuLine { text: "Copy"; onTriggered: root.bridge.offerSelected(false) }
-        MenuSeparator {
-            contentItem: Rectangle { implicitHeight: 1; color: root.line }
-        }
-        MenuLine {
-            text: entryMenu.held > 1 ? "Rename " + entryMenu.held + " items…" : "Rename…"
-            onTriggered: entryMenu.held > 1 ? root.beginBulkRename() : root.beginRename(entryMenu.row)
-        }
-        MenuSeparator {
-            contentItem: Rectangle { implicitHeight: 1; color: root.line }
-        }
         // Custom actions that apply to everything held.
         Repeater {
             model: {
@@ -1170,6 +1331,7 @@ ApplicationWindow {
             }
             delegate: MenuLine {
                 required property int index
+                iconName: "square-plus"
                 text: {
                     void root.offerTick
                     return root.bridge.actionName(index)
@@ -1177,37 +1339,458 @@ ApplicationWindow {
                 onTriggered: root.bridge.runAction(index)
             }
         }
-        MenuLine {
-            text: "Extract here"
-            visible: entryMenu.archive
-            height: visible ? implicitHeight : 0
-            onTriggered: root.bridge.extractSelected()
-        }
-        MenuLine {
-            text: "Compress…"
-            onTriggered: root.beginCompress()
-        }
-        MenuLine {
-            text: "Add bookmark"
-            visible: entryMenu.folder && entryMenu.held <= 1
-            height: visible ? implicitHeight : 0
-            onTriggered: root.bridge.addBookmark(root.bridge.entryPath(entryMenu.row))
-        }
-        MenuLine {
-            text: "Properties…"
-            enabled: entryMenu.held <= 1
-            onTriggered: root.showProperties(entryMenu.row)
-        }
-        MenuSeparator {
-            contentItem: Rectangle { implicitHeight: 1; color: root.line }
-        }
-        MenuLine {
-            text: entryMenu.held > 1 ? "Move " + entryMenu.held + " to Trash" : "Move to Trash"
-            onTriggered: root.bridge.trashSelected()
+        MenuRule {}
+        // Move to trash arms on the first click and acts on a second within
+        // three seconds, as the Store's destructive buttons do. It is not a
+        // MenuItem, so the first click leaves the menu open.
+        Item {
+            id: trashLine
+            property bool armed: false
+            property int remaining: 3
+            implicitWidth: 300
+            implicitHeight: 36
+            width: parent ? parent.width : implicitWidth
+            function disarm() {
+                trashLine.armed = false
+                trashCountdown.stop()
+            }
+            Timer {
+                id: trashCountdown
+                interval: 1000
+                repeat: true
+                onTriggered: {
+                    trashLine.remaining -= 1
+                    if (trashLine.remaining <= 0)
+                        trashLine.disarm()
+                }
+            }
+            Rectangle {
+                anchors.fill: parent
+                color: trashLine.armed ? Theme.cRed
+                     : trashMouse.containsMouse ? Qt.rgba(Theme.cRed.r, Theme.cRed.g, Theme.cRed.b, 0.12) : "transparent"
+                Rectangle {
+                    width: 2
+                    height: parent.height
+                    color: Theme.cRed
+                    visible: trashMouse.containsMouse && !trashLine.armed
+                }
+            }
+            Icon {
+                x: 18
+                anchors.verticalCenter: parent.verticalCenter
+                name: "trash-2"
+                size: 14
+                tint: trashLine.armed ? Theme.cBase : Theme.cRed
+            }
+            Text {
+                x: 44
+                anchors.verticalCenter: parent.verticalCenter
+                text: trashLine.armed ? "Click again to trash"
+                    : entryMenu.held > 1 ? "Move " + entryMenu.held + " to trash" : "Move to trash"
+                color: trashLine.armed ? Theme.cBase : Theme.cRed
+                font.family: Theme.fontHuman
+                font.pixelSize: 13
+                font.weight: trashLine.armed ? Font.Bold : Font.Medium
+            }
+            Text {
+                anchors.right: parent.right
+                anchors.rightMargin: 18
+                anchors.verticalCenter: parent.verticalCenter
+                text: trashLine.armed ? trashLine.remaining + "S" : "DEL"
+                color: trashLine.armed ? Theme.cBase : Theme.cRed
+                font.family: Theme.fontMono
+                font.pixelSize: 9
+                font.letterSpacing: 2
+                font.bold: trashLine.armed
+            }
+            MouseArea {
+                id: trashMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                    if (!trashLine.armed) {
+                        trashLine.armed = true
+                        trashLine.remaining = 3
+                        trashCountdown.restart()
+                        return
+                    }
+                    trashLine.disarm()
+                    entryMenu.close()
+                    root.bridge.trashSelected()
+                }
+            }
         }
         MenuLine {
             text: entryMenu.held > 1 ? "Delete " + entryMenu.held + " permanently" : "Delete permanently"
+            iconName: "x"
+            shortcut: "⇧ DEL"
+            danger: true
             onTriggered: deleteConfirm.open()
+        }
+    }
+
+    function duplicateSelected() {
+        if (root.selectedCount > 0)
+            root.bridge.copySelected(root.bridge.currentPath)
+    }
+
+    // ---- Inline naming ----
+    // New folder / new file / rename edit the name in the list itself. In
+    // the grid, search and the other views the name sheet does it instead.
+    property string inlineKind: ""
+    property string inlineSeed: ""
+    property string inlineTemplate: ""
+    property int inlineRow: -1
+    readonly property bool inlineFits: root.view !== "grid" && !root.deepSearch && !root.trashOpen
+                                       && !root.recentOpen && !root.settingsOpen
+
+    function beginInlineCreate(kind, template) {
+        if (!root.inlineFits) {
+            root.beginCreate(kind, template)
+            return
+        }
+        const base = kind === "folder" ? "untitled folder"
+            : template.length > 0 ? template.substring(template.lastIndexOf("/") + 1) : "untitled.txt"
+        root.inlineRow = -1
+        root.inlineTemplate = template
+        root.inlineSeed = root.bridge.freeName(base)
+        root.inlineKind = kind
+        listBrowser.positionViewAtBeginning()
+    }
+
+    function finishInline(name) {
+        const kind = root.inlineKind
+        const row = root.inlineRow
+        const template = root.inlineTemplate
+        root.inlineKind = ""
+        root.inlineRow = -1
+        if (name.length === 0 || name.indexOf("/") >= 0 || name === "." || name === "..")
+            return
+        if (kind === "rename") {
+            if (row >= 0 && name !== root.bridge.entryName(row))
+                root.bridge.renameRow(row, name)
+            return
+        }
+        if (kind === "folder")
+            root.bridge.createFolder(name)
+        else
+            root.bridge.createFile(name, template)
+        root.bridge.selectNamed(name)
+    }
+
+    function cancelInline() {
+        root.inlineKind = ""
+        root.inlineRow = -1
+    }
+
+    // The folder as the + New menu names it: under home it starts at ~.
+    function homeRelative(path) {
+        const home = root.bridge.homePath
+        if (home.length > 0 && path === home)
+            return "~"
+        if (home.length > 0 && path.startsWith(home + "/"))
+            return "~" + path.substring(home.length)
+        return path
+    }
+
+    // A name being typed into the list: a field with a green ring, Enter to
+    // accept and Escape (or clicking away) to let it go.
+    component InlineName: Item {
+        id: inlineName
+        property string seed: ""
+        property bool folder: true
+        property string verb: "CREATE"
+        signal accepted(string name)
+        signal cancelled
+        implicitHeight: 30
+        property bool done: false
+
+        function settle(keep) {
+            if (inlineName.done)
+                return
+            inlineName.done = true
+            if (keep)
+                inlineName.accepted(inlineField.text.trim())
+            else
+                inlineName.cancelled()
+        }
+
+        // Covers the row's other columns while the name is edited.
+        Rectangle {
+            anchors.fill: parent
+            anchors.topMargin: -7
+            anchors.bottomMargin: -7
+            anchors.rightMargin: -16
+            color: Theme.cWash
+        }
+        Rectangle {
+            id: inlineBox
+            x: 0
+            anchors.verticalCenter: parent.verticalCenter
+            width: Math.min(300, inlineName.width)
+            height: 30
+            color: Theme.cDim
+            border.width: 1
+            border.color: Theme.cGreen
+            Rectangle {
+                anchors.fill: parent
+                anchors.margins: -4
+                z: -1
+                color: "transparent"
+                border.width: 3
+                border.color: Qt.rgba(Theme.cGreen.r, Theme.cGreen.g, Theme.cGreen.b, 0.14)
+            }
+            TextInput {
+                id: inlineField
+                anchors.fill: parent
+                anchors.leftMargin: 12
+                anchors.rightMargin: 12
+                verticalAlignment: TextInput.AlignVCenter
+                clip: true
+                text: inlineName.seed
+                color: Theme.cFg
+                selectionColor: Theme.cWash
+                selectedTextColor: Theme.cFg
+                font.family: Theme.fontHuman
+                font.pixelSize: 13
+                font.weight: Font.DemiBold
+                selectByMouse: true
+                Component.onCompleted: {
+                    forceActiveFocus()
+                    const dot = text.lastIndexOf(".")
+                    select(0, inlineName.folder || dot <= 0 ? text.length : dot)
+                }
+                Keys.onReturnPressed: inlineName.settle(true)
+                Keys.onEnterPressed: inlineName.settle(true)
+                Keys.onEscapePressed: inlineName.settle(false)
+                onActiveFocusChanged: if (!activeFocus) inlineName.settle(false)
+            }
+        }
+        Row {
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 8
+            visible: inlineName.width > inlineBox.width + 220
+            Repeater {
+                model: [["↵", inlineName.verb], ["ESC", "CANCEL"]]
+                delegate: Row {
+                    required property var modelData
+                    spacing: 6
+                    Rectangle {
+                        width: keyText.implicitWidth + 12
+                        height: 20
+                        color: "transparent"
+                        border.width: 1
+                        border.color: Theme.cLine
+                        Text {
+                            id: keyText
+                            anchors.centerIn: parent
+                            text: modelData[0]
+                            color: Theme.cFg
+                            font.family: Theme.fontMono
+                            font.pixelSize: 9
+                            font.letterSpacing: 1
+                        }
+                    }
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: modelData[1]
+                        color: Theme.cMuted
+                        font.family: Theme.fontMono
+                        font.pixelSize: 9
+                        font.letterSpacing: 2
+                    }
+                }
+            }
+        }
+    }
+
+    // "+ New": what can be made here, and what can be done here.
+    MenuSurface {
+        id: newMenu
+        property bool pasteable: false
+        onAboutToShow: newMenu.pasteable = root.bridge.canPaste()
+
+        MenuHeader { text: "Create in " + root.homeRelative(root.bridge.currentPath) }
+        MenuLine {
+            text: "New folder"
+            iconName: "folder"
+            shortcut: "CTRL ⇧ N"
+            onTriggered: root.beginInlineCreate("folder", "")
+        }
+        MenuLine {
+            text: "New text file"
+            iconName: "file"
+            shortcut: "CTRL ALT N"
+            onTriggered: root.beginInlineCreate("file", "")
+        }
+        MenuSurface {
+            id: newTemplateMenu
+            title: "From template"
+            readonly property string folder: {
+                void root.revision
+                return root.bridge.templatesFolder()
+            }
+            MenuHeader { text: "Templates" }
+            Repeater {
+                id: newTemplateList
+                model: {
+                    void root.revision
+                    return root.bridge.templateCount()
+                }
+                delegate: MenuLine {
+                    required property int index
+                    iconName: "file"
+                    text: root.bridge.templateName(index)
+                    onTriggered: root.beginInlineCreate("file", root.bridge.templatePath(index))
+                }
+            }
+            MenuLine {
+                text: "No templates yet"
+                enabled: false
+                visible: newTemplateList.count === 0
+                height: visible ? implicitHeight : 0
+            }
+            MenuRule {}
+            MenuLine {
+                text: "Open " + root.homeRelative(newTemplateMenu.folder)
+                iconName: "folder"
+                enabled: newTemplateMenu.folder.length > 0
+                onTriggered: root.openTarget(newTemplateMenu.folder)
+            }
+        }
+        MenuRule {}
+        MenuHeader { text: "Here" }
+        MenuLine {
+            text: "Paste"
+            iconName: "clipboard-paste"
+            shortcut: newMenu.pasteable ? "CTRL V" : "NOTHING COPIED"
+            enabled: newMenu.pasteable
+            onTriggered: root.bridge.pasteFiles()
+        }
+        MenuLine {
+            text: "Open terminal here"
+            iconName: "terminal"
+            shortcut: "CTRL ALT T"
+            onTriggered: root.bridge.openTerminalHere()
+        }
+        MenuLine {
+            text: "Add remote…"
+            iconName: "globe"
+            onTriggered: root.openPlace({ add: true })
+        }
+    }
+
+    // Right-click or a long press on Back: every place it can return to.
+    MenuSurface {
+        id: historyMenu
+        implicitWidth: 340
+        readonly property int total: {
+            void root.revision
+            return root.bridge.historyCount()
+        }
+        // Ages are read when the menu opens; they are not live.
+        property int stamp: 0
+        onAboutToShow: historyMenu.stamp++
+        // The next place back starts highlighted, under the header.
+        onOpened: if (historyMenu.total > 0) historyMenu.currentIndex = 1
+
+        function age(seconds) {
+            if (seconds < 0)
+                return ""
+            if (seconds < 60)
+                return "NOW"
+            const minutes = Math.round(seconds / 60)
+            if (minutes < 60)
+                return minutes + " MIN"
+            return Math.round(minutes / 60) + " H"
+        }
+
+        MenuHeader { text: "History  //  back"; figure: root.pad2(historyMenu.total) }
+        Repeater {
+            model: Math.min(historyMenu.total, 12)
+            delegate: MenuLine {
+                required property int index
+                readonly property string place: {
+                    void root.revision
+                    return root.bridge.historyPath(index)
+                }
+                text: root.pad2(index + 1) + "   " + (place === root.bridge.homePath ? "~  (Home)" : root.homeRelative(place))
+                shortcut: {
+                    void historyMenu.stamp
+                    return historyMenu.age(root.bridge.historyAge(index))
+                }
+                onTriggered: {
+                    root.settingsOpen = false
+                    root.recentOpen = false
+                    root.trashOpen = false
+                    root.bridge.goBackTo(index)
+                }
+            }
+        }
+        MenuLine {
+            text: "Nowhere to go back to"
+            enabled: false
+            visible: historyMenu.total === 0
+            height: visible ? implicitHeight : 0
+        }
+        MenuRule {}
+        Item {
+            implicitWidth: 340
+            implicitHeight: 34
+            width: parent ? parent.width : implicitWidth
+            Rectangle {
+                id: stepKey
+                x: 16
+                anchors.verticalCenter: parent.verticalCenter
+                width: stepText.implicitWidth + 14
+                height: 20
+                color: "transparent"
+                border.width: 1
+                border.color: Theme.cLine
+                Text {
+                    id: stepText
+                    anchors.centerIn: parent
+                    text: "ALT ←"
+                    color: Theme.cFg
+                    font.family: Theme.fontMono
+                    font.pixelSize: 9
+                    font.letterSpacing: 1
+                }
+            }
+            Text {
+                anchors.left: stepKey.right
+                anchors.leftMargin: 8
+                anchors.verticalCenter: parent.verticalCenter
+                text: "STEP BACK"
+                color: Theme.cMuted
+                font.family: Theme.fontMono
+                font.pixelSize: 9
+                font.letterSpacing: 2
+            }
+            Text {
+                anchors.right: parent.right
+                anchors.rightMargin: 16
+                anchors.verticalCenter: parent.verticalCenter
+                text: "CLEAR"
+                color: historyMenu.total === 0 ? Theme.cDisabled : historyClearMouse.containsMouse ? Theme.cGreen : Theme.cFg
+                font.family: Theme.fontMono
+                font.pixelSize: 10
+                font.letterSpacing: 2
+                MouseArea {
+                    id: historyClearMouse
+                    anchors.fill: parent
+                    anchors.margins: -6
+                    enabled: historyMenu.total > 0
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        root.bridge.clearHistory()
+                        historyMenu.close()
+                    }
+                }
+            }
         }
     }
 
@@ -1220,24 +1803,27 @@ ApplicationWindow {
             pasteable = root.bridge.canPaste()
             undoable = root.bridge.canUndo()
         }
+        MenuHeader { text: root.homeRelative(root.bridge.currentPath) }
         MenuLine {
             text: "Paste"
+            iconName: "clipboard-paste"
+            shortcut: groundMenu.pasteable ? "CTRL V" : "NOTHING COPIED"
             enabled: groundMenu.pasteable
             onTriggered: root.bridge.pasteFiles()
         }
         MenuLine {
             text: "Undo"
+            iconName: "undo-2"
+            shortcut: "CTRL Z"
             enabled: groundMenu.undoable
             onTriggered: root.bridge.undo()
         }
-        MenuSeparator {
-            contentItem: Rectangle { implicitHeight: 1; color: root.line }
-        }
-        MenuLine { text: "New folder…"; onTriggered: root.beginCreate("folder", "") }
-        MenuLine { text: "New empty file…"; onTriggered: root.beginCreate("file", "") }
+        MenuRule {}
+        MenuLine { text: "New folder"; iconName: "folder-plus"; shortcut: "CTRL ⇧ N"; onTriggered: root.beginInlineCreate("folder", "") }
+        MenuLine { text: "New text file"; iconName: "file-plus"; shortcut: "CTRL ALT N"; onTriggered: root.beginInlineCreate("file", "") }
         MenuSurface {
             id: templateMenu
-            title: "New from template"
+            title: "From template"
             enabled: templateList.count > 0
             Repeater {
                 id: templateList
@@ -1248,34 +1834,31 @@ ApplicationWindow {
                 delegate: MenuLine {
                     required property int index
                     text: root.bridge.templateName(index)
-                    onTriggered: root.beginCreate("file", root.bridge.templatePath(index))
+                    onTriggered: root.beginInlineCreate("file", root.bridge.templatePath(index))
                 }
             }
         }
-        MenuSeparator {
-            contentItem: Rectangle { implicitHeight: 1; color: root.line }
-        }
-        MenuLine { text: "Open terminal here"; onTriggered: root.bridge.openTerminalHere() }
-        MenuLine { text: "New tab"; onTriggered: root.newTab(root.bridge.currentPath) }
-        MenuLine { text: root.splitOpen ? "Close split view" : "Split view"; onTriggered: root.toggleSplit() }
-        MenuLine { text: "Go to location…"; onTriggered: root.editPath() }
+        MenuRule {}
+        MenuLine { text: "Open terminal here"; iconName: "terminal"; shortcut: "CTRL ALT T"; onTriggered: root.bridge.openTerminalHere() }
+        MenuLine { text: "New tab"; iconName: "panel-right"; onTriggered: root.newTab(root.bridge.currentPath) }
+        MenuLine { text: root.splitOpen ? "Close split view" : "Split view"; iconName: "panel-left"; onTriggered: root.toggleSplit() }
+        MenuLine { text: "Go to location…"; iconName: "arrow-right"; shortcut: "CTRL L"; onTriggered: root.editPath() }
         MenuLine {
+            iconName: "bookmark"
             text: root.bookmarked ? "Bookmarked" : "Bookmark this folder"
             enabled: !root.bookmarked
             onTriggered: root.bridge.addBookmark(root.bridge.currentPath)
         }
-        MenuSeparator {
-            contentItem: Rectangle { implicitHeight: 1; color: root.line }
-        }
-        MenuLine { text: "Select all"; onTriggered: root.selectAll() }
+        MenuRule {}
+        MenuLine { text: "Select all"; iconName: "check"; shortcut: "CTRL A"; onTriggered: root.selectAll() }
         MenuLine {
+            iconName: root.showHidden ? "eye-off" : "eye"
+            shortcut: "CTRL H"
             text: root.showHidden ? "Hide hidden files" : "Show hidden files"
             onTriggered: root.showHidden = !root.showHidden
         }
-        MenuSeparator {
-            contentItem: Rectangle { implicitHeight: 1; color: root.line }
-        }
-        MenuLine { text: "Refresh"; onTriggered: root.bridge.refresh() }
+        MenuRule {}
+        MenuLine { text: "Refresh"; iconName: "rotate-cw"; shortcut: "F5"; onTriggered: root.bridge.refresh() }
     }
 
     MenuSurface {
@@ -1532,7 +2115,9 @@ ApplicationWindow {
     Shortcut {
         sequences: ["Ctrl+D"]
         enabled: !root.typing && !root.trashOpen && !root.recentOpen
-        onActivated: root.bridge.addBookmark(root.bridge.currentPath)
+        // With entries held it duplicates them; with nothing held it
+        // bookmarks the folder, as it always has.
+        onActivated: root.selectedCount > 0 ? root.duplicateSelected() : root.bridge.addBookmark(root.bridge.currentPath)
     }
 
     // ---- Bulk rename ----
@@ -1871,6 +2456,13 @@ ApplicationWindow {
     function beginRename(row) {
         if (row < 0)
             return
+        if (root.inlineFits) {
+            root.inlineSeed = root.bridge.entryName(row)
+            root.inlineRow = row
+            root.inlineKind = "rename"
+            listBrowser.positionViewAtIndex(root.rows.indexOf(row), ListView.Contain)
+            return
+        }
         namePrompt.mode = "rename"
         namePrompt.row = row
         namePrompt.template = ""
@@ -2199,7 +2791,7 @@ ApplicationWindow {
 
     readonly property bool typing: root.settingsOpen || namePrompt.opened || pathEditor.visible || deleteConfirm.opened
                                    || emptyConfirm.opened || appPicker.opened || propertiesSheet.opened
-                                   || bulkSheet.opened || pickName.editing
+                                   || bulkSheet.opened || pickName.editing || root.inlineKind !== ""
 
     Shortcut { sequences: ["Down"]; enabled: !root.typing; onActivated: root.moveFocus(root.columns(), false) }
     Shortcut { sequences: ["Up"]; enabled: !root.typing; onActivated: root.moveFocus(-root.columns(), false) }
@@ -2334,8 +2926,32 @@ ApplicationWindow {
 
     Shortcut {
         sequence: "Ctrl+Shift+N"
-        enabled: !namePrompt.opened
-        onActivated: root.beginCreate("folder", "")
+        enabled: !root.typing
+        onActivated: root.beginInlineCreate("folder", "")
+    }
+    Shortcut {
+        sequence: "Ctrl+Alt+N"
+        enabled: !root.typing
+        onActivated: root.beginInlineCreate("file", "")
+    }
+    Shortcut {
+        sequence: "Ctrl+Alt+T"
+        enabled: !root.typing
+        onActivated: {
+            const row = root.selectedCount === 1 ? root.firstSelectedRow() : -1
+            if (row >= 0 && root.bridge.entryIsDirectory(row))
+                root.bridge.openTerminal(root.bridge.entryPath(row))
+            else
+                root.bridge.openTerminalHere()
+        }
+    }
+    Shortcut {
+        sequence: "Ctrl+Shift+C"
+        enabled: !root.typing
+        onActivated: {
+            const row = root.selectedCount === 1 ? root.firstSelectedRow() : -1
+            root.copyToClipboard(row >= 0 ? root.bridge.entryPath(row) : root.bridge.currentPath)
+        }
     }
 
     // Opening the menu for a row that is not part of the selection makes that
@@ -2403,24 +3019,34 @@ ApplicationWindow {
             fieldInput.selectAll()
         }
 
-        implicitHeight: 32
+        implicitHeight: 40
         radius: 0
-        color: root.inset
+        color: Theme.cDim
         border.width: 1
-        border.color: fieldInput.activeFocus ? root.spectral : root.line
+        border.color: fieldInput.activeFocus ? Theme.cGreen : Theme.cLine
+
+        // The focus ring: 3px of faint green outside the edge.
+        Rectangle {
+            anchors.fill: parent
+            anchors.margins: -4
+            visible: fieldInput.activeFocus
+            color: "transparent"
+            border.width: 3
+            border.color: Qt.rgba(Theme.cGreen.r, Theme.cGreen.g, Theme.cGreen.b, 0.14)
+        }
 
         TextInput {
             id: fieldInput
             anchors.left: parent.left
             anchors.right: parent.right
-            anchors.leftMargin: 10
-            anchors.rightMargin: 10
+            anchors.leftMargin: 12
+            anchors.rightMargin: 12
             anchors.verticalCenter: parent.verticalCenter
             clip: true
-            color: root.ink
-            selectionColor: root.emberWash
-            selectedTextColor: root.ink
-            font.family: field.masked ? root.monoFamily : root.sansFamily
+            color: Theme.cFg
+            selectionColor: Theme.cWash
+            selectedTextColor: Theme.cFg
+            font.family: Theme.fontMono
             font.pixelSize: 13
             echoMode: field.masked ? TextInput.Password : TextInput.Normal
             onAccepted: field.accepted()
@@ -2429,8 +3055,8 @@ ApplicationWindow {
                 anchors.verticalCenter: parent.verticalCenter
                 visible: fieldInput.text.length === 0
                 text: field.placeholder
-                color: root.inkGhost
-                font.family: root.sansFamily
+                color: Theme.cDisabled
+                font.family: Theme.fontHuman
                 font.pixelSize: 13
             }
         }
@@ -2444,28 +3070,23 @@ ApplicationWindow {
         property bool enabled: true
         signal activated
 
-        implicitWidth: buttonLabel.implicitWidth + 26
-        implicitHeight: 30
+        implicitWidth: buttonLabel.implicitWidth + 28
+        implicitHeight: 34
         radius: 0
-        color: !sheetButton.enabled
-               ? "transparent"
-               : (sheetButton.primary
-                  ? (buttonMouse.containsMouse ? root.hover : root.raisedHigh)
-                  : (buttonMouse.containsMouse ? root.hover : "transparent"))
+        opacity: sheetButton.enabled ? 1 : 0.45
+        color: sheetButton.primary ? Theme.cGreen
+             : buttonMouse.containsMouse ? Theme.cDim : Theme.cPanel
         border.width: 1
-        border.color: !sheetButton.enabled
-                      ? root.lineSoft
-                      : (sheetButton.primary ? root.spectral : root.line)
+        border.color: sheetButton.primary || buttonMouse.containsMouse ? Theme.cGreen : Theme.cLine
 
         Text {
             id: buttonLabel
             anchors.centerIn: parent
             text: sheetButton.label
-            color: !sheetButton.enabled
-                   ? root.inkGhost
-                   : (sheetButton.primary ? root.spectral : root.inkMuted)
-            font.family: root.sansFamily
+            color: sheetButton.primary ? Theme.cBase : Theme.cFg
+            font.family: Theme.fontHuman
             font.pixelSize: 13
+            font.weight: Font.Bold
         }
 
         MouseArea {
@@ -2516,11 +3137,11 @@ ApplicationWindow {
     }
 
     component Overline: Text {
-        color: root.inkGhost
-        font.family: Theme.mono
-        font.pixelSize: 10
+        color: Theme.cMuted
+        font.family: Theme.fontMono
+        font.pixelSize: 9
         font.weight: Font.Medium
-        font.letterSpacing: Theme.letterSpace
+        font.letterSpacing: 3
     }
 
     component Mono: Text {
@@ -3185,7 +3806,15 @@ ApplicationWindow {
             anchors.leftMargin: 10
             anchors.verticalCenter: parent.verticalCenter
             spacing: 6
-            IconButton { id: backButton; icon: "chevron-left"; hint: "Back (Alt+Left)"; iconSize: 15; onClicked: root.bridge.back() }
+            IconButton {
+                id: backButton
+                icon: "chevron-left"
+                hint: "Back (Alt+Left) · hold or right-click for history"
+                iconSize: 15
+                onClicked: root.bridge.back()
+                onRightClicked: historyMenu.popup(backButton, 0, backButton.height + 6)
+                onPressAndHold: historyMenu.popup(backButton, 0, backButton.height + 6)
+            }
             IconButton { icon: "chevron-right"; hint: "Forward (Alt+Right)"; iconSize: 15; onClicked: root.bridge.forward() }
             IconButton { icon: "arrow-up"; hint: "Up (Alt+Up)"; iconSize: 15; onClicked: root.bridge.up() }
         }
@@ -3424,7 +4053,7 @@ ApplicationWindow {
             height: 36
             text: "+ New"
             visible: !root.trashOpen && !root.recentOpen
-            onClicked: groundMenu.popup(newButton, 0, newButton.height + 6)
+            onClicked: newMenu.popup(newButton, newButton.width - newMenu.implicitWidth, newButton.height + 6)
         }
 
         Row {
@@ -4606,9 +5235,35 @@ ApplicationWindow {
                     anchors.leftMargin: 0
                     anchors.rightMargin: 0
                     anchors.bottomMargin: 8
-                    visible: !root.deepSearch && !root.recentOpen && !root.trashOpen && root.view !== "grid" && root.rows.length > 0
+                    visible: !root.deepSearch && !root.recentOpen && !root.trashOpen && root.view !== "grid"
+                             && (root.rows.length > 0 || root.inlineKind !== "")
                     clip: true
                     model: root.rows
+                    // The row a new folder or file is named in, above the rest.
+                    header: Item {
+                        width: listBrowser.width
+                        height: root.inlineKind !== "" && root.inlineKind !== "rename" ? root.rowHeight : 0
+                        visible: height > 0
+                        Rectangle { anchors.fill: parent; color: Theme.cWash }
+                        Rectangle { width: 2; height: parent.height; color: Theme.cGreen }
+                        TypeTag {
+                            x: 16
+                            anchors.verticalCenter: parent.verticalCenter
+                            kind: root.inlineKind === "folder" ? "DIR" : root.tagOf(root.inlineSeed, false)
+                        }
+                        Loader {
+                            x: 62
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: parent.width - x - 16
+                            active: parent.visible
+                            sourceComponent: InlineName {
+                                seed: root.inlineSeed
+                                folder: root.inlineKind === "folder"
+                                onAccepted: function (name) { root.finishInline(name) }
+                                onCancelled: root.cancelInline()
+                            }
+                        }
+                    }
                     boundsBehavior: Flickable.StopAtBounds
                     // Resizing changes the layout constantly. Holding a screen
                     // of delegates either side keeps that from rebuilding them,
@@ -4727,8 +5382,23 @@ ApplicationWindow {
                             kind: listRow.tag
                         }
 
+                        Loader {
+                            x: 62
+                            z: 5
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: parent.width - x - 16
+                            active: root.inlineKind === "rename" && root.inlineRow === listRow.entry
+                            sourceComponent: InlineName {
+                                seed: listRow.name
+                                folder: listRow.folder
+                                verb: "RENAME"
+                                onAccepted: function (name) { root.finishInline(name) }
+                                onCancelled: root.cancelInline()
+                            }
+                        }
                         Text {
                             opacity: listRow.dim
+                            visible: !(root.inlineKind === "rename" && root.inlineRow === listRow.entry)
                             x: 62
                             width: (columnHeads.kindShown ? columnHeads.kindX : columnHeads.sizeShown ? columnHeads.sizeX : columnHeads.modifiedX) - x - 16
                             anchors.verticalCenter: parent.verticalCenter
@@ -5577,6 +6247,9 @@ ApplicationWindow {
                                         width: parent.width
                                         text: inspector.entryName
                                         elide: Text.ElideMiddle
+                                        // Long names shrink before they lose letters.
+                                        fontSizeMode: Text.HorizontalFit
+                                        minimumPixelSize: 14
                                         color: Theme.cFg
                                         font.family: Theme.fontBrand
                                         font.pixelSize: 22
@@ -5670,8 +6343,8 @@ ApplicationWindow {
                                     width: 40
                                     height: 40
                                     icon: "terminal"
-                                    hint: "Open terminal here (Ctrl+Alt+T)"
-                                    onClicked: root.bridge.openTerminalHere()
+                                    hint: "Open in terminal (Ctrl+Alt+T)"
+                                    onClicked: root.bridge.openTerminal(inspector.entryPath)
                                 }
                                 IconButton {
                                     width: 40
@@ -5818,7 +6491,7 @@ ApplicationWindow {
         id: remoteSheet
         anchors.fill: parent
         visible: root.remoteSheetOpen
-        color: "#CC0A0B0C"
+        color: Qt.rgba(Theme.cBase.r, Theme.cBase.g, Theme.cBase.b, 0.74)
         z: 60
 
         // Nothing underneath is reachable while this is up.
@@ -5828,15 +6501,39 @@ ApplicationWindow {
             onClicked: {}
         }
 
-        Rectangle {
+        Item {
             id: sheetCard
             anchors.centerIn: parent
-            width: Math.min(600, parent.width - 72)
-            height: Math.min(620, parent.height - 72)
-            radius: 0
-            color: root.raised
-            border.width: 1
-            border.color: root.lineStrong
+            width: Math.min(760, parent.width - 72)
+            height: Math.min(640, parent.height - 72)
+            // The provider tile picked in step one; Continue starts with it.
+            property string pickedKind: ""
+
+            ChamferPanel { anchors.fill: parent }
+            CornerBrackets { anchors.fill: parent; anchors.margins: 7 }
+
+            // Two letters for a provider's tile: the initials of a two-word
+            // label, or its first two letters.
+            function monogram(label) {
+                const words = label.replace(/[^A-Za-z0-9 ]/g, " ").trim().split(/ +/)
+                if (words.length > 1 && words[0].length > 0 && words[1].length > 0)
+                    return words[0][0].toUpperCase() + words[1][0].toLowerCase()
+                const word = words[0] || label
+                return word.substring(0, 1).toUpperCase() + word.substring(1, 2).toLowerCase()
+            }
+            function start() {
+                if (root.remoteDraftName.length === 0 || sheetCard.pickedKind.length === 0)
+                    return
+                root.bridge.beginRemote(root.remoteDraftName, sheetCard.pickedKind)
+                root.configTick++
+                // A provider that asks nothing is already done.
+                if (!root.bridge.configActive() && root.bridge.lastError.length === 0)
+                    sheetCard.dismissDone()
+            }
+            function dismissDone() {
+                sheetCard.pickedKind = ""
+                root.remoteSheetOpen = false
+            }
 
             // Whether rclone is waiting on an answer rather than on a choice
             // of provider.
@@ -5908,156 +6605,304 @@ ApplicationWindow {
                 answerField.text = ""
                 root.configTick++
                 if (!root.bridge.configActive() && root.bridge.lastError.length === 0)
-                    root.remoteSheetOpen = false
+                    sheetCard.dismissDone()
             }
 
             function dismiss() {
                 root.bridge.cancelRemote()
+                sheetCard.pickedKind = ""
                 root.remoteSheetOpen = false
                 root.configTick++
             }
 
-            // ---- Header ----
+            Keys.onEscapePressed: sheetCard.dismiss()
+
+            // ---- Header: title, steps, question ----
             Item {
                 id: sheetHeader
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.top: parent.top
-                anchors.margins: 16
-                height: 26
+                anchors.leftMargin: 26
+                anchors.rightMargin: 26
+                anchors.topMargin: 22
+                height: 34
 
-                Text {
+                HudHeader {
                     anchors.left: parent.left
+                    anchors.right: sheetClose.left
+                    anchors.rightMargin: 16
                     anchors.verticalCenter: parent.verticalCenter
-                    text: sheetCard.asking ? sheetCard.field : "Add a remote"
-                    color: root.ink
-                    font.family: root.sansFamily
-                    font.pixelSize: 16
-                    font.weight: Font.Medium
+                    title: "Add remote"
+                    sub: "rclone"
+                    titleSize: 14
                 }
-
-                IconAction {
+                IconButton {
+                    id: sheetClose
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    glyph: "✕"
-                    hint: "Close"
-                    onActivated: sheetCard.dismiss()
+                    implicitWidth: 30
+                    implicitHeight: 30
+                    icon: "x"
+                    iconSize: 12
+                    hint: "Close (Esc)"
+                    onClicked: sheetCard.dismiss()
                 }
             }
 
-            Rectangle {
+            Row {
+                id: sheetSteps
+                anchors.left: sheetHeader.left
+                anchors.top: sheetHeader.bottom
+                anchors.topMargin: 14
+                spacing: 10
+                Repeater {
+                    model: [
+                        { n: "01", label: "Provider", lit: !sheetCard.asking, done: sheetCard.asking },
+                        { n: "02", label: "Connect", lit: sheetCard.asking, done: false },
+                        { n: "03", label: "Name", lit: false, done: root.remoteDraftName.length > 0 }
+                    ]
+                    delegate: Row {
+                        required property var modelData
+                        required property int index
+                        spacing: 10
+                        Rectangle {
+                            visible: index > 0
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 28
+                            height: 1
+                            color: Theme.cLine
+                        }
+                        Rectangle {
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 24
+                            height: 22
+                            color: modelData.lit ? Theme.cGreen : "transparent"
+                            border.width: 1
+                            border.color: modelData.lit || modelData.done ? Theme.cGreen : Theme.cLine
+                            Text {
+                                anchors.centerIn: parent
+                                text: modelData.n
+                                color: modelData.lit ? Theme.cBase : modelData.done ? Theme.cGreen : Theme.cFg
+                                font.family: Theme.fontMono
+                                font.pixelSize: 9
+                                font.bold: true
+                            }
+                        }
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: modelData.label.toUpperCase()
+                            color: modelData.lit ? Theme.cFg : Theme.cMuted
+                            font.family: Theme.fontMono
+                            font.pixelSize: 10
+                            font.letterSpacing: 3
+                        }
+                    }
+                }
+            }
+
+            Text {
+                id: sheetTitle
+                anchors.left: sheetHeader.left
+                anchors.right: sheetHeader.right
+                anchors.top: sheetSteps.bottom
+                anchors.topMargin: 18
+                text: sheetCard.asking ? sheetCard.field : "Where do your files live?"
+                elide: Text.ElideRight
+                color: Theme.cFg
+                font.family: Theme.fontBrand
+                font.pixelSize: 24
+                font.weight: Font.Bold
+            }
+            Text {
+                id: sheetSub
+                anchors.left: sheetHeader.left
+                anchors.right: sheetHeader.right
+                anchors.top: sheetTitle.bottom
+                anchors.topMargin: 6
+                visible: !sheetCard.asking
+                height: visible ? implicitHeight : 0
+                text: "Thallium lists the remote in your sidebar, under Locations, like any other place."
+                elide: Text.ElideRight
+                color: Theme.cMuted
+                font.family: Theme.fontHuman
+                font.pixelSize: 13
+            }
+            Item {
                 id: sheetRule
                 anchors.left: parent.left
                 anchors.right: parent.right
-                anchors.top: sheetHeader.bottom
-                anchors.topMargin: 12
+                anchors.top: sheetSub.bottom
+                anchors.topMargin: 4
                 height: 1
-                color: root.line
             }
 
-            // ---- Choosing a provider ----
+            // ---- Choosing a provider, and naming the remote ----
             Item {
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.top: sheetRule.bottom
                 anchors.bottom: sheetFooter.top
-                anchors.margins: 16
+                anchors.leftMargin: 26
+                anchors.rightMargin: 26
+                anchors.topMargin: 14
+                anchors.bottomMargin: 18
                 visible: !sheetCard.asking
-
-                Overline {
-                    id: nameLabel
-                    anchors.left: parent.left
-                    anchors.top: parent.top
-                    text: "NAME"
-                }
-
-                Field {
-                    id: nameField
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: nameLabel.bottom
-                    anchors.topMargin: 6
-                    placeholder: "gdrive"
-                    text: root.remoteDraftName
-                    onTextChanged: root.remoteDraftName = text
-                }
-
-                Overline {
-                    id: storageLabel
-                    anchors.left: parent.left
-                    anchors.top: nameField.bottom
-                    anchors.topMargin: 14
-                    text: "STORAGE"
-                }
 
                 Field {
                     id: providerFilter
                     anchors.left: parent.left
                     anchors.right: parent.right
-                    anchors.top: storageLabel.bottom
-                    anchors.topMargin: 6
-                    placeholder: "Search providers…"
+                    anchors.top: parent.top
+                    placeholder: "Search " + sheetCard.providers.length + " providers…"
                     text: root.providerQuery
                     onTextChanged: root.providerQuery = text
                 }
 
-                ListView {
+                GridView {
+                    id: providerGrid
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.top: providerFilter.bottom
-                    anchors.topMargin: 10
-                    anchors.bottom: parent.bottom
+                    anchors.topMargin: 12
+                    anchors.bottom: nameRow.top
+                    anchors.bottomMargin: 16
                     clip: true
-                    spacing: 2
+                    cellWidth: Math.floor(width / 4)
+                    cellHeight: 122
                     model: sheetCard.providers
                     boundsBehavior: Flickable.StopAtBounds
 
-                    delegate: Rectangle {
-                        id: providerRow
+                    delegate: Item {
+                        id: providerTile
                         required property var modelData
-                        width: ListView.view.width
-                        height: 34
-                        radius: 0
-                        color: providerMouse.containsMouse ? root.hover : "transparent"
+                        required property int index
+                        readonly property bool picked: sheetCard.pickedKind === providerTile.modelData.kind
+                        readonly property color tone: [Theme.tDir, Theme.tCode, Theme.tDoc, Theme.tText][providerTile.index % 4]
+                        width: providerGrid.cellWidth
+                        height: providerGrid.cellHeight
 
-                        Text {
-                            anchors.left: parent.left
-                            anchors.leftMargin: 10
-                            anchors.right: providerKind.left
+                        Rectangle {
+                            anchors.fill: parent
                             anchors.rightMargin: 10
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: providerRow.modelData.label
-                            elide: Text.ElideRight
-                            color: root.inkMuted
-                            font.family: root.sansFamily
-                            font.pixelSize: 13
-                        }
+                            anchors.bottomMargin: 10
+                            color: providerTile.picked ? Theme.cWash : providerMouse.containsMouse ? Theme.cDim : Theme.cBar
+                            border.width: 1
+                            border.color: providerTile.picked ? Theme.cGreen
+                                        : providerMouse.containsMouse ? Theme.cLine : Theme.cDead
 
-                        Mono {
-                            id: providerKind
-                            anchors.right: parent.right
-                            anchors.rightMargin: 10
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: providerRow.modelData.kind
-                            font.pixelSize: 10
-                            color: root.inkGhost
+                            Text {
+                                x: 12
+                                y: 8
+                                text: sheetCard.monogram(providerTile.modelData.label)
+                                color: providerTile.tone
+                                font.family: Theme.fontBrand
+                                font.pixelSize: 24
+                                font.weight: Font.ExtraBold
+                            }
+                            Text {
+                                anchors.right: parent.right
+                                anchors.rightMargin: 12
+                                y: 10
+                                visible: providerTile.picked
+                                text: "✓"
+                                color: Theme.cGreen
+                                font.family: Theme.fontMono
+                                font.pixelSize: 12
+                            }
+                            Text {
+                                x: 12
+                                anchors.right: parent.right
+                                anchors.rightMargin: 12
+                                anchors.bottom: providerKind.top
+                                anchors.bottomMargin: 3
+                                text: providerTile.modelData.label
+                                elide: Text.ElideRight
+                                color: Theme.cFg
+                                font.family: Theme.fontHuman
+                                font.pixelSize: 13
+                                font.weight: Font.DemiBold
+                            }
+                            Text {
+                                id: providerKind
+                                x: 12
+                                anchors.right: parent.right
+                                anchors.rightMargin: 12
+                                anchors.bottom: parent.bottom
+                                anchors.bottomMargin: 10
+                                text: providerTile.modelData.kind.toUpperCase()
+                                elide: Text.ElideRight
+                                color: Theme.cMuted
+                                font.family: Theme.fontMono
+                                font.pixelSize: 8
+                                font.letterSpacing: 2
+                            }
                         }
 
                         MouseArea {
                             id: providerMouse
                             anchors.fill: parent
+                            anchors.rightMargin: 10
+                            anchors.bottomMargin: 10
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             onClicked: {
+                                sheetCard.pickedKind = providerTile.modelData.kind
                                 if (root.remoteDraftName.length === 0)
-                                    return
-                                root.bridge.beginRemote(root.remoteDraftName,
-                                                          providerRow.modelData.kind)
-                                root.configTick++
-                                // A provider that asks nothing is already done.
-                                if (!root.bridge.configActive()
-                                    && root.bridge.lastError.length === 0)
-                                    root.remoteSheetOpen = false
+                                    root.remoteDraftName = root.bridge.freeRemoteName(providerTile.modelData.kind)
+                            }
+                            onDoubleClicked: {
+                                sheetCard.pickedKind = providerTile.modelData.kind
+                                if (root.remoteDraftName.length === 0)
+                                    root.remoteDraftName = root.bridge.freeRemoteName(providerTile.modelData.kind)
+                                sheetCard.start()
+                            }
+                        }
+                    }
+                }
+
+                Row {
+                    id: nameRow
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    height: 62
+                    spacing: 12
+
+                    Column {
+                        width: (parent.width - 12) * 0.45
+                        spacing: 8
+                        Overline { text: "REMOTE NAME" }
+                        Field {
+                            id: nameField
+                            width: parent.width
+                            placeholder: "gdrive"
+                            text: root.remoteDraftName
+                            onTextChanged: root.remoteDraftName = text
+                            onAccepted: sheetCard.start()
+                        }
+                    }
+                    Column {
+                        width: (parent.width - 12) * 0.55
+                        spacing: 8
+                        Overline { text: "OPENS AS" }
+                        Rectangle {
+                            width: parent.width
+                            height: 40
+                            color: Theme.cBar
+                            border.width: 1
+                            border.color: Theme.cDead
+                            Text {
+                                anchors.left: parent.left
+                                anchors.leftMargin: 12
+                                anchors.right: parent.right
+                                anchors.rightMargin: 12
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: (root.remoteDraftName.length > 0 ? root.remoteDraftName : "name") + ":/"
+                                elide: Text.ElideRight
+                                color: Theme.cMuted
+                                font.family: Theme.fontMono
+                                font.pixelSize: 12
                             }
                         }
                     }
@@ -6071,7 +6916,10 @@ ApplicationWindow {
                 anchors.right: parent.right
                 anchors.top: sheetRule.bottom
                 anchors.bottom: sheetFooter.top
-                anchors.margins: 16
+                anchors.leftMargin: 26
+                anchors.rightMargin: 26
+                anchors.topMargin: 14
+                anchors.bottomMargin: 18
                 visible: sheetCard.asking
                 clip: true
                 contentHeight: questionColumn.implicitHeight
@@ -6219,48 +7067,65 @@ ApplicationWindow {
                 }
             }
 
-            // ---- Footer ----
+            // ---- Footer: is rclone there, what happens next, and go ----
             Item {
                 id: sheetFooter
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
-                anchors.margins: 16
-                height: 30
+                anchors.leftMargin: 1
+                anchors.rightMargin: 1
+                anchors.bottomMargin: 1
+                height: 72
+
+                Rectangle { width: parent.width; height: 1; color: Theme.cDead }
+
+                readonly property bool found: root.bridge.remotesConfigurable()
 
                 Text {
                     anchors.left: parent.left
+                    anchors.leftMargin: 25
                     anchors.right: footerButtons.left
-                    anchors.rightMargin: 12
+                    anchors.rightMargin: 16
                     anchors.verticalCenter: parent.verticalCenter
-                    text: sheetCard.failure
-                    visible: sheetCard.failure.length > 0
                     elide: Text.ElideRight
-                    color: root.destructive
-                    font.family: root.sansFamily
-                    font.pixelSize: 12
+                    textFormat: Text.PlainText
+                    text: sheetCard.failure.length > 0 ? sheetCard.failure
+                        : !sheetFooter.found ? "■ RCLONE NOT FOUND · INSTALL RCLONE TO ADD REMOTES"
+                        : sheetCard.waiting ? "■ RCLONE FOUND · WAITING FOR THE BROWSER SIGN-IN"
+                        : sheetCard.asking ? "■ RCLONE FOUND · ANSWER RCLONE'S QUESTION"
+                        : sheetCard.pickedKind.length > 0 ? "■ RCLONE FOUND · NEXT: CONNECT " + sheetCard.pickedKind.toUpperCase()
+                        : "■ RCLONE FOUND · PICK A PROVIDER"
+                    color: sheetCard.failure.length > 0 || !sheetFooter.found ? Theme.cRed : Theme.cGreen
+                    font.family: sheetCard.failure.length > 0 ? Theme.fontHuman : Theme.fontMono
+                    font.pixelSize: sheetCard.failure.length > 0 ? 12 : 10
+                    font.letterSpacing: sheetCard.failure.length > 0 ? 0 : 2
                 }
 
                 Row {
                     id: footerButtons
                     anchors.right: parent.right
+                    anchors.rightMargin: 25
                     anchors.verticalCenter: parent.verticalCenter
-                    spacing: 8
+                    spacing: 10
 
-                    SheetButton {
-                        label: "Cancel"
-                        onActivated: sheetCard.dismiss()
+                    TextButton {
+                        text: "Cancel"
+                        implicitHeight: Theme.buttonHeight
+                        onClicked: sheetCard.dismiss()
                     }
-
-                    SheetButton {
-                        label: sheetCard.asking ? "Continue" : "Choose a provider"
+                    TextButton {
                         primary: true
+                        text: "Continue  →"
                         // Naming comes first: rclone writes the remote under
                         // this name and will not ask for it.
-                        enabled: sheetCard.asking || root.remoteDraftName.length > 0
-                        onActivated: {
+                        enabled: sheetFooter.found && (sheetCard.asking
+                                 || (root.remoteDraftName.length > 0 && sheetCard.pickedKind.length > 0))
+                        onClicked: {
                             if (sheetCard.asking)
                                 sheetCard.answer(answerField.text)
+                            else
+                                sheetCard.start()
                         }
                     }
                 }

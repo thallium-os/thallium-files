@@ -34,6 +34,8 @@ pub fn reduce(state: &BrowserState, action: StateAction) -> Reduction {
 	match action {
 		StateAction::NavigateTo(location) => navigate_to(state, location, HistoryMode::Push),
 		StateAction::NavigateBack => navigate_history(state, HistoryDirection::Back),
+		StateAction::NavigateBackSteps(steps) => navigate_back_steps(state, steps),
+		StateAction::ClearHistory => clear_history(state),
 		StateAction::NavigateForward => navigate_history(state, HistoryDirection::Forward),
 		StateAction::DirectoryScanned { location, generation, entries, complete, error } => {
 			directory_scanned(state, location, generation, entries, complete, error)
@@ -108,6 +110,44 @@ fn navigate_history(state: &BrowserState, direction: HistoryDirection) -> Reduct
 			HistoryDirection::Back => next.history.push_forward(current),
 			HistoryDirection::Forward => next.history.push_back(current),
 		}
+	}
+	navigate_to(&next, target, HistoryMode::AlreadyUpdated)
+}
+
+fn clear_history(state: &BrowserState) -> Reduction {
+	let Some(location) = state.current_location.as_ref() else { return Reduction::unchanged(state) };
+	if !state.history.can_go_back() && !state.history.can_go_forward() {
+		return Reduction::unchanged(state);
+	}
+	let mut next = state.clone();
+	next.history.back.clear();
+	next.history.forward.clear();
+	let change = StateChange::LocationChanged {
+		location:       LocationDto::from(location),
+		can_go_back:    false,
+		can_go_forward: false,
+	};
+	finish(state, next, vec![change], Vec::new())
+}
+
+fn navigate_back_steps(state: &BrowserState, steps: usize) -> Reduction {
+	if steps == 0 || steps > state.history.back.len() {
+		return Reduction::unchanged(state);
+	}
+	let mut next = state.clone();
+	let mut current = next.current_location.clone();
+	let mut target = None;
+	for _ in 0..steps {
+		let Some(step) = next.history.back.pop() else { return Reduction::unchanged(state) };
+		if let Some(passed) = current.take() {
+			next.history.push_forward(passed);
+		}
+		current = Some(step.clone());
+		target = Some(step);
+	}
+	let Some(target) = target else { return Reduction::unchanged(state) };
+	if state.current_location.as_ref() == Some(&target) {
+		return Reduction::unchanged(state);
 	}
 	navigate_to(&next, target, HistoryMode::AlreadyUpdated)
 }
@@ -385,6 +425,28 @@ mod tests {
 		let forward = reduce(&back.state, StateAction::NavigateForward);
 		assert_eq!(forward.state.current_location, Some(location(b"/b")));
 		assert_eq!(forward.state.history.back, vec![location(b"/a")]);
+	}
+
+	#[test]
+	fn stepping_back_several_places_fills_forward_history_in_order() {
+		let mut state = BrowserState::default();
+		for path in [b"/a", b"/b", b"/c", b"/d"] {
+			state = reduce(&state, StateAction::NavigateTo(location(path))).state;
+		}
+		let jumped = reduce(&state, StateAction::NavigateBackSteps(2));
+		assert_eq!(jumped.state.current_location, Some(location(b"/b")));
+		assert_eq!(jumped.state.history.back, vec![location(b"/a")]);
+		assert_eq!(jumped.state.history.forward, vec![location(b"/d"), location(b"/c")]);
+
+		let forward = reduce(&jumped.state, StateAction::NavigateForward);
+		assert_eq!(forward.state.current_location, Some(location(b"/c")));
+
+		assert!(reduce(&state, StateAction::NavigateBackSteps(0)).delta.is_none());
+		let cleared = reduce(&jumped.state, StateAction::ClearHistory);
+		assert!(cleared.state.history.back.is_empty() && cleared.state.history.forward.is_empty());
+		assert_eq!(cleared.state.current_location, Some(location(b"/b")));
+		assert!(cleared.effects.is_empty());
+		assert!(reduce(&state, StateAction::NavigateBackSteps(9)).delta.is_none());
 	}
 
 	#[test]
