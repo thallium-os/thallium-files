@@ -8,13 +8,15 @@ Item {
   property real weight: 1.5
   property color color: Theme.cGreen
   property bool topRight: false
+  property bool bottomLeft: true
+  property bool bottomRight: true
 
   Repeater {
     model: [
       { x: 0, y: 0, h: 1, v: 1, on: true },
       { x: 1, y: 0, h: -1, v: 1, on: brackets.topRight },
-      { x: 0, y: 1, h: 1, v: -1, on: true },
-      { x: 1, y: 1, h: -1, v: -1, on: true }
+      { x: 0, y: 1, h: 1, v: -1, on: brackets.bottomLeft },
+      { x: 1, y: 1, h: -1, v: -1, on: brackets.bottomRight }
     ]
     delegate: Item {
       required property var modelData

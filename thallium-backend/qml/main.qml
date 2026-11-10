@@ -4681,16 +4681,26 @@ ApplicationWindow {
               readonly property int columns: Math.max(1, Math.min(4, Math.floor((homeColumn.width + 14) / 184)))
               Repeater {
                 model: root.homeRecents.slice(0, recentCards.columns)
-                delegate: Rectangle {
+                delegate: Item {
                   id: recentCard
                   required property var modelData
                   readonly property string tag: root.bridge.typeTag(recentCard.modelData.name, recentCard.modelData.directory)
                   readonly property color tone: Theme.typeColor(recentCard.tag)
                   width: (homeColumn.width - (recentCards.columns - 1) * 14) / recentCards.columns
                   height: 156
-                  color: recentMouse.containsMouse ? Theme.cDim : Theme.cPanel
-                  border.width: 1
-                  border.color: recentMouse.containsMouse ? Theme.cGreen : Theme.cLine
+                  ChamferPanel {
+                    anchors.fill: parent
+                    fill: recentMouse.containsMouse ? Theme.cDim : Theme.cPanel
+                    stroke: recentMouse.containsMouse ? Theme.cGreen : Theme.cLine
+                  }
+                  CornerBrackets {
+                    anchors.fill: parent
+                    anchors.margins: 6
+                    size: 9
+                    weight: 1
+                    bottomLeft: false
+                    bottomRight: false
+                  }
                   Text {
                     x: 16
                     y: 14
@@ -6060,16 +6070,20 @@ ApplicationWindow {
 
             // The Store's app card: the type tag set large, the
             // name, what it is, and a flag at the foot.
-            Rectangle {
+            Item {
               id: card
               anchors.fill: parent
               anchors.margins: 7
-              color: tileHost.selected ? Theme.cWash : (tileMouse.containsMouse ? Theme.cDim : Theme.cPanel)
-              border.width: 1
-              border.color: tileHost.selected ? Theme.cGreen
-                    : root.focusRow === tileHost.entry || tileMouse.containsMouse ? Theme.cLine : Theme.cDead
               clip: true
-              Behavior on color { ColorAnimation { duration: Theme.tFast } }
+
+              // The panel outline: a cut top-right corner with its accent
+              // edge and a bracket at the top left, as the storage gauge.
+              ChamferPanel {
+                anchors.fill: parent
+                fill: tileHost.selected ? Theme.cWash : (tileMouse.containsMouse ? Theme.cDim : Theme.cPanel)
+                stroke: "transparent"
+                accentEdge: false
+              }
 
               // A picture or video fills the top of its card.
               Image {
@@ -6084,6 +6098,21 @@ ApplicationWindow {
                 fillMode: Image.PreserveAspectCrop
                 sourceSize: Qt.size(width * 2, height * 2)
                 asynchronous: true
+              }
+              ChamferPanel {
+                anchors.fill: parent
+                fill: "transparent"
+                backdrop: Theme.cBase
+                stroke: tileHost.selected ? Theme.cGreen
+                      : root.focusRow === tileHost.entry || tileMouse.containsMouse ? Theme.cLine : Theme.cDead
+              }
+              CornerBrackets {
+                anchors.fill: parent
+                anchors.margins: 6
+                size: 9
+                weight: 1
+                bottomLeft: false
+                bottomRight: false
               }
 
               Text {

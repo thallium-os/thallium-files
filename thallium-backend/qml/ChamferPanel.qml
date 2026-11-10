@@ -10,6 +10,9 @@ Item {
   property color stroke: Theme.cLine
   property bool accentEdge: true
   property int cut: Theme.chamfer
+  // Painted over the corner the cut removes, so a picture laid under a
+  // see-through panel is trimmed to the same outline.
+  property color backdrop: "transparent"
 
   Shape {
     anchors.fill: parent
@@ -25,6 +28,14 @@ Item {
       PathLine { x: panel.width - 0.5; y: panel.height - 0.5 }
       PathLine { x: 0.5; y: panel.height - 0.5 }
       PathLine { x: 0.5; y: 0.5 }
+    }
+    ShapePath {
+      fillColor: panel.backdrop
+      strokeColor: "transparent"
+      startX: panel.width - panel.cut; startY: 0
+      PathLine { x: panel.width; y: 0 }
+      PathLine { x: panel.width; y: panel.cut }
+      PathLine { x: panel.width - panel.cut; y: 0 }
     }
     ShapePath {
       fillColor: "transparent"
