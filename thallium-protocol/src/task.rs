@@ -14,6 +14,10 @@ pub enum TaskKind {
 	Move,
 	Delete,
 	Trash,
+	Rename,
+	CreateFolder,
+	CreateFile,
+	Link,
 }
 
 /// Frontend-visible lifecycle of one aggregate task.

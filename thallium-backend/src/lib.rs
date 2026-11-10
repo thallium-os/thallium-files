@@ -11,12 +11,38 @@ mod error;
 // Only the Qt bridge calls these; built without it, they still compile so
 // their tests run.
 #[cfg_attr(not(feature = "qt"), allow(dead_code))]
+mod apps;
+#[cfg_attr(not(feature = "qt"), allow(dead_code))]
+mod archive;
+#[cfg_attr(not(feature = "qt"), allow(dead_code))]
+mod bookmarks;
+#[cfg_attr(not(feature = "qt"), allow(dead_code))]
+mod bulk_rename;
+#[cfg_attr(not(feature = "qt"), allow(dead_code))]
+mod drives;
+#[cfg_attr(not(feature = "qt"), allow(dead_code))]
+mod files_theme;
+#[cfg_attr(not(feature = "qt"), allow(dead_code))]
+mod present;
+#[cfg_attr(not(feature = "qt"), allow(dead_code))]
+mod properties;
+#[cfg_attr(not(feature = "qt"), allow(dead_code))]
 mod recents;
 #[cfg_attr(not(feature = "qt"), allow(dead_code))]
 mod search;
 mod services;
 #[cfg_attr(not(feature = "qt"), allow(dead_code))]
 mod storage;
+#[cfg_attr(not(feature = "qt"), allow(dead_code))]
+mod trash_bin;
+#[cfg_attr(not(feature = "qt"), allow(dead_code))]
+mod uca;
+#[cfg_attr(not(feature = "qt"), allow(dead_code))]
+mod ui_state;
+#[cfg_attr(not(feature = "qt"), allow(dead_code))]
+mod undo;
+#[cfg_attr(not(feature = "qt"), allow(dead_code))]
+mod uri;
 
 #[cfg(feature = "qt")]
 pub mod qt_bridge;

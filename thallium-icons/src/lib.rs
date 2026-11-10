@@ -46,6 +46,9 @@ impl IconService {
 		self.mime.of(path, is_directory)
 	}
 
+	/// `mime` and the types it is a kind of; see [`mime::MimeIndex::lineage`].
+	pub fn mime_lineage(&self, mime: &str) -> Vec<String> { self.mime.lineage(mime) }
+
 	/// The type icon for a MIME type, or `None` when no installed theme has one.
 	pub fn icon(&self, mime: &str) -> Option<PathBuf> {
 		self.theme.find(mime, || self.mime.icon_names(mime))

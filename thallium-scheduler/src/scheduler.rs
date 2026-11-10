@@ -4,8 +4,8 @@ use std::{collections::{HashSet, VecDeque}, sync::{Arc, atomic::{AtomicBool, Ato
 
 use thallium_fs_core::{ConflictPolicy, FileAttrs, FileKind, FsError, FsErrorCode, Location, NativePath};
 use thallium_protocol::{TaskId, TaskInfo, TaskKind};
-use thallium_vfs::{DeleteOptions, FileSystem, OpenWriteOptions, StatOptions};
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::{mpsc, oneshot}};
+use thallium_vfs::{CreateDirOptions, DeleteOptions, FileSystem, OpenWriteOptions, StatOptions};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::{mpsc, oneshot, watch}};
 use tokio_util::sync::CancellationToken;
 
 use crate::{CopyTask, DeleteTask, MoveTask, Ongoing, SchedulerError, SchedulerEvent, SchedulerResult, Task, TaskHandle, TaskInput, TaskSpec, TaskStatus, TrashTask};
@@ -49,6 +49,8 @@ pub struct Scheduler<V: FileSystem = thallium_vfs::LocalBackend> {
 	command_tx: mpsc::Sender<Command>,
 	event_rx:   tokio::sync::Mutex<mpsc::Receiver<SchedulerEvent>>,
 	event_sync: Arc<EventSync>,
+	/// Held while transfers are paused; workers wait on it between chunks.
+	pause:      watch::Sender<bool>,
 	_marker:    std::marker::PhantomData<fn() -> V>,
 }
 
@@ -100,11 +102,13 @@ impl<V: FileSystem + 'static> Scheduler<V> {
 		let event_sync =
 			Arc::new(EventSync { dirty: AtomicBool::new(false), notify: tokio::sync::Notify::new() });
 		let event_port = EventPort { tx: event_tx, sync: Arc::clone(&event_sync) };
-		tokio::spawn(run_manager(vfs, config, command_rx, worker_tx, worker_rx, event_port));
+		let (pause, gate) = watch::channel(false);
+		tokio::spawn(run_manager(vfs, config, command_rx, worker_tx, worker_rx, event_port, gate));
 		Self {
 			command_tx,
 			event_rx: tokio::sync::Mutex::new(event_rx),
 			event_sync,
+			pause,
 			_marker: std::marker::PhantomData,
 		}
 	}
@@ -123,6 +127,14 @@ impl<V: FileSystem + 'static> Scheduler<V> {
 		self.try_command(Command::Cancel(id, reply))?;
 		response.await.map_err(|_| SchedulerError::Unavailable)?
 	}
+
+	/// Hold or release every running transfer. Paused workers stop between
+	/// chunks and items; cancellation still reaches them while they wait.
+	pub fn set_paused(&self, paused: bool) { self.pause.send_replace(paused); }
+
+	/// Whether transfers are currently held.
+	#[must_use]
+	pub fn is_paused(&self) -> bool { *self.pause.borrow() }
 
 	/// Remove one retained terminal task.
 	pub async fn dismiss(&self, id: TaskId) -> SchedulerResult<()> {
@@ -188,6 +200,7 @@ async fn run_manager<V: FileSystem + 'static>(
 	worker_tx: mpsc::Sender<WorkerUpdate>,
 	mut workers: mpsc::Receiver<WorkerUpdate>,
 	events: EventPort,
+	gate: watch::Receiver<bool>,
 ) {
 	let mut registry = Ongoing::new();
 	let mut pending = VecDeque::new();
@@ -212,9 +225,10 @@ async fn run_manager<V: FileSystem + 'static>(
 			let cancellation = task.cancellation.clone();
 			let tx = worker_tx.clone();
 			let filesystem = Arc::clone(&vfs);
+			let held = gate.clone();
 			active.insert(id);
 			tokio::spawn(async move {
-				let result = execute_task(&*filesystem, id, input, cancellation, &tx).await;
+				let result = execute_task(&*filesystem, id, input, cancellation, held, &tx).await;
 				let _ = tx.send(WorkerUpdate::Finished { id, result }).await;
 			});
 		}
@@ -311,6 +325,8 @@ fn admit(
 		TaskInput::Move(task) => task.sources.len(),
 		TaskInput::Delete(task) => task.targets.len(),
 		TaskInput::Trash(task) => task.targets.len(),
+		TaskInput::Link(task) => task.sources.len(),
+		TaskInput::Rename(_) | TaskInput::CreateFolder(_) | TaskInput::CreateFile(_) => 1,
 	};
 	if work_len > per_task_capacity {
 		return Err(SchedulerError::InvalidInput(format!(
@@ -421,8 +437,22 @@ fn describe(input: &TaskInput) -> (TaskKind, String) {
 		TaskInput::Move(task) => (TaskKind::Move, "Move", task.sources.len()),
 		TaskInput::Delete(task) => (TaskKind::Delete, "Delete", task.targets.len()),
 		TaskInput::Trash(task) => (TaskKind::Trash, "Trash", task.targets.len()),
+		TaskInput::Link(task) => (TaskKind::Link, "Link", task.sources.len()),
+		TaskInput::Rename(task) => {
+			return (TaskKind::Rename, format!("Rename to {}", display_name(&task.destination)));
+		}
+		TaskInput::CreateFolder(task) => {
+			return (TaskKind::CreateFolder, format!("Create folder {}", display_name(&task.target)));
+		}
+		TaskInput::CreateFile(task) => {
+			return (TaskKind::CreateFile, format!("Create file {}", display_name(&task.target)));
+		}
 	};
 	(kind, format!("{verb} {count} item{}", if count == 1 { "" } else { "s" }))
+}
+
+fn display_name(location: &Location) -> String {
+	location.path.file_name().map_or_else(String::new, |name| name.to_string_lossy())
 }
 
 async fn execute_task<V: FileSystem>(
@@ -430,9 +460,13 @@ async fn execute_task<V: FileSystem>(
 	id: TaskId,
 	input: TaskInput,
 	cancellation: CancellationToken,
+	gate: watch::Receiver<bool>,
 	updates: &mpsc::Sender<WorkerUpdate>,
 ) -> Result<(), FsError> {
 	check_cancelled(&cancellation, None)?;
+	if let Some(result) = execute_quick(vfs, id, &input, &cancellation, &gate, updates).await {
+		return result;
+	}
 	let prepared = prepare(vfs, &input).await?;
 	check_cancelled(&cancellation, None)?;
 	let total_bytes = prepared.iter().map(|item| item.size).sum();
@@ -442,7 +476,7 @@ async fn execute_task<V: FileSystem>(
 		bytes: total_bytes,
 	})
 	.await?;
-	let mut progress = ProgressReporter::new(id, updates);
+	let mut progress = ProgressReporter::new(id, updates, gate, cancellation.clone());
 
 	match input {
 		TaskInput::Copy(task) => {
@@ -457,9 +491,106 @@ async fn execute_task<V: FileSystem>(
 		TaskInput::Trash(task) => {
 			execute_trash(vfs, &task, prepared, &cancellation, &mut progress).await?
 		}
+		TaskInput::Rename(_)
+		| TaskInput::CreateFolder(_)
+		| TaskInput::CreateFile(_)
+		| TaskInput::Link(_) => {
+			unreachable!("quick tasks finish in execute_quick")
+		}
 	}
 	progress.flush().await?;
 	Ok(())
+}
+
+/// Run the single-step entry operations, which have no tree to measure.
+/// Returns `None` for the bulk operations handled by `prepare`.
+async fn execute_quick<V: FileSystem>(
+	vfs: &V,
+	id: TaskId,
+	input: &TaskInput,
+	cancellation: &CancellationToken,
+	gate: &watch::Receiver<bool>,
+	updates: &mpsc::Sender<WorkerUpdate>,
+) -> Option<Result<(), FsError>> {
+	let items = match input {
+		TaskInput::Rename(_) | TaskInput::CreateFolder(_) | TaskInput::CreateFile(_) => 1,
+		TaskInput::Link(task) => task.sources.len() as u64,
+		_ => return None,
+	};
+	Some(
+		async {
+			send_update(updates, WorkerUpdate::Prepared { id, items, bytes: 0 }).await?;
+			let mut progress = ProgressReporter::new(id, updates, gate.clone(), cancellation.clone());
+			match input {
+				TaskInput::Rename(task) => {
+					progress.item_started(task.source.clone()).await?;
+					if vfs.stat(&task.destination, StatOptions { follow_symlinks: false }).await.is_ok() {
+						return Err(FsError::new(
+							FsErrorCode::AlreadyExists,
+							"an entry with that name already exists",
+							Some(task.destination.clone()),
+						));
+					}
+					vfs.rename(&task.source, &task.destination).await?;
+				}
+				TaskInput::CreateFolder(task) => {
+					progress.item_started(task.target.clone()).await?;
+					vfs
+						.create_dir(&task.target, CreateDirOptions { recursive: false, attributes: None })
+						.await?;
+				}
+				TaskInput::CreateFile(task) => {
+					progress.item_started(task.target.clone()).await?;
+					match &task.template {
+						Some(template) => {
+							let entry = vfs.stat(template, StatOptions { follow_symlinks: true }).await?;
+							copy_file(
+								vfs,
+								template,
+								&task.target,
+								ConflictPolicy::Abort,
+								&FileAttrs::from_metadata(&entry.metadata),
+								&CancellationToken::new(),
+								&mut progress,
+							)
+							.await?;
+						}
+						None => {
+							let mut file = vfs
+								.open_write(&task.target, OpenWriteOptions {
+									create:     false,
+									create_new: true,
+									truncate:   false,
+									append:     false,
+									attributes: None,
+								})
+								.await?;
+							file
+								.shutdown()
+								.await
+								.map_err(|error| FsError::from_io(error, Some(task.target.clone())))?;
+						}
+					}
+				}
+				TaskInput::Link(task) => {
+					for source in &task.sources {
+						progress.item_started(source.clone()).await?;
+						let requested = task.destination.join(file_name(source)?);
+						let Some(link) = resolve_destination(vfs, &requested, ConflictPolicy::Rename).await?
+						else {
+							continue;
+						};
+						vfs.symlink(&source.path, &link).await?;
+						progress.item_completed(0).await?;
+					}
+					return Ok(());
+				}
+				_ => unreachable!("bulk tasks are filtered above"),
+			}
+			progress.item_completed(0).await
+		}
+		.await,
+	)
 }
 
 struct PreparedItem {
@@ -475,23 +606,28 @@ async fn prepare<V: FileSystem>(vfs: &V, input: &TaskInput) -> Result<Vec<Prepar
 		TaskInput::Move(task) => &task.sources,
 		TaskInput::Delete(task) => &task.targets,
 		TaskInput::Trash(task) => &task.targets,
+		TaskInput::Rename(_)
+		| TaskInput::CreateFolder(_)
+		| TaskInput::CreateFile(_)
+		| TaskInput::Link(_) => {
+			return Ok(Vec::new());
+		}
 	};
 	let mut prepared = Vec::with_capacity(locations.len());
 	for location in locations {
 		let follow_symlinks = matches!(input, TaskInput::Copy(_));
 		let entry = vfs.stat(location, StatOptions { follow_symlinks }).await?;
-		if matches!(input, TaskInput::Copy(_)) && entry.metadata.kind == FileKind::Directory {
-			return Err(FsError::new(
-				FsErrorCode::IsDirectory,
-				"MVP copy supports regular files, not directory trees",
-				Some(location.clone()),
-			));
-		}
+		let size = if matches!(input, TaskInput::Copy(_)) && entry.metadata.kind == FileKind::Directory
+		{
+			tree_size(vfs, location).await?
+		} else {
+			entry.metadata.size
+		};
 		prepared.push(PreparedItem {
 			location: location.clone(),
-			size:     entry.metadata.size,
-			attrs:    FileAttrs::from_metadata(&entry.metadata),
-			kind:     entry.metadata.kind,
+			size,
+			attrs: FileAttrs::from_metadata(&entry.metadata),
+			kind: entry.metadata.kind,
 		});
 	}
 	Ok(prepared)
@@ -509,6 +645,26 @@ async fn execute_copy<V: FileSystem>(
 		progress.item_started(item.location.clone()).await?;
 		let name = file_name(&item.location)?;
 		let requested = task.destination.join(name);
+		if item.kind == FileKind::Directory {
+			if is_within(&requested, &item.location) {
+				return Err(FsError::new(
+					FsErrorCode::InvalidInput,
+					"cannot copy a folder into itself",
+					Some(item.location),
+				));
+			}
+			let copied = copy_tree(
+				vfs,
+				&item.location,
+				&requested,
+				task.options.conflict_policy,
+				cancellation,
+				progress,
+			)
+			.await?;
+			progress.item_completed(if copied { 0 } else { item.size }).await?;
+			continue;
+		}
 		let outcome = copy_file(
 			vfs,
 			&item.location,
@@ -553,11 +709,18 @@ async fn execute_move<V: FileSystem>(
 			Ok(()) => progress.item_completed(item.size).await?,
 			Err(error) if error.code == FsErrorCode::CrossDevice => {
 				if item.kind == FileKind::Directory {
-					return Err(FsError::new(
-						FsErrorCode::Unsupported,
-						"cross-filesystem directory moves are not supported in the MVP",
-						Some(item.location),
-					));
+					copy_tree(
+						vfs,
+						&item.location,
+						&destination,
+						ConflictPolicy::Overwrite,
+						cancellation,
+						progress,
+					)
+					.await?;
+					vfs.delete(&item.location, DeleteOptions { recursive: true }).await?;
+					progress.item_completed(0).await?;
+					continue;
 				}
 				copy_file(
 					vfs,
@@ -697,6 +860,103 @@ async fn copy_into_temp<V: FileSystem>(
 	vfs.set_attrs(temporary, attrs).await
 }
 
+/// Total bytes of the regular files under `root`, without following links.
+async fn tree_size<V: FileSystem>(vfs: &V, root: &Location) -> Result<u64, FsError> {
+	let mut total = 0_u64;
+	let mut pending = vec![root.clone()];
+	while let Some(directory) = pending.pop() {
+		for entry in vfs.scan(&directory).await? {
+			match entry.metadata.kind {
+				FileKind::Directory => pending.push(entry.location),
+				FileKind::File => total = total.saturating_add(entry.metadata.size),
+				_ => {}
+			}
+		}
+	}
+	Ok(total)
+}
+
+/// Whether `location` is `ancestor` or lies beneath it.
+fn is_within(location: &Location, ancestor: &Location) -> bool {
+	if location.backend != ancestor.backend {
+		return false;
+	}
+	let (path, root) = (location.path.normalize(), ancestor.path.normalize());
+	let (path, root) = (path.as_bytes(), root.as_bytes());
+	path.starts_with(root) && (path.len() == root.len() || root == b"/" || path[root.len()] == b'/')
+}
+
+/// Copy the directory tree at `source` to `requested`. An existing destination
+/// folder is merged into under [`ConflictPolicy::Overwrite`]. Returns `false`
+/// when the conflict policy skipped the whole tree.
+async fn copy_tree<V: FileSystem>(
+	vfs: &V,
+	source: &Location,
+	requested: &Location,
+	policy: ConflictPolicy,
+	cancellation: &CancellationToken,
+	progress: &mut ProgressReporter<'_>,
+) -> Result<bool, FsError> {
+	let Some(root) = resolve_destination(vfs, requested, policy).await? else {
+		return Ok(false);
+	};
+	let mut pending = vec![(source.clone(), root)];
+	// Applied last, deepest first, so writing children does not disturb the
+	// copied folder times.
+	let mut folder_attrs = Vec::new();
+	while let Some((from, to)) = pending.pop() {
+		check_cancelled(cancellation, Some(from.clone()))?;
+		let entry = vfs.stat(&from, StatOptions { follow_symlinks: true }).await?;
+		match vfs.create_dir(&to, CreateDirOptions { recursive: false, attributes: None }).await {
+			Err(error) if error.code == FsErrorCode::AlreadyExists => {
+				let existing = vfs.stat(&to, StatOptions { follow_symlinks: true }).await?;
+				if existing.metadata.kind != FileKind::Directory {
+					return Err(error);
+				}
+			}
+			result => result?,
+		}
+		folder_attrs.push((to.clone(), FileAttrs::from_metadata(&entry.metadata)));
+		for child in vfs.scan(&from).await? {
+			check_cancelled(cancellation, Some(child.location.clone()))?;
+			let target = to.join(&child.name);
+			match child.metadata.kind {
+				FileKind::Directory => pending.push((child.location, target)),
+				FileKind::File => {
+					copy_file(
+						vfs,
+						&child.location,
+						&target,
+						ConflictPolicy::Overwrite,
+						&FileAttrs::from_metadata(&child.metadata),
+						cancellation,
+						progress,
+					)
+					.await?;
+				}
+				FileKind::Symlink => {
+					let link = match &child.symlink {
+						Some(info) => info.target.clone(),
+						None => vfs.read_link(&child.location).await?,
+					};
+					if let Ok(existing) = vfs.stat(&target, StatOptions { follow_symlinks: false }).await
+						&& existing.metadata.kind != FileKind::Directory
+					{
+						vfs.delete(&target, DeleteOptions { recursive: false }).await?;
+					}
+					vfs.symlink(&link, &target).await?;
+				}
+				// Devices, sockets and pipes have no content to copy.
+				_ => {}
+			}
+		}
+	}
+	for (folder, attrs) in folder_attrs.iter().rev() {
+		vfs.set_attrs(folder, attrs).await?;
+	}
+	Ok(true)
+}
+
 async fn clean_after_error<V: FileSystem>(
 	vfs: &V,
 	temporary: &Location,
@@ -783,22 +1043,48 @@ async fn send_update(
 }
 
 struct ProgressReporter<'a> {
-	id:      TaskId,
-	updates: &'a mpsc::Sender<WorkerUpdate>,
-	pending: u64,
-	last:    Instant,
+	id:           TaskId,
+	updates:      &'a mpsc::Sender<WorkerUpdate>,
+	pending:      u64,
+	last:         Instant,
+	gate:         watch::Receiver<bool>,
+	cancellation: CancellationToken,
 }
 
 impl<'a> ProgressReporter<'a> {
-	fn new(id: TaskId, updates: &'a mpsc::Sender<WorkerUpdate>) -> Self {
-		Self { id, updates, pending: 0, last: Instant::now() }
+	fn new(
+		id: TaskId,
+		updates: &'a mpsc::Sender<WorkerUpdate>,
+		gate: watch::Receiver<bool>,
+		cancellation: CancellationToken,
+	) -> Self {
+		Self { id, updates, pending: 0, last: Instant::now(), gate, cancellation }
+	}
+
+	/// Wait here while transfers are paused, reporting what was done first so
+	/// the progress shown is where the work actually stopped.
+	async fn hold(&mut self) -> Result<(), FsError> {
+		if !*self.gate.borrow() {
+			return Ok(());
+		}
+		self.flush().await?;
+		while *self.gate.borrow_and_update() {
+			tokio::select! {
+				biased;
+				() = self.cancellation.cancelled() => return Err(cancelled_error(None)),
+				changed = self.gate.changed() => if changed.is_err() { return Ok(()) },
+			}
+		}
+		Ok(())
 	}
 
 	async fn item_started(&mut self, location: Location) -> Result<(), FsError> {
+		self.hold().await?;
 		send_update(self.updates, WorkerUpdate::ItemStarted { id: self.id, location }).await
 	}
 
 	async fn advance(&mut self, bytes: u64) -> Result<(), FsError> {
+		self.hold().await?;
 		self.pending = self.pending.saturating_add(bytes);
 		if self.last.elapsed() >= PROGRESS_INTERVAL {
 			self.flush().await?;
@@ -893,6 +1179,49 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn copy_reproduces_a_folder_tree() {
+		let source_dir = TestDirectory::new("tree-source");
+		let destination = TestDirectory::new("tree-destination");
+		let root = source_dir.0.join("project");
+		fs::create_dir_all(root.join("src/deep")).expect("make tree");
+		fs::create_dir(root.join("empty")).expect("make empty folder");
+		fs::write(root.join("README"), b"top").expect("write top file");
+		fs::write(root.join("src/deep/main.rs"), vec![3; 64 * 1024]).expect("write deep file");
+		std::os::unix::fs::symlink("src/deep/main.rs", root.join("link")).expect("make link");
+		let scheduler = Scheduler::new(Arc::new(LocalBackend::new()), config());
+		let mut handle = scheduler.add(copy_input(&root, &destination)).await.expect("submit copy");
+
+		let terminal =
+			tokio::time::timeout(Duration::from_secs(5), handle.wait()).await.expect("task timeout");
+		assert_eq!(terminal.status, TaskStatus::Succeeded);
+		assert_eq!(terminal.progress.basis_points(), 10_000);
+		let copy = destination.0.join("project");
+		assert_eq!(fs::read(copy.join("README")).expect("read top"), b"top");
+		assert_eq!(fs::read(copy.join("src/deep/main.rs")).expect("read deep"), vec![3; 64 * 1024]);
+		assert!(copy.join("empty").is_dir());
+		assert_eq!(fs::read_link(copy.join("link")).expect("read link"), Path::new("src/deep/main.rs"));
+		scheduler.shutdown().await.expect("shutdown");
+	}
+
+	#[tokio::test]
+	async fn copying_a_folder_into_itself_is_refused() {
+		let source_dir = TestDirectory::new("self-source");
+		let root = source_dir.0.join("outer");
+		fs::create_dir_all(root.join("inner")).expect("make tree");
+		let inside = TestDirectory(root.join("inner"));
+		let scheduler = Scheduler::new(Arc::new(LocalBackend::new()), config());
+		let mut handle = scheduler.add(copy_input(&root, &inside)).await.expect("submit copy");
+
+		let terminal =
+			tokio::time::timeout(Duration::from_secs(5), handle.wait()).await.expect("task timeout");
+		assert_eq!(terminal.status, TaskStatus::Failed);
+		assert_eq!(terminal.issue.expect("failure detail").code, FsErrorCode::InvalidInput);
+		assert!(!root.join("inner/outer").exists());
+		std::mem::forget(inside);
+		scheduler.shutdown().await.expect("shutdown");
+	}
+
+	#[tokio::test]
 	async fn task_failure_is_readable_from_the_handle() {
 		let source_dir = TestDirectory::new("failure-source");
 		let destination = TestDirectory::new("failure-destination");
@@ -928,6 +1257,51 @@ mod tests {
 		assert_eq!(event, crate::SchedulerEvent::ResyncRequired);
 		let snapshots = scheduler.snapshots().await.expect("resync snapshots");
 		assert_eq!(snapshots, [terminal]);
+		scheduler.shutdown().await.expect("shutdown");
+	}
+
+	#[tokio::test]
+	async fn paused_copy_waits_and_finishes_when_resumed() {
+		let source_dir = TestDirectory::new("pause-source");
+		let destination = TestDirectory::new("pause-destination");
+		let source = source_dir.0.join("large.bin");
+		fs::write(&source, vec![5; 4 * 1024 * 1024]).expect("write source");
+		let scheduler = Scheduler::new(Arc::new(LocalBackend::new()), config());
+		scheduler.set_paused(true);
+		assert!(scheduler.is_paused());
+		let mut handle = scheduler.add(copy_input(&source, &destination)).await.expect("submit copy");
+
+		tokio::time::sleep(Duration::from_millis(300)).await;
+		let held = handle.snapshot();
+		assert!(!held.status.is_terminal(), "a paused copy finished: {held:?}");
+		assert!(!destination.0.join("large.bin").exists());
+
+		scheduler.set_paused(false);
+		let terminal =
+			tokio::time::timeout(Duration::from_secs(10), handle.wait()).await.expect("resume timeout");
+		assert_eq!(terminal.status, TaskStatus::Succeeded);
+		assert_eq!(
+			fs::read(destination.0.join("large.bin")).expect("read copy").len(),
+			4 * 1024 * 1024
+		);
+		scheduler.shutdown().await.expect("shutdown");
+	}
+
+	#[tokio::test]
+	async fn a_paused_copy_can_still_be_cancelled() {
+		let source_dir = TestDirectory::new("pause-cancel-source");
+		let destination = TestDirectory::new("pause-cancel-destination");
+		let source = source_dir.0.join("large.bin");
+		fs::write(&source, vec![6; 4 * 1024 * 1024]).expect("write source");
+		let scheduler = Scheduler::new(Arc::new(LocalBackend::new()), config());
+		scheduler.set_paused(true);
+		let mut handle = scheduler.add(copy_input(&source, &destination)).await.expect("submit copy");
+		tokio::time::sleep(Duration::from_millis(200)).await;
+		handle.cancel();
+		let terminal =
+			tokio::time::timeout(Duration::from_secs(5), handle.wait()).await.expect("cancel timeout");
+		assert_eq!(terminal.status, TaskStatus::Cancelled);
+		assert!(!destination.0.join("large.bin").exists());
 		scheduler.shutdown().await.expect("shutdown");
 	}
 

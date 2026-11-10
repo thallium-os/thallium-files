@@ -18,6 +18,8 @@ pub struct BrowserStateSnapshot {
 	pub tasks:            Vec<TaskInfo>,
 	pub can_go_back:      bool,
 	pub can_go_forward:   bool,
+	/// Locations Back walks through, the next one first.
+	pub back_history:     Vec<LocationDto>,
 }
 
 /// One normalized frontend-model change.
