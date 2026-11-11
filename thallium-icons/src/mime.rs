@@ -16,11 +16,17 @@ pub struct MimeIndex {
 	/// File name (or bare extension) to MIME type. Extensions dominate a real
 	/// directory, so this collapses to a handful of entries per view.
 	by_name:  Mutex<HashMap<String, String>>,
+	/// Type to the types it is a subclass of, from `mime/subclasses`.
+	parents:  HashMap<String, Vec<String>>,
 }
 
 impl MimeIndex {
 	pub fn new() -> Self {
-		Self { database: SharedMimeInfo::new(), by_name: Mutex::new(HashMap::new()) }
+		Self {
+			database: SharedMimeInfo::new(),
+			by_name:  Mutex::new(HashMap::new()),
+			parents:  read_subclasses(),
+		}
 	}
 
 	/// The MIME type of `path`, as a string.
@@ -62,6 +68,33 @@ impl MimeIndex {
 		mime
 	}
 
+	/// `mime` and every type it is a kind of, most specific first: its
+	/// canonical name, its declared parents, theirs, and finally the type every
+	/// regular file is. Applications registered for any of these can open it.
+	pub fn lineage(&self, mime: &str) -> Vec<String> {
+		let mut lineage = Vec::new();
+		let mut pending = vec![mime.to_owned()];
+		while let Some(next) = pending.pop() {
+			let Ok(parsed) = next.parse::<mime::Mime>() else { continue };
+			let canonical = self.database.unalias_mime_type(&parsed).unwrap_or(parsed);
+			let name = canonical.essence_str().to_owned();
+			if lineage.contains(&name) {
+				continue;
+			}
+			lineage.push(name.clone());
+			// `SharedMimeInfo::get_parents` answers only for aliases, so the
+			// subclass table is read here instead.
+			let mut parents = self.parents.get(&name).cloned().unwrap_or_default();
+			// Breadth first: the nearest parents are tried before theirs.
+			parents.reverse();
+			pending.splice(0..0, parents);
+		}
+		if mime != "inode/directory" && !lineage.iter().any(|name| name == OCTET_STREAM) {
+			lineage.push(OCTET_STREAM.to_owned());
+		}
+		lineage
+	}
+
 	/// Icon names to try for `mime`, most specific first.
 	///
 	/// `shared-mime-info` supplies the specific name and the type's declared
@@ -94,6 +127,30 @@ impl Default for MimeIndex {
 
 /// Names that share a suffix share a MIME type, so cache by suffix where there
 /// is one and by the whole name where there is not.
+/// Every `mime/subclasses` table on the XDG data path, user data first.
+fn read_subclasses() -> HashMap<String, Vec<String>> {
+	let home = std::env::var_os("XDG_DATA_HOME").map(std::path::PathBuf::from).or_else(|| {
+		std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".local/share"))
+	});
+	let system = std::env::var("XDG_DATA_DIRS")
+		.ok()
+		.filter(|dirs| !dirs.is_empty())
+		.unwrap_or_else(|| "/usr/local/share:/usr/share".to_owned());
+	let mut parents: HashMap<String, Vec<String>> = HashMap::new();
+	for root in home.into_iter().chain(system.split(':').map(std::path::PathBuf::from)) {
+		let Ok(text) = std::fs::read_to_string(root.join("mime/subclasses")) else { continue };
+		for line in text.lines() {
+			if let Some((child, parent)) = line.split_once(' ') {
+				let known = parents.entry(child.to_owned()).or_default();
+				if !known.iter().any(|existing| existing == parent) {
+					known.push(parent.to_owned());
+				}
+			}
+		}
+	}
+	parents
+}
+
 fn cache_key(name: &str) -> String {
 	match name.rfind('.') {
 		Some(dot) if dot > 0 && dot + 1 < name.len() => name[dot..].to_ascii_lowercase(),
@@ -128,6 +185,15 @@ mod tests {
 			index.icon_names("inode/directory").first().map(String::as_str),
 			Some("inode-directory")
 		);
+	}
+
+	#[test]
+	fn source_code_is_also_plain_text_and_a_file() {
+		let index = MimeIndex::new();
+		let lineage = index.lineage("text/x-csrc");
+		assert_eq!(lineage.first().map(String::as_str), Some("text/x-csrc"));
+		assert!(lineage.iter().any(|mime| mime == "text/plain"), "{lineage:?}");
+		assert_eq!(lineage.last().map(String::as_str), Some("application/octet-stream"));
 	}
 
 	#[test]

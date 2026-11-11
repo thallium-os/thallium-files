@@ -10,7 +10,7 @@ use std::{fs, path::Path, thread, time::{Duration, Instant}};
 use tempfile::TempDir;
 use thallium_actions::Command;
 use thallium_backend::{Backend, BackendConfig};
-use thallium_fs_core::{ConflictPolicy, FsErrorCode, Location, NativePath};
+use thallium_fs_core::{ConflictPolicy, Location, NativePath};
 use thallium_protocol::{TaskInfo, TaskKind, TaskStatus};
 
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -91,10 +91,7 @@ fn copy_lands_the_file_and_leaves_the_source() {
 }
 
 #[test]
-fn copy_rejects_a_directory_tree_because_the_mvp_copies_only_regular_files() {
-	// Recursive copy is not implemented, while recursive delete is. This test
-	// pins the current, asymmetric contract so the gap is visible rather than
-	// silent; it should be rewritten to assert success when recursion lands.
+fn copy_reproduces_a_directory_tree() {
 	let root = TempDir::new().expect("root");
 	let tree = root.path().join("tree");
 	let target = root.path().join("target");
@@ -112,10 +109,9 @@ fn copy_rejects_a_directory_tree_because_the_mvp_copies_only_regular_files() {
 		.expect("submit copy");
 
 	let task = settle_task(&mut backend, TaskKind::Copy);
-	assert_eq!(task.status, TaskStatus::Failed);
-	let issue = task.issue.expect("a refused copy must explain itself");
-	assert_eq!(issue.code, FsErrorCode::IsDirectory);
-	assert!(!target.join("tree").exists(), "a refused copy must not leave a partial tree");
+	assert_eq!(task.status, TaskStatus::Succeeded);
+	assert_eq!(fs::read(target.join("tree/nested/leaf.txt")).expect("copied leaf"), b"leaf");
+	assert!(tree.join("nested/leaf.txt").exists(), "copy must not consume the source");
 	backend.shutdown().expect("shutdown");
 }
 
@@ -331,7 +327,14 @@ fn trash_reaches_a_terminal_state_and_consumes_the_source_when_it_succeeds() {
 	let task = settle_task(&mut backend, TaskKind::Trash);
 	match task.status {
 		TaskStatus::Succeeded => {
-			assert!(!doomed.exists(), "a succeeding trash must consume the source")
+			assert!(!doomed.exists(), "a succeeding trash must consume the source");
+			// Leave the desktop trash as it was found.
+			let mine: Vec<_> = trash::os_limited::list()
+				.unwrap_or_default()
+				.into_iter()
+				.filter(|item| item.original_path() == doomed)
+				.collect();
+			let _ = trash::os_limited::purge_all(mine);
 		}
 		TaskStatus::Failed => assert!(task.issue.is_some(), "a failed trash must explain itself"),
 		other => panic!("unexpected terminal trash status: {other:?}"),
@@ -345,4 +348,138 @@ fn shutdown_is_idempotent() {
 	let mut backend = start(root.path());
 	backend.shutdown().expect("first shutdown");
 	backend.shutdown().expect("second shutdown must be a no-op");
+}
+
+#[test]
+fn rename_moves_the_entry_and_refuses_to_replace_another() {
+	let root = TempDir::new().expect("root");
+	fs::write(root.path().join("old.txt"), b"keep").expect("seed");
+	fs::write(root.path().join("taken.txt"), b"other").expect("seed other");
+
+	let mut backend = start(root.path());
+	backend
+		.submit(Command::Rename {
+			source: at(&root.path().join("old.txt")),
+			name:   NativePath::from(Path::new("taken.txt")),
+		})
+		.expect("submit clashing rename");
+	let task = settle_task(&mut backend, TaskKind::Rename);
+	assert_eq!(task.status, TaskStatus::Failed);
+	assert_eq!(fs::read(root.path().join("taken.txt")).expect("untouched"), b"other");
+	backend.submit(Command::DismissTask(task.id)).expect("dismiss");
+
+	backend
+		.submit(Command::Rename {
+			source: at(&root.path().join("old.txt")),
+			name:   NativePath::from(Path::new("new.txt")),
+		})
+		.expect("submit rename");
+	let task = settle_task(&mut backend, TaskKind::Rename);
+	assert_eq!(task.status, TaskStatus::Succeeded);
+	assert_eq!(fs::read(root.path().join("new.txt")).expect("renamed"), b"keep");
+	assert!(!root.path().join("old.txt").exists());
+	wait_for(&mut backend, "the listing to show the new name only", |backend| {
+		let names = names(backend);
+		(names.contains(&b"new.txt".to_vec()) && !names.contains(&b"old.txt".to_vec())).then_some(())
+	});
+	backend.shutdown().expect("shutdown");
+}
+
+#[test]
+fn create_folder_file_and_template_copy() {
+	let root = TempDir::new().expect("root");
+	let template = root.path().join("template.md");
+	fs::write(&template, b"# Title").expect("seed template");
+
+	let mut backend = start(root.path());
+	backend
+		.submit(Command::CreateFolder {
+			parent: at(root.path()),
+			name:   NativePath::from(Path::new("folder")),
+		})
+		.expect("submit folder");
+	assert_eq!(settle_task(&mut backend, TaskKind::CreateFolder).status, TaskStatus::Succeeded);
+	assert!(root.path().join("folder").is_dir());
+	wait_for(&mut backend, "the new folder in the listing", |backend| {
+		names(backend).contains(&b"folder".to_vec()).then_some(())
+	});
+
+	backend
+		.submit(Command::CreateFile {
+			parent:   at(root.path()),
+			name:     NativePath::from(Path::new("empty.txt")),
+			template: None,
+		})
+		.expect("submit empty file");
+	let task = settle_task(&mut backend, TaskKind::CreateFile);
+	assert_eq!(task.status, TaskStatus::Succeeded);
+	assert_eq!(fs::read(root.path().join("empty.txt")).expect("empty file"), b"");
+	backend.submit(Command::DismissTask(task.id)).expect("dismiss");
+
+	backend
+		.submit(Command::CreateFile {
+			parent:   at(&root.path().join("folder")),
+			name:     NativePath::from(Path::new("notes.md")),
+			template: Some(at(&template)),
+		})
+		.expect("submit templated file");
+	assert_eq!(settle_task(&mut backend, TaskKind::CreateFile).status, TaskStatus::Succeeded);
+	assert_eq!(fs::read(root.path().join("folder/notes.md")).expect("templated"), b"# Title");
+	backend.shutdown().expect("shutdown");
+}
+
+#[test]
+fn link_places_a_symlink_and_never_replaces_an_entry() {
+	let root = TempDir::new().expect("root");
+	let source = root.path().join("data.bin");
+	let target = root.path().join("target");
+	fs::write(&source, b"x").expect("seed");
+	fs::create_dir(&target).expect("seed target");
+	fs::write(target.join("data.bin"), b"existing").expect("seed clash");
+
+	let mut backend = start(root.path());
+	backend
+		.submit(Command::Link { sources: vec![at(&source)], destination: at(&target) })
+		.expect("submit link");
+	assert_eq!(settle_task(&mut backend, TaskKind::Link).status, TaskStatus::Succeeded);
+	assert_eq!(fs::read(target.join("data.bin")).expect("untouched"), b"existing");
+	assert_eq!(fs::read_link(target.join("data.bin.1")).expect("link"), source);
+	backend.shutdown().expect("shutdown");
+}
+
+#[test]
+fn names_with_a_slash_or_dots_are_refused() {
+	let root = TempDir::new().expect("root");
+	let mut backend = start(root.path());
+	for name in ["", ".", "..", "a/b"] {
+		let result = backend.submit(Command::CreateFolder {
+			parent: at(root.path()),
+			name:   NativePath::new(name.as_bytes().to_vec()),
+		});
+		assert!(result.is_err(), "{name:?} must be refused");
+	}
+	backend.shutdown().expect("shutdown");
+}
+
+#[test]
+fn a_folder_left_and_reentered_is_still_watched() {
+	let root = TempDir::new().expect("root");
+	fs::create_dir(root.path().join("inner")).expect("seed inner");
+
+	let mut backend = start(root.path());
+	wait_for(&mut backend, "the first listing", |backend| {
+		names(backend).contains(&b"inner".to_vec()).then_some(())
+	});
+	backend.submit(Command::Navigate(at(&root.path().join("inner")))).expect("enter");
+	wait_for(&mut backend, "the inner listing", |backend| names(backend).is_empty().then_some(()));
+	backend.submit(Command::Navigate(at(root.path()))).expect("leave");
+	wait_for(&mut backend, "the outer listing again", |backend| {
+		names(backend).contains(&b"inner".to_vec()).then_some(())
+	});
+
+	fs::write(root.path().join("late.txt"), b"x").expect("write after return");
+	wait_for(&mut backend, "the file made after returning", |backend| {
+		names(backend).contains(&b"late.txt".to_vec()).then_some(())
+	});
+	backend.shutdown().expect("shutdown");
 }

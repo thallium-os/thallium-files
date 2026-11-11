@@ -1,0 +1,21 @@
+[Desktop Entry]
+Type=Application
+Name=Thallium Files
+GenericName=File Manager
+Comment=Browse and manage your files
+Exec=thallium-file-manager %U
+Icon=system-file-manager
+Terminal=false
+StartupWMClass=io.thallium.Files
+Categories=System;FileTools;FileManager;Core;Qt;
+MimeType=inode/directory;x-scheme-handler/trash;
+Keywords=folder;files;explorer;browser;manager;
+Actions=new-window;trash;
+
+[Desktop Action new-window]
+Name=New Window
+Exec=thallium-file-manager
+
+[Desktop Action trash]
+Name=Open Trash
+Exec=thallium-file-manager trash:///
