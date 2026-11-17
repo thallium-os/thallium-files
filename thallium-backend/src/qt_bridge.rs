@@ -6,12 +6,12 @@ use std::{collections::BTreeSet, ffi::OsStr, os::unix::ffi::OsStrExt, path::Path
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::QString;
 use thallium_actions::Command;
-use thallium_fs_core::{ConflictPolicy, EntryId, Location, NativePath};
+use thallium_fs_core::{BackendId, ConflictPolicy, EntryId, Location, NativePath};
 use thallium_icons::{IconService, Thumbnail};
 use thallium_protocol::{BrowserStateSnapshot, DirectoryEntryRow, PathBytes, TaskInfo, TaskStatus};
 use thallium_rclone::{Remotes, authorize, config::{Provider, Session, Step}};
 
-use crate::{Backend, BackendConfig, BackendResult, recents::Recent, search::Search, storage::Measure};
+use crate::{Backend, BackendConfig, BackendResult, apps, archive, bookmarks, bulk_rename, drives, files_theme, properties, recents::Recent, search::Search, storage::Measure, trash_bin, uca, undo, uri};
 
 #[cxx_qt::bridge]
 pub mod ffi {
@@ -20,6 +20,32 @@ pub mod ffi {
 		type QString = cxx_qt_lib::QString;
 		include!("cxx-qt-lib/qlist.h");
 		type QList_i32 = cxx_qt_lib::QList<i32>;
+	}
+
+	#[namespace = "thallium"]
+	unsafe extern "C++" {
+		include!("clipboard.h");
+		#[cxx_name = "clipboardOfferFiles"]
+		fn clipboard_offer_files(uris: &QString, cut: bool);
+		#[cxx_name = "clipboardFiles"]
+		fn clipboard_files() -> QString;
+		#[cxx_name = "clipboardClear"]
+		fn clipboard_clear();
+	}
+
+	#[namespace = "thallium"]
+	unsafe extern "C++" {
+		include!("thallium-backend/filemanager1.h");
+		#[cxx_name = "serveFileManager"]
+		fn serve_file_manager(bridge: Pin<&mut BackendBridge>) -> bool;
+	}
+
+	#[namespace = "thallium"]
+	unsafe extern "C++" {
+		include!("thallium-backend/filechooser.h");
+		/// Answer xdg-desktop-portal's FileChooser for the whole desktop.
+		#[cxx_name = "servePortal"]
+		fn serve_portal() -> bool;
 	}
 
 	extern "RustQt" {
@@ -32,6 +58,22 @@ pub mod ffi {
 		#[qproperty(bool, loading, cxx_name = "loading")]
 		#[qproperty(bool, searching, cxx_name = "searching")]
 		type BackendBridge = super::BackendBridgeRust;
+
+		/// Another application asked, over FileManager1, to show `target`:
+		/// mode is "folder", "item" or "properties".
+		#[qsignal]
+		#[cxx_name = "externalRequest"]
+		fn external_request(self: Pin<&mut BackendBridge>, target: QString, mode: QString);
+
+		#[qinvokable]
+		#[rust_name = "serve_desktop"]
+		fn serveDesktop(self: Pin<&mut BackendBridge>) -> bool;
+
+		/// Hand the picked `file://` URIs, newline separated, to whoever ran
+		/// `--pick`.
+		#[qinvokable]
+		#[rust_name = "pick_done"]
+		fn pickDone(self: &BackendBridge, uris: &QString);
 
 		#[qinvokable]
 		fn poll(self: Pin<&mut Self>);
@@ -176,6 +218,226 @@ pub mod ffi {
 		#[qinvokable]
 		#[rust_name = "trash_selected"]
 		fn trashSelected(self: Pin<&mut Self>);
+		#[qinvokable]
+		fn reveal(self: Pin<&mut Self>, target: &QString);
+		#[qinvokable]
+		#[rust_name = "offer_apps"]
+		fn offerApps(self: Pin<&mut Self>, row: i32);
+		#[qinvokable]
+		#[rust_name = "offered_count"]
+		fn offeredCount(&self) -> i32;
+		#[qinvokable]
+		#[rust_name = "offered_name"]
+		fn offeredName(&self, index: i32) -> QString;
+		#[qinvokable]
+		#[rust_name = "offered_is_default"]
+		fn offeredIsDefault(&self, index: i32) -> bool;
+		#[qinvokable]
+		#[rust_name = "offered_type"]
+		fn offeredType(&self) -> QString;
+		#[qinvokable]
+		#[rust_name = "launch_offered"]
+		fn launchOffered(self: Pin<&mut Self>, index: i32, make_default: bool);
+		#[qinvokable]
+		#[rust_name = "offer_all_apps"]
+		fn offerAllApps(self: Pin<&mut Self>);
+		#[qinvokable]
+		#[rust_name = "open_terminal_here"]
+		fn openTerminalHere(self: Pin<&mut Self>);
+		#[qinvokable]
+		#[rust_name = "is_default_manager"]
+		fn isDefaultManager(&self) -> bool;
+		#[qinvokable]
+		#[rust_name = "make_default_manager"]
+		fn makeDefaultManager(self: Pin<&mut Self>);
+		#[qinvokable]
+		#[rust_name = "bulk_rule"]
+		fn bulkRule(
+			self: Pin<&mut Self>,
+			mode: &QString,
+			first: &QString,
+			second: &QString,
+			number: i32,
+			flag: bool,
+		);
+		#[qinvokable]
+		#[rust_name = "bulk_count"]
+		fn bulkCount(&self) -> i32;
+		#[qinvokable]
+		#[rust_name = "bulk_old"]
+		fn bulkOld(&self, index: i32) -> QString;
+		#[qinvokable]
+		#[rust_name = "bulk_new"]
+		fn bulkNew(&self, index: i32) -> QString;
+		#[qinvokable]
+		#[rust_name = "bulk_error"]
+		fn bulkError(&self) -> QString;
+		#[qinvokable]
+		#[rust_name = "bulk_apply"]
+		fn bulkApply(self: Pin<&mut Self>);
+		#[qinvokable]
+		fn undo(self: Pin<&mut Self>);
+		#[qinvokable]
+		#[rust_name = "can_undo"]
+		fn canUndo(&self) -> bool;
+		#[qinvokable]
+		#[rust_name = "offer_actions"]
+		fn offerActions(self: Pin<&mut Self>);
+		#[qinvokable]
+		#[rust_name = "action_count"]
+		fn actionCount(&self) -> i32;
+		#[qinvokable]
+		#[rust_name = "action_name"]
+		fn actionName(&self, index: i32) -> QString;
+		#[qinvokable]
+		#[rust_name = "run_action"]
+		fn runAction(self: Pin<&mut Self>, index: i32);
+		#[qinvokable]
+		#[rust_name = "edit_actions"]
+		fn editActions(self: Pin<&mut Self>);
+		#[qinvokable]
+		#[rust_name = "is_archive"]
+		fn isArchive(&self, row: i32) -> bool;
+		#[qinvokable]
+		#[rust_name = "extract_selected"]
+		fn extractSelected(self: Pin<&mut Self>);
+		#[qinvokable]
+		#[rust_name = "compress_selected"]
+		fn compressSelected(self: Pin<&mut Self>, name: &QString);
+		#[qinvokable]
+		#[rust_name = "archive_busy"]
+		fn archiveBusy(&self) -> bool;
+		#[qinvokable]
+		#[rust_name = "drive_count"]
+		fn driveCount(&self) -> i32;
+		#[qinvokable]
+		#[rust_name = "drive_label"]
+		fn driveLabel(&self, index: i32) -> QString;
+		#[qinvokable]
+		#[rust_name = "drive_mount"]
+		fn driveMount(&self, index: i32) -> QString;
+		#[qinvokable]
+		#[rust_name = "drive_ejectable"]
+		fn driveEjectable(&self, index: i32) -> bool;
+		#[qinvokable]
+		#[rust_name = "open_drive"]
+		fn openDrive(self: Pin<&mut Self>, index: i32);
+		#[qinvokable]
+		#[rust_name = "unmount_drive"]
+		fn unmountDrive(self: Pin<&mut Self>, index: i32);
+		#[qinvokable]
+		#[rust_name = "eject_drive"]
+		fn ejectDrive(self: Pin<&mut Self>, index: i32);
+		#[qinvokable]
+		#[rust_name = "drive_busy"]
+		fn driveBusy(&self) -> bool;
+		#[qinvokable]
+		#[rust_name = "bookmark_count"]
+		fn bookmarkCount(&self) -> i32;
+		#[qinvokable]
+		#[rust_name = "bookmark_label"]
+		fn bookmarkLabel(&self, index: i32) -> QString;
+		#[qinvokable]
+		#[rust_name = "bookmark_path"]
+		fn bookmarkPath(&self, index: i32) -> QString;
+		#[qinvokable]
+		#[rust_name = "add_bookmark"]
+		fn addBookmark(self: Pin<&mut Self>, path: &QString);
+		#[qinvokable]
+		#[rust_name = "remove_bookmark"]
+		fn removeBookmark(self: Pin<&mut Self>, index: i32);
+		#[qinvokable]
+		#[rust_name = "rename_bookmark"]
+		fn renameBookmark(self: Pin<&mut Self>, index: i32, label: &QString);
+		#[qinvokable]
+		fn inspect(self: Pin<&mut Self>, row: i32);
+		#[qinvokable]
+		#[rust_name = "prop_text"]
+		fn propText(&self, field: &QString) -> QString;
+		#[qinvokable]
+		#[rust_name = "prop_number"]
+		fn propNumber(&self, field: &QString) -> f64;
+		#[qinvokable]
+		#[rust_name = "set_mode"]
+		fn setMode(self: Pin<&mut Self>, mode: i32);
+		#[qinvokable]
+		#[rust_name = "refresh_trash"]
+		fn refreshTrash(self: Pin<&mut Self>);
+		#[qinvokable]
+		#[rust_name = "trash_count"]
+		fn trashCount(&self) -> i32;
+		#[qinvokable]
+		#[rust_name = "trash_name"]
+		fn trashName(&self, row: i32) -> QString;
+		#[qinvokable]
+		#[rust_name = "trash_origin"]
+		fn trashOrigin(&self, row: i32) -> QString;
+		#[qinvokable]
+		#[rust_name = "trash_deleted"]
+		fn trashDeleted(&self, row: i32) -> f64;
+		#[qinvokable]
+		#[rust_name = "trash_is_dir"]
+		fn trashIsDir(&self, row: i32) -> bool;
+		#[qinvokable]
+		#[rust_name = "theme_conf"]
+		fn themeConf(&self) -> QString;
+		#[qinvokable]
+		#[rust_name = "files_theme"]
+		fn filesTheme(&self) -> QString;
+		#[qinvokable]
+		#[rust_name = "save_files_theme"]
+		fn saveFilesTheme(self: Pin<&mut Self>, text: &QString);
+		#[qinvokable]
+		#[rust_name = "restore_trash"]
+		fn restoreTrash(self: Pin<&mut Self>, rows: &QList_i32);
+		#[qinvokable]
+		#[rust_name = "purge_trash"]
+		fn purgeTrash(self: Pin<&mut Self>, rows: &QList_i32);
+		#[qinvokable]
+		#[rust_name = "empty_trash"]
+		fn emptyTrash(self: Pin<&mut Self>);
+		#[qinvokable]
+		#[rust_name = "trash_busy"]
+		fn trashBusy(&self) -> bool;
+		#[qinvokable]
+		#[rust_name = "offer_selected"]
+		fn offerSelected(self: Pin<&mut Self>, cut: bool);
+		#[qinvokable]
+		#[rust_name = "selected_uris"]
+		fn selectedUris(&self) -> QString;
+		#[qinvokable]
+		#[rust_name = "drop_uris"]
+		fn dropUris(self: Pin<&mut Self>, uris: &QString, destination: &QString, action: i32);
+		#[qinvokable]
+		#[rust_name = "paste_files"]
+		fn pasteFiles(self: Pin<&mut Self>);
+		#[qinvokable]
+		#[rust_name = "can_paste"]
+		fn canPaste(&self) -> bool;
+		#[qinvokable]
+		#[rust_name = "rename_row"]
+		fn renameRow(self: Pin<&mut Self>, row: i32, name: &QString);
+		#[qinvokable]
+		#[rust_name = "create_folder"]
+		fn createFolder(self: Pin<&mut Self>, name: &QString);
+		#[qinvokable]
+		#[rust_name = "create_file"]
+		fn createFile(self: Pin<&mut Self>, name: &QString, source: &QString);
+		#[qinvokable]
+		#[rust_name = "link_selected"]
+		fn linkSelected(self: Pin<&mut Self>, destination: &QString);
+		#[qinvokable]
+		#[rust_name = "free_name"]
+		fn freeName(&self, base: &QString) -> QString;
+		#[qinvokable]
+		#[rust_name = "template_count"]
+		fn templateCount(&self) -> i32;
+		#[qinvokable]
+		#[rust_name = "template_name"]
+		fn templateName(&self, row: i32) -> QString;
+		#[qinvokable]
+		#[rust_name = "template_path"]
+		fn templatePath(&self, row: i32) -> QString;
 
 		#[qinvokable]
 		#[rust_name = "remotes_configurable"]
@@ -299,7 +561,36 @@ pub struct BackendBridgeRust {
 	/// The directory `measure` was last started for, so navigating restarts it
 	/// and a redraw does not.
 	measured:       String,
+	/// A name to select once the folder being opened has listed it.
+	revealing:      Option<Vec<u8>>,
+	/// The trash as last listed, most recently deleted first.
+	trash:          Vec<trash::TrashItem>,
+	/// A purge still running, collected on a later poll.
+	purge:          Option<trash_bin::Purge>,
+	/// The bulk rename being prepared: old names, new names (or why not).
+	bulk:           (Vec<String>, Result<Vec<String>, String>),
+	/// What Ctrl+Z can take back, newest last.
+	history:        undo::History,
+	/// Custom actions that apply to the selection, read when its menu opens.
+	actions:        Vec<uca::Action>,
+	/// Extractions and compressions still running.
+	archive_jobs:   Vec<archive::Job>,
+	/// Mountable drives as last listed, and a mount, unmount or eject still
+	/// running (with whether to open the drive once it is mounted).
+	drives:         Vec<drives::Drive>,
+	drive_action:   Option<(drives::Pending, bool)>,
+	/// The entry the Properties sheet describes, its type, and the count of
+	/// what it holds when it is a folder.
+	inspected:      Option<properties::Properties>,
+	inspected_type: String,
+	inspect_size:   Measure,
+	/// Applications offered for the selection's type, best first, and the type.
+	offered:        Vec<apps::App>,
+	offered_type:   String,
 }
+
+/// The desktop file this application installs.
+const DESKTOP_ID: &str = "io.thallium.Files.desktop";
 
 /// Polls between full reconciles, at the frontend's 100ms poll interval.
 ///
@@ -345,6 +636,20 @@ impl Default for BackendBridgeRust {
 					recents: Vec::new(),
 					measure: Measure::new(),
 					measured: String::new(),
+					revealing: None,
+					trash: Vec::new(),
+					purge: None,
+					offered: Vec::new(),
+					inspected: None,
+					drives: drives::list(),
+					archive_jobs: Vec::new(),
+					actions: Vec::new(),
+					history: undo::History::default(),
+					bulk: (Vec::new(), Ok(Vec::new())),
+					drive_action: None,
+					inspected_type: String::new(),
+					inspect_size: Measure::new(),
+					offered_type: String::new(),
 				}
 			}
 			Err(error) => Self {
@@ -366,6 +671,20 @@ impl Default for BackendBridgeRust {
 				recents:        Vec::new(),
 				measure:        Measure::new(),
 				measured:       String::new(),
+				revealing:      None,
+				trash:          Vec::new(),
+				purge:          None,
+				offered:        Vec::new(),
+				inspected:      None,
+				drives:         Vec::new(),
+				archive_jobs:   Vec::new(),
+				actions:        Vec::new(),
+				history:        undo::History::default(),
+				bulk:           (Vec::new(), Ok(Vec::new())),
+				drive_action:   None,
+				inspected_type: String::new(),
+				inspect_size:   Measure::new(),
+				offered_type:   String::new(),
 			},
 		}
 	}
@@ -380,6 +699,7 @@ impl ffi::BackendBridge {
 			}
 		}
 		self.as_mut().carry_consent();
+		self.as_mut().collect_purge();
 		// A finished thumbnail changes what the view should draw without
 		// changing the snapshot, so it needs a revision of its own.
 		let thumbnails_arrived = self.rust().icons.poll_thumbnails();
@@ -388,7 +708,7 @@ impl ffi::BackendBridge {
 
 		// Navigating starts a new count of what the directory holds.
 		self.as_mut().measure_folder();
-		let counting = self.rust().measure.walking();
+		let counting = self.rust().measure.walking() || self.rust().inspect_size.walking();
 
 		// A search publishes as it walks, so the view is told whenever results
 		// have arrived and again when the walk stops.
@@ -407,6 +727,11 @@ impl ffi::BackendBridge {
 		let ticks = self.rust().idle_ticks.saturating_add(1);
 		let reconcile = ticks >= RECONCILE_TICKS;
 		self.as_mut().rust_mut().idle_ticks = if reconcile { 0 } else { ticks };
+		if reconcile {
+			self.as_mut().refresh_drives();
+		}
+		self.as_mut().collect_drive_action();
+		self.as_mut().collect_archive_jobs();
 		if moved || settled || reconcile {
 			self.as_mut().reload();
 		}
@@ -419,6 +744,668 @@ impl ffi::BackendBridge {
 	pub fn navigate(mut self: Pin<&mut Self>, path: &QString) {
 		let location = self.as_mut().location(path);
 		self.submit_detached(Command::Navigate(location));
+	}
+
+	/// Open a folder, or the folder holding a file with that file selected.
+	/// Takes a path or a `file://` URI, as a command line or another
+	/// application hands them over.
+	pub fn reveal(mut self: Pin<&mut Self>, target: &QString) {
+		let text = String::from(target);
+		let path = uri::file_path(&text).unwrap_or_else(|| text.into_bytes());
+		let path = PathBuf::from(OsStr::from_bytes(&path));
+		if path.is_dir() {
+			self.as_mut().rust_mut().revealing = None;
+			self.navigate(&path.to_string_lossy().as_ref().into());
+			return;
+		}
+		let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else { return };
+		self.as_mut().rust_mut().revealing = Some(name.as_bytes().to_vec());
+		let parent = Location::local(NativePath::from(parent));
+		self.submit_detached(Command::Navigate(parent));
+	}
+
+	pub fn is_default_manager(&self) -> bool {
+		apps::default_for("inode/directory").is_some_and(|id| id == DESKTOP_ID)
+	}
+
+	/// Make this the user's file manager for folders and the trash.
+	pub fn make_default_manager(mut self: Pin<&mut Self>) {
+		for mime in ["inode/directory", "x-scheme-handler/trash"] {
+			if let Err(error) = apps::set_default(mime, DESKTOP_ID) {
+				self.as_mut().set_last_error(error.into());
+				return;
+			}
+		}
+	}
+
+	/// Set the bulk rename rule and work out the new names for the selection.
+	/// `mode` is replace, number, affix, lower, upper or title; `first` and
+	/// `second` are its texts (find and replace, pattern, prefix and suffix),
+	/// `number` the first number and `flag` whether to ignore case.
+	pub fn bulk_rule(
+		mut self: Pin<&mut Self>,
+		mode: &QString,
+		first: &QString,
+		second: &QString,
+		number: i32,
+		flag: bool,
+	) {
+		let (first, second) = (String::from(first), String::from(second));
+		let rule = match String::from(mode).as_str() {
+			"replace" => {
+				bulk_rename::Rule::Replace { find: first, with: second, ignore_case: flag }
+			}
+			"number" => {
+				bulk_rename::Rule::Number { pattern: first, start: u32::try_from(number).unwrap_or(1) }
+			}
+			"affix" => bulk_rename::Rule::Affix { prefix: first, suffix: second },
+			"upper" => bulk_rename::Rule::Case(bulk_rename::Case::Upper),
+			"title" => bulk_rename::Rule::Case(bulk_rename::Case::Title),
+			_ => bulk_rename::Rule::Case(bulk_rename::Case::Lower),
+		};
+		let names: Vec<String> = self
+			.selected_paths()
+			.iter()
+			.filter_map(|path| Some(path.file_name()?.to_string_lossy().into_owned()))
+			.collect();
+		let taken = self
+			.rust()
+			.snapshot
+			.directory
+			.entries
+			.iter()
+			.map(|entry| String::from_utf8_lossy(&entry.name.bytes).into_owned())
+			.collect();
+		let renamed = bulk_rename::preview(&names, &rule, &taken);
+		self.as_mut().rust_mut().bulk = (names, renamed);
+	}
+
+	pub fn bulk_count(&self) -> i32 { count(self.rust().bulk.0.len()) }
+
+	pub fn bulk_old(&self, index: i32) -> QString {
+		usize::try_from(index)
+			.ok()
+			.and_then(|index| self.rust().bulk.0.get(index))
+			.map_or_else(QString::default, |name| name.as_str().into())
+	}
+
+	pub fn bulk_new(&self, index: i32) -> QString {
+		let Ok(renamed) = &self.rust().bulk.1 else { return QString::default() };
+		usize::try_from(index)
+			.ok()
+			.and_then(|index| renamed.get(index))
+			.map_or_else(QString::default, |name| name.as_str().into())
+	}
+
+	pub fn bulk_error(&self) -> QString {
+		self.rust().bulk.1.as_ref().err().map_or_else(QString::default, |error| error.as_str().into())
+	}
+
+	/// Rename the selection to the previewed names.
+	pub fn bulk_apply(mut self: Pin<&mut Self>) {
+		let (names, Ok(renamed)) = self.rust().bulk.clone() else { return };
+		let Some(folder) =
+			self.selected_paths().first().and_then(|first| first.parent()).map(PathBuf::from)
+		else {
+			return;
+		};
+		let pairs: Vec<(String, String)> = names.into_iter().zip(renamed).collect();
+		match bulk_rename::apply_all(&folder, &pairs) {
+			Ok(done) if !done.is_empty() => {
+				self.as_mut().rust_mut().history.record(undo::Step::RenamedMany(done))
+			}
+			Ok(_) => {}
+			Err(error) => self.as_mut().set_last_error(error.into()),
+		}
+		self.refresh();
+	}
+
+	/// Take back the last recorded operation.
+	pub fn undo(mut self: Pin<&mut Self>) {
+		let Some(step) = self.as_mut().rust_mut().history.pop() else { return };
+		match undo::undo(step) {
+			undo::Undo::Run(commands) => {
+				for command in commands {
+					self.as_mut().submit_recorded(command, false);
+				}
+			}
+			undo::Undo::RenameBack(pairs) => {
+				let Some(folder) = pairs.first().and_then(|(from, _)| from.parent()).map(PathBuf::from)
+				else {
+					return;
+				};
+				let back: Vec<(String, String)> = pairs
+					.iter()
+					.filter_map(|(from, to)| {
+						Some((
+							to.file_name()?.to_string_lossy().into_owned(),
+							from.file_name()?.to_string_lossy().into_owned(),
+						))
+					})
+					.collect();
+				if let Err(error) = bulk_rename::apply_all(&folder, &back) {
+					self.as_mut().set_last_error(error.into());
+				}
+			}
+			undo::Undo::Restore { originals, since } => {
+				let items: Vec<trash::TrashItem> = trash_bin::list()
+					.unwrap_or_default()
+					.into_iter()
+					.filter(|item| item.time_deleted >= since && originals.contains(&item.original_path()))
+					.collect();
+				if let Err(error) = trash_bin::restore(items) {
+					self.as_mut().set_last_error(error.into());
+				}
+			}
+		}
+	}
+
+	pub fn can_undo(&self) -> bool { !self.rust().history.is_empty() }
+
+	/// Collect the custom actions that apply to every selected entry.
+	pub fn offer_actions(mut self: Pin<&mut Self>) {
+		let paths = self.selected_paths();
+		let kinds: Vec<(bool, String)> = paths
+			.iter()
+			.map(|path| {
+				let directory = path.is_dir();
+				(directory, self.rust().icons.mime_of(path, directory))
+			})
+			.collect();
+		let targets: Vec<uca::Target<'_>> = paths
+			.iter()
+			.zip(&kinds)
+			.map(|(path, (directory, mime))| uca::Target { path, directory: *directory, mime })
+			.collect();
+		let applying = uca::read().into_iter().filter(|action| action.applies(&targets)).collect();
+		self.as_mut().rust_mut().actions = applying;
+	}
+
+	pub fn action_count(&self) -> i32 { count(self.rust().actions.len()) }
+
+	pub fn action_name(&self, index: i32) -> QString {
+		usize::try_from(index)
+			.ok()
+			.and_then(|index| self.rust().actions.get(index))
+			.map_or_else(QString::default, |action| action.name.as_str().into())
+	}
+
+	pub fn run_action(mut self: Pin<&mut Self>, index: i32) {
+		let Some(action) =
+			usize::try_from(index).ok().and_then(|index| self.rust().actions.get(index)).cloned()
+		else {
+			return;
+		};
+		let paths = self.selected_paths();
+		let folder = self
+			.current()
+			.map(|here| PathBuf::from(OsStr::from_bytes(here.path.as_bytes())))
+			.unwrap_or_default();
+		if let Err(error) = action.run(&paths, &folder) {
+			self.as_mut().set_last_error(error.into());
+		}
+	}
+
+	/// Open the actions file in the default editor, creating it if needed.
+	pub fn edit_actions(mut self: Pin<&mut Self>) {
+		match uca::ensure_file() {
+			Ok(path) => self.open_path(&path.to_string_lossy().as_ref().into()),
+			Err(error) => self.as_mut().set_last_error(error.to_string().into()),
+		}
+	}
+
+	pub fn is_archive(&self, row: i32) -> bool {
+		self.row(row).is_some_and(|entry| {
+			!entry.is_directory()
+				&& archive::suffix(&String::from_utf8_lossy(&entry.name.bytes)).is_some()
+		})
+	}
+
+	/// Extract every selected archive beside itself.
+	pub fn extract_selected(mut self: Pin<&mut Self>) {
+		for path in self.selected_paths() {
+			let is_archive =
+				path.file_name().is_some_and(|name| archive::suffix(&name.to_string_lossy()).is_some());
+			if is_archive {
+				self.as_mut().rust_mut().archive_jobs.push(archive::extract(path));
+			}
+		}
+	}
+
+	/// Pack the selection into `name` in the open folder; the suffix picks
+	/// the format.
+	pub fn compress_selected(mut self: Pin<&mut Self>, name: &QString) {
+		let sources = self.selected_paths();
+		let Some(folder) = sources.first().and_then(|first| first.parent()).map(PathBuf::from) else {
+			return;
+		};
+		let output = folder.join(String::from(name));
+		self.as_mut().rust_mut().archive_jobs.push(archive::compress(sources, output));
+	}
+
+	pub fn archive_busy(&self) -> bool { !self.rust().archive_jobs.is_empty() }
+
+	fn collect_archive_jobs(mut self: Pin<&mut Self>) {
+		if self.rust().archive_jobs.is_empty() {
+			return;
+		}
+		let mut errors = Vec::new();
+		let mut made = Vec::new();
+		self.as_mut().rust_mut().archive_jobs.retain(|job| match job.take() {
+			None => true,
+			Some(Ok(path)) => {
+				made.push(path);
+				false
+			}
+			Some(Err(error)) => {
+				errors.push(error);
+				false
+			}
+		});
+		if !made.is_empty() {
+			self.as_mut().rust_mut().history.record(undo::Step::Made(made));
+		}
+		if let Some(error) = errors.pop() {
+			self.as_mut().set_last_error(error.into());
+		}
+		let revision = self.model_revision().saturating_add(1);
+		self.set_model_revision(revision);
+	}
+
+	/// The selected entries as local paths; remote entries are left out.
+	fn selected_paths(&self) -> Vec<PathBuf> {
+		self
+			.selected_locations()
+			.iter()
+			.filter(|location| location.backend == BackendId::LOCAL)
+			.map(|location| PathBuf::from(OsStr::from_bytes(location.path.as_bytes())))
+			.collect()
+	}
+
+	/// Offer this window as the desktop's file manager over D-Bus.
+	pub fn serve_desktop(self: Pin<&mut Self>) -> bool { ffi::serve_file_manager(self) }
+
+	pub fn pick_done(&self, uris: &QString) {
+		use std::io::Write;
+		let mut out = std::io::stdout().lock();
+		let _ = writeln!(out, "{uris}");
+		let _ = out.flush();
+	}
+
+	pub fn drive_count(&self) -> i32 { count(self.rust().drives.len()) }
+
+	pub fn drive_label(&self, index: i32) -> QString {
+		self.drive(index).map_or_else(QString::default, |drive| drive.label.as_str().into())
+	}
+
+	/// Where the drive is mounted, or an empty string.
+	pub fn drive_mount(&self, index: i32) -> QString {
+		self
+			.drive(index)
+			.and_then(|drive| drive.mount.as_ref())
+			.map_or_else(QString::default, |mount| mount.to_string_lossy().as_ref().into())
+	}
+
+	pub fn drive_ejectable(&self, index: i32) -> bool {
+		self.drive(index).is_some_and(|drive| drive.ejectable)
+	}
+
+	/// Open a drive, mounting it first when it is not mounted yet.
+	pub fn open_drive(mut self: Pin<&mut Self>, index: i32) {
+		let Some(drive) = self.drive(index).cloned() else { return };
+		if let Some(mount) = drive.mount {
+			self.navigate(&mount.to_string_lossy().as_ref().into());
+			return;
+		}
+		if self.rust().drive_action.is_none() {
+			self.as_mut().rust_mut().drive_action = Some((drives::mount(&drive), true));
+		}
+	}
+
+	pub fn unmount_drive(mut self: Pin<&mut Self>, index: i32) {
+		let Some(drive) = self.drive(index).cloned() else { return };
+		if self.rust().drive_action.is_none() {
+			self.as_mut().leave_drive(&drive);
+			self.as_mut().rust_mut().drive_action = Some((drives::unmount(&drive), false));
+		}
+	}
+
+	pub fn eject_drive(mut self: Pin<&mut Self>, index: i32) {
+		let Some(drive) = self.drive(index).cloned() else { return };
+		if self.rust().drive_action.is_none() {
+			self.as_mut().leave_drive(&drive);
+			self.as_mut().rust_mut().drive_action = Some((drives::eject(&drive), false));
+		}
+	}
+
+	pub fn drive_busy(&self) -> bool { self.rust().drive_action.is_some() }
+
+	fn drive(&self, index: i32) -> Option<&drives::Drive> {
+		usize::try_from(index).ok().and_then(|index| self.rust().drives.get(index))
+	}
+
+	/// Step out of a drive about to be unmounted, so this window is not what
+	/// keeps it busy.
+	fn leave_drive(self: Pin<&mut Self>, drive: &drives::Drive) {
+		let Some(mount) = drive.mount.as_ref() else { return };
+		let inside = self.current().is_some_and(|here| {
+			PathBuf::from(OsStr::from_bytes(here.path.as_bytes())).starts_with(mount)
+		});
+		if inside {
+			let home = self.home_path().clone();
+			self.navigate(&home);
+		}
+	}
+
+	fn refresh_drives(mut self: Pin<&mut Self>) {
+		let listed = drives::list();
+		if listed != self.rust().drives {
+			self.as_mut().rust_mut().drives = listed;
+			let revision = self.model_revision().saturating_add(1);
+			self.set_model_revision(revision);
+		}
+	}
+
+	fn collect_drive_action(mut self: Pin<&mut Self>) {
+		let Some(outcome) = self.rust().drive_action.as_ref().and_then(|(pending, _)| pending.take())
+		else {
+			return;
+		};
+		let open = self.rust().drive_action.as_ref().is_some_and(|(_, open)| *open);
+		self.as_mut().rust_mut().drive_action = None;
+		match outcome {
+			Ok(Some(mount)) if open => self.as_mut().navigate(&mount.to_string_lossy().as_ref().into()),
+			Ok(_) => {}
+			Err(error) => self.as_mut().set_last_error(error.into()),
+		}
+		self.refresh_drives();
+	}
+
+	pub fn bookmark_count(&self) -> i32 { count(bookmarks::read().len()) }
+
+	pub fn bookmark_label(&self, index: i32) -> QString {
+		bookmark(index).map_or_else(QString::default, |mark| mark.label.as_str().into())
+	}
+
+	pub fn bookmark_path(&self, index: i32) -> QString {
+		bookmark(index)
+			.map_or_else(QString::default, |mark| String::from_utf8_lossy(&mark.path).as_ref().into())
+	}
+
+	pub fn add_bookmark(self: Pin<&mut Self>, path: &QString) {
+		let result = bookmarks::add(String::from(path).as_bytes());
+		self.after_bookmarks(result);
+	}
+
+	pub fn remove_bookmark(self: Pin<&mut Self>, index: i32) {
+		let Some(mark) = bookmark(index) else { return };
+		self.after_bookmarks(bookmarks::remove(&mark.path));
+	}
+
+	pub fn rename_bookmark(self: Pin<&mut Self>, index: i32, label: &QString) {
+		let Some(mark) = bookmark(index) else { return };
+		self.after_bookmarks(bookmarks::rename(&mark.path, &String::from(label)));
+	}
+
+	fn after_bookmarks(mut self: Pin<&mut Self>, result: Result<(), String>) {
+		if let Err(error) = result {
+			self.as_mut().set_last_error(error.into());
+		}
+		let revision = self.model_revision().saturating_add(1);
+		self.set_model_revision(revision);
+	}
+
+	/// Describe `row` for the Properties sheet; a folder's contents are
+	/// counted in the background.
+	pub fn inspect(mut self: Pin<&mut Self>, row: i32) {
+		let Some(entry) = self.row(row) else { return };
+		let path = PathBuf::from(OsStr::from_bytes(entry.location.to_location().path.as_bytes()));
+		match properties::read(&path) {
+			Ok(found) => {
+				let mime = self.rust().icons.mime_of(&path, found.directory);
+				if found.directory {
+					self.rust().inspect_size.start(path);
+				}
+				self.as_mut().rust_mut().inspected = Some(found);
+				self.as_mut().rust_mut().inspected_type = mime;
+			}
+			Err(error) => {
+				self.as_mut().rust_mut().inspected = None;
+				self.as_mut().set_last_error(error.to_string().into());
+			}
+		}
+	}
+
+	/// A text field of the inspected entry: name, path, folder, type, link,
+	/// owner, group, or mode (as `rwxr-xr-x`).
+	pub fn prop_text(&self, field: &QString) -> QString {
+		let Some(found) = self.rust().inspected.as_ref() else { return QString::default() };
+		let lossy = |path: &std::path::Path| path.to_string_lossy().into_owned();
+		let text = match String::from(field).as_str() {
+			"name" => {
+				found.path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()
+			}
+			"path" => lossy(&found.path),
+			"folder" => found.path.parent().map(lossy).unwrap_or_default(),
+			"type" => self.rust().inspected_type.clone(),
+			"link" => found.link_target.as_deref().map(lossy).unwrap_or_default(),
+			"owner" => found.owner.clone(),
+			"group" => found.group.clone(),
+			"mode" => properties::mode_text(found.mode),
+			_ => String::new(),
+		};
+		text.as_str().into()
+	}
+
+	/// A numeric field of the inspected entry: size (a folder's measured
+	/// contents), files, measuring (1 while counting), mode, owned, directory,
+	/// or a time in seconds: modified, accessed, changed, created.
+	pub fn prop_number(&self, field: &QString) -> f64 {
+		let Some(found) = self.rust().inspected.as_ref() else { return 0.0 };
+		let flag = |value: bool| if value { 1.0 } else { 0.0 };
+		let size = &self.rust().inspect_size;
+		match String::from(field).as_str() {
+			"size" if found.directory => size.bytes() as f64,
+			"size" => found.size as f64,
+			"files" => size.files() as f64,
+			"measuring" => flag(found.directory && size.walking()),
+			"mode" => f64::from(found.mode),
+			"owned" => flag(found.owned),
+			"directory" => flag(found.directory),
+			"modified" => found.modified as f64,
+			"accessed" => found.accessed as f64,
+			"changed" => found.changed as f64,
+			"created" => found.created.unwrap_or(0) as f64,
+			_ => 0.0,
+		}
+	}
+
+	pub fn set_mode(mut self: Pin<&mut Self>, mode: i32) {
+		let Some(path) = self.rust().inspected.as_ref().map(|found| found.path.clone()) else { return };
+		let Ok(mode) = u32::try_from(mode) else { return };
+		if let Err(error) = properties::set_mode(&path, mode) {
+			self.as_mut().set_last_error(error.to_string().into());
+		}
+		let reread = properties::read(&path).ok();
+		self.as_mut().rust_mut().inspected = reread;
+		let revision = self.model_revision().saturating_add(1);
+		self.set_model_revision(revision);
+	}
+
+	/// Collect the applications that open `row`'s type, for "Open with".
+	pub fn offer_apps(mut self: Pin<&mut Self>, row: i32) {
+		let Some(entry) = self.row(row) else { return };
+		let path = PathBuf::from(OsStr::from_bytes(entry.location.to_location().path.as_bytes()));
+		let mime = self.rust().icons.mime_of(&path, entry.is_directory());
+		let lineage = self.rust().icons.mime_lineage(&mime);
+		let offered = apps::for_types(&apps::installed(), &lineage);
+		self.as_mut().rust_mut().offered = offered;
+		self.as_mut().rust_mut().offered_type = mime;
+	}
+
+	/// Offer every installed application, for "Other application…". The
+	/// type stays the one the last [`Self::offer_apps`] read.
+	pub fn offer_all_apps(mut self: Pin<&mut Self>) {
+		let all = apps::installed().into_iter().filter(|app| !app.hidden).collect();
+		self.as_mut().rust_mut().offered = all;
+	}
+
+	pub fn offered_count(&self) -> i32 { count(self.rust().offered.len()) }
+
+	pub fn offered_name(&self, index: i32) -> QString {
+		self.offered(index).map_or_else(QString::default, |app| app.name.as_str().into())
+	}
+
+	pub fn offered_is_default(&self, index: i32) -> bool {
+		let Some(app) = self.offered(index) else { return false };
+		apps::default_for(&self.rust().offered_type).is_some_and(|id| id == app.id)
+	}
+
+	pub fn offered_type(&self) -> QString { self.rust().offered_type.as_str().into() }
+
+	/// Open the selected files with an offered application, optionally making
+	/// it the default for their type first.
+	pub fn launch_offered(mut self: Pin<&mut Self>, index: i32, make_default: bool) {
+		let Some(app) = self.offered(index).cloned() else { return };
+		if make_default && let Err(error) = apps::set_default(&self.rust().offered_type, &app.id) {
+			self.as_mut().set_last_error(error.into());
+			return;
+		}
+		let files: Vec<PathBuf> = self
+			.selected_locations()
+			.iter()
+			.filter(|location| location.backend == BackendId::LOCAL)
+			.map(|location| PathBuf::from(OsStr::from_bytes(location.path.as_bytes())))
+			.collect();
+		if let Err(error) = apps::launch(&app, &files) {
+			self.as_mut().set_last_error(error.into());
+		}
+	}
+
+	pub fn open_terminal_here(mut self: Pin<&mut Self>) {
+		let Some(folder) = self.current().filter(|location| location.backend == BackendId::LOCAL)
+		else {
+			return;
+		};
+		let folder = PathBuf::from(OsStr::from_bytes(folder.path.as_bytes()));
+		if let Err(error) = apps::open_terminal(&folder) {
+			self.as_mut().set_last_error(error.into());
+		}
+	}
+
+	fn offered(&self, index: i32) -> Option<&apps::App> {
+		usize::try_from(index).ok().and_then(|index| self.rust().offered.get(index))
+	}
+
+	pub fn refresh_trash(mut self: Pin<&mut Self>) {
+		match trash_bin::list() {
+			Ok(items) => self.as_mut().rust_mut().trash = items,
+			Err(error) => self.as_mut().set_last_error(error.into()),
+		}
+		let revision = self.model_revision().saturating_add(1);
+		self.set_model_revision(revision);
+	}
+
+	pub fn trash_count(&self) -> i32 { count(self.rust().trash.len()) }
+
+	pub fn trash_name(&self, row: i32) -> QString {
+		self
+			.trashed(row)
+			.map_or_else(QString::default, |item| item.name.to_string_lossy().as_ref().into())
+	}
+
+	pub fn trash_origin(&self, row: i32) -> QString {
+		self
+			.trashed(row)
+			.map_or_else(QString::default, |item| item.original_parent.to_string_lossy().as_ref().into())
+	}
+
+	/// When the item was trashed, in seconds since the epoch.
+	pub fn trash_deleted(&self, row: i32) -> f64 {
+		self.trashed(row).map_or(0.0, |item| item.time_deleted as f64)
+	}
+
+	/// Whether the trashed item is a folder. The freedesktop id is the
+	/// `.trashinfo` path; the item itself sits under `files/` beside `info/`.
+	pub fn trash_is_dir(&self, row: i32) -> bool {
+		self.trashed(row).is_some_and(|item| {
+			let info = std::path::Path::new(&item.id);
+			match (info.parent().and_then(std::path::Path::parent), info.file_stem()) {
+				(Some(bin), Some(stem)) => bin.join("files").join(stem).is_dir(),
+				_ => false,
+			}
+		})
+	}
+
+	/// The shared Thallium theme choice, `~/.config/thallium/theme.conf`, as
+	/// text; empty when nothing has been picked yet. The shell and Settings
+	/// read and write the same file under `$HOME`, not `$XDG_CONFIG_HOME`.
+	pub fn theme_conf(&self) -> QString {
+		std::env::var_os("HOME")
+			.and_then(|home| {
+				std::fs::read_to_string(PathBuf::from(home).join(".config/thallium/theme.conf")).ok()
+			})
+			.unwrap_or_default()
+			.as_str()
+			.into()
+	}
+
+	/// This app's own theme choice, as the JSON the Theme sheet wrote.
+	pub fn files_theme(&self) -> QString { files_theme::read().as_str().into() }
+
+	pub fn save_files_theme(mut self: Pin<&mut Self>, text: &QString) {
+		if let Err(error) = files_theme::write(&String::from(text)) {
+			self.as_mut().set_last_error(format!("Could not save the theme: {error}").into());
+		}
+	}
+
+	pub fn restore_trash(mut self: Pin<&mut Self>, rows: &ffi::QList_i32) {
+		let items = self.trashed_rows(rows);
+		if let Err(error) = trash_bin::restore(items) {
+			self.as_mut().set_last_error(error.into());
+		}
+		self.refresh_trash();
+	}
+
+	pub fn purge_trash(mut self: Pin<&mut Self>, rows: &ffi::QList_i32) {
+		let items = self.trashed_rows(rows);
+		self.as_mut().begin_purge(items);
+	}
+
+	pub fn empty_trash(mut self: Pin<&mut Self>) {
+		let items = self.rust().trash.clone();
+		self.as_mut().begin_purge(items);
+	}
+
+	pub fn trash_busy(&self) -> bool { self.rust().purge.is_some() }
+
+	fn begin_purge(mut self: Pin<&mut Self>, items: Vec<trash::TrashItem>) {
+		if items.is_empty() || self.rust().purge.is_some() {
+			return;
+		}
+		self.as_mut().rust_mut().purge = Some(trash_bin::Purge::start(items));
+		let revision = self.model_revision().saturating_add(1);
+		self.set_model_revision(revision);
+	}
+
+	/// Pick up a finished purge and show the trash as it now is.
+	fn collect_purge(mut self: Pin<&mut Self>) {
+		let Some(outcome) = self.rust().purge.as_ref().and_then(trash_bin::Purge::take) else {
+			return;
+		};
+		self.as_mut().rust_mut().purge = None;
+		if let Err(error) = outcome {
+			self.as_mut().set_last_error(error.into());
+		}
+		self.refresh_trash();
+	}
+
+	fn trashed(&self, row: i32) -> Option<&trash::TrashItem> {
+		usize::try_from(row).ok().and_then(|row| self.rust().trash.get(row))
+	}
+
+	fn trashed_rows(&self, rows: &ffi::QList_i32) -> Vec<trash::TrashItem> {
+		rows.iter().filter_map(|row| self.trashed(*row).cloned()).collect()
 	}
 
 	pub fn navigate_row(self: Pin<&mut Self>, row: i32) {
@@ -552,6 +1539,138 @@ impl ffi::BackendBridge {
 		let sources = self.selected_locations();
 		let destination = self.as_mut().location(destination);
 		self.submit(Command::Move { sources, destination, conflict_policy: ConflictPolicy::Rename });
+	}
+
+	/// Put the selection on the system clipboard, for this window or any other
+	/// file manager to paste. Only local files have a URI others can read.
+	pub fn offer_selected(self: Pin<&mut Self>, cut: bool) {
+		let uris = self.selected_uris();
+		if !uris.is_empty() {
+			ffi::clipboard_offer_files(&uris, cut);
+		}
+	}
+
+	/// The selected local files as newline-separated `file://` URIs, which is
+	/// what a drag carries.
+	pub fn selected_uris(&self) -> QString {
+		let uris: Vec<String> = self
+			.selected_locations()
+			.iter()
+			.filter(|location| location.backend == BackendId::LOCAL)
+			.map(|location| uri::file_uri(location.path.as_bytes()))
+			.collect();
+		uris.join("\n").as_str().into()
+	}
+
+	/// Drop dragged URIs into `destination`. `action` is Qt's: 1 copy, 2
+	/// move, 4 link. A move between filesystems becomes a copy, as a plain
+	/// drag does in every desktop file manager.
+	pub fn drop_uris(mut self: Pin<&mut Self>, uris: &QString, destination: &QString, action: i32) {
+		let target = PathBuf::from(String::from(destination));
+		let sources: Vec<Location> = String::from(uris)
+			.lines()
+			.filter_map(uri::file_path)
+			.map(|path| Location::local(NativePath::new(path)))
+			.filter(|source| {
+				// Never into itself, and a move to where it already is does nothing.
+				let path = PathBuf::from(OsStr::from_bytes(source.path.as_bytes()));
+				path != target && !(action == 2 && path.parent() == Some(target.as_path()))
+			})
+			.collect();
+		if sources.is_empty() {
+			return;
+		}
+		let destination = Location::local(NativePath::from(target.as_path()));
+		let conflict_policy = ConflictPolicy::Rename;
+		let command = match action {
+			4 => Command::Link { sources, destination },
+			2 if same_device(&sources[0], &target) => {
+				Command::Move { sources, destination, conflict_policy }
+			}
+			_ => Command::Copy { sources, destination, conflict_policy },
+		};
+		self.as_mut().submit(command);
+	}
+
+	/// Copy or move what the clipboard holds into the open folder. A name
+	/// already taken gets a free one, as with any other copy.
+	pub fn paste_files(self: Pin<&mut Self>) {
+		let Some(destination) = self.current() else { return };
+		let Some((cut, sources)) = clipboard_sources() else { return };
+		let conflict_policy = ConflictPolicy::Rename;
+		if cut {
+			self.submit(Command::Move { sources, destination, conflict_policy });
+			ffi::clipboard_clear();
+		} else {
+			self.submit(Command::Copy { sources, destination, conflict_policy });
+		}
+	}
+
+	pub fn can_paste(&self) -> bool { clipboard_sources().is_some() }
+
+	pub fn rename_row(self: Pin<&mut Self>, row: i32, name: &QString) {
+		let Some(source) = self.row(row).map(|entry| entry.location.to_location()) else {
+			return;
+		};
+		let name = NativePath::new(String::from(name).into_bytes());
+		self.submit(Command::Rename { source, name });
+	}
+
+	pub fn create_folder(self: Pin<&mut Self>, name: &QString) {
+		let Some(parent) = self.current() else { return };
+		let name = NativePath::new(String::from(name).into_bytes());
+		self.submit(Command::CreateFolder { parent, name });
+	}
+
+	pub fn create_file(self: Pin<&mut Self>, name: &QString, source: &QString) {
+		let Some(parent) = self.current() else { return };
+		let name = NativePath::new(String::from(name).into_bytes());
+		let template = (!source.is_empty()).then(|| self.location(source));
+		self.submit(Command::CreateFile { parent, name, template });
+	}
+
+	pub fn link_selected(mut self: Pin<&mut Self>, destination: &QString) {
+		let sources = self.selected_locations();
+		let destination = self.as_mut().location(destination);
+		self.submit(Command::Link { sources, destination });
+	}
+
+	/// `base`, or `base 2`, `base 3`, ... whichever is not yet taken in the
+	/// open folder. An extension stays at the end: `Untitled 2.txt`.
+	pub fn free_name(&self, base: &QString) -> QString {
+		let base = String::from(base);
+		let taken: BTreeSet<&[u8]> = self
+			.rust()
+			.snapshot
+			.directory
+			.entries
+			.iter()
+			.map(|entry| entry.name.bytes.as_slice())
+			.collect();
+		let (stem, extension) = match base.rfind('.') {
+			Some(dot) if dot > 0 => base.split_at(dot),
+			_ => (base.as_str(), ""),
+		};
+		let mut candidate = base.clone();
+		for number in 2.. {
+			if !taken.contains(candidate.as_bytes()) {
+				break;
+			}
+			candidate = format!("{stem} {number}{extension}");
+		}
+		candidate.into()
+	}
+
+	pub fn template_count(&self) -> i32 { count(templates().len()) }
+
+	pub fn template_name(&self, row: i32) -> QString {
+		template(row).map_or_else(QString::default, |path| {
+			path.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned()).into()
+		})
+	}
+
+	pub fn template_path(&self, row: i32) -> QString {
+		template(row).map_or_else(QString::default, |path| path.to_string_lossy().as_ref().into())
 	}
 
 	pub fn delete_selected(self: Pin<&mut Self>) {
@@ -1046,7 +2165,12 @@ impl ffi::BackendBridge {
 		}
 	}
 
-	fn submit(mut self: Pin<&mut Self>, command: Command) {
+	fn submit(self: Pin<&mut Self>, command: Command) { self.submit_recorded(command, true); }
+
+	/// Submit `command`, remembering how to undo it unless it is itself an
+	/// undo.
+	fn submit_recorded(mut self: Pin<&mut Self>, command: Command, record: bool) {
+		let step = if record { undo::step_for(&command) } else { None };
 		let result = self
 			.as_mut()
 			.rust_mut()
@@ -1054,7 +2178,12 @@ impl ffi::BackendBridge {
 			.as_mut()
 			.map_or_else(|| Err(crate::BackendError::NotStarted), |backend| backend.submit(command));
 		match result {
-			Ok(()) => self.as_mut().set_last_error(QString::default()),
+			Ok(()) => {
+				if let Some(step) = step {
+					self.as_mut().rust_mut().history.record(step);
+				}
+				self.as_mut().set_last_error(QString::default());
+			}
 			Err(error) => self.as_mut().set_last_error(error.to_string().into()),
 		}
 		self.reload();
@@ -1074,10 +2203,33 @@ impl ffi::BackendBridge {
 				self.as_mut().set_current_path(path.into());
 				let revision = self.model_revision().saturating_add(1);
 				self.as_mut().set_model_revision(revision);
+				self.as_mut().select_revealed();
 			}
 			Ok(_) => {}
 			Err(error) => self.as_mut().set_last_error(error.to_string().into()),
 		}
+	}
+
+	/// Select the entry [`Self::reveal`] asked for, once it is listed.
+	fn select_revealed(mut self: Pin<&mut Self>) {
+		let Some(name) = self.rust().revealing.as_deref() else { return };
+		let Some(id) = self
+			.rust()
+			.snapshot
+			.directory
+			.entries
+			.iter()
+			.find(|entry| entry.name.bytes == name)
+			.map(|entry| entry.id.to_entry_id())
+		else {
+			return;
+		};
+		self.as_mut().rust_mut().revealing = None;
+		self.submit(Command::SetSelection { selected: vec![id], focused: Some(id) });
+	}
+
+	fn current(&self) -> Option<Location> {
+		self.rust().snapshot.current_location.as_ref().map(|location| location.to_location())
 	}
 
 	fn row(&self, row: i32) -> Option<&DirectoryEntryRow> {
@@ -1164,6 +2316,76 @@ impl ffi::BackendBridge {
 			.map(|entry| entry.location.to_location())
 			.collect()
 	}
+}
+
+/// Whether `source` lives on the same filesystem as `folder`.
+fn same_device(source: &Location, folder: &std::path::Path) -> bool {
+	use std::os::unix::fs::MetadataExt;
+	let source = PathBuf::from(OsStr::from_bytes(source.path.as_bytes()));
+	match (std::fs::symlink_metadata(&source), std::fs::metadata(folder)) {
+		(Ok(from), Ok(to)) => from.dev() == to.dev(),
+		_ => false,
+	}
+}
+
+fn bookmark(index: i32) -> Option<bookmarks::Bookmark> {
+	usize::try_from(index).ok().and_then(|index| bookmarks::read().into_iter().nth(index))
+}
+
+/// Whether the clipboard's files were cut, and where they are. `None` when it
+/// holds no local files.
+fn clipboard_sources() -> Option<(bool, Vec<Location>)> {
+	let text = String::from(&ffi::clipboard_files());
+	let mut lines = text.lines();
+	let cut = match lines.next()? {
+		"cut" => true,
+		"copy" => false,
+		_ => return None,
+	};
+	let sources: Vec<Location> =
+		lines.filter_map(uri::file_path).map(|path| Location::local(NativePath::new(path))).collect();
+	(!sources.is_empty()).then_some((cut, sources))
+}
+
+/// The files in the XDG templates folder, which "New file" offers as starting
+/// points. Read on demand: the folder is small and edited outside the app.
+fn templates() -> Vec<PathBuf> {
+	let Some(folder) = templates_folder() else { return Vec::new() };
+	let mut found: Vec<PathBuf> = std::fs::read_dir(folder)
+		.map(|entries| {
+			entries
+				.filter_map(Result::ok)
+				.filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+				.map(|entry| entry.path())
+				.collect()
+		})
+		.unwrap_or_default();
+	found.sort();
+	found
+}
+
+fn template(row: i32) -> Option<PathBuf> {
+	usize::try_from(row).ok().and_then(|row| templates().into_iter().nth(row))
+}
+
+/// `XDG_TEMPLATES_DIR` from `user-dirs.dirs`, or `~/Templates`. A value equal
+/// to the home folder means templates are switched off.
+fn templates_folder() -> Option<PathBuf> {
+	let home = PathBuf::from(std::env::var_os("HOME")?);
+	let config = std::env::var_os("XDG_CONFIG_HOME")
+		.map_or_else(|| home.join(".config"), PathBuf::from)
+		.join("user-dirs.dirs");
+	let configured = std::fs::read_to_string(config).ok().and_then(|text| {
+		text.lines().find_map(|line| {
+			let value = line.trim().strip_prefix("XDG_TEMPLATES_DIR=")?.trim_matches('"');
+			Some(match value.strip_prefix("$HOME") {
+				Some(rest) => home.join(rest.trim_start_matches('/')),
+				None => PathBuf::from(value),
+			})
+		})
+	});
+	let folder = configured.unwrap_or_else(|| home.join("Templates"));
+	(folder != home).then_some(folder)
 }
 
 /// The entry's exact filesystem bytes, which the icon layer needs: a name that

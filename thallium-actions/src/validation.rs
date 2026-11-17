@@ -22,6 +22,7 @@ pub enum ValidationError {
 	TaskNotCancellable(TaskId),
 	TaskNotTerminal(TaskId),
 	UnsupportedOperation,
+	InvalidName,
 }
 
 impl fmt::Display for ValidationError {
@@ -41,6 +42,9 @@ impl fmt::Display for ValidationError {
 			Self::TaskNotCancellable(id) => write!(formatter, "task {} cannot be cancelled", id.0),
 			Self::TaskNotTerminal(id) => write!(formatter, "task {} is not finished", id.0),
 			Self::UnsupportedOperation => formatter.write_str("the requested operation is unsupported"),
+			Self::InvalidName => {
+				formatter.write_str("a name must not be empty, \".\", \"..\", or contain \"/\"")
+			}
 		}
 	}
 }

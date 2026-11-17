@@ -1,0 +1,14 @@
+#!/usr/bin/make -f
+
+# The pipeline installs a stable Rust toolchain before dpkg-buildpackage;
+# trixie's rustc is too old for this workspace (rust-version 1.95).
+%:
+	dh $@
+
+override_dh_auto_build:
+	cargo build --release -p thallium-backend --features qt --bin thallium-file-manager
+
+override_dh_auto_test:
+
+override_dh_auto_clean:
+	rm -rf target

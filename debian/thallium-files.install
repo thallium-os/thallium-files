@@ -1,0 +1,5 @@
+target/release/thallium-file-manager usr/bin
+data/io.thallium.Files.desktop usr/share/applications
+data/io.thallium.Files.FileManager1.service usr/share/dbus-1/services
+data/org.freedesktop.impl.portal.desktop.thallium.service usr/share/dbus-1/services
+data/thallium.portal usr/share/xdg-desktop-portal/portals

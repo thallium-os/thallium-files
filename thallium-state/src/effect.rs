@@ -24,8 +24,10 @@ pub struct TaskRequest {
 pub enum StateEffect {
 	/// Scan one directory for a specific listing generation.
 	ScanDirectory { location: Location, generation: ListingGeneration },
-	/// Replace the set of locations observed by the watcher service.
-	WatchLocations { locations: Vec<Location> },
+	/// Replace the set of locations observed by the watcher service. Newly
+	/// watched locations start at `generation`, the listing generation the
+	/// state holds for them, so the watcher's deltas follow on from it.
+	WatchLocations { locations: Vec<Location>, generation: ListingGeneration },
 	/// Ask the watcher to reconcile current filesystem truth.
 	RefreshDirectory { location: Location },
 	/// Submit an aggregate task without exposing scheduler internals.

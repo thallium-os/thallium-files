@@ -53,6 +53,29 @@ pub struct TrashTask {
 	pub priority: Priority,
 }
 
+/// Give one entry a new location in the same folder; never replaces an
+/// existing entry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RenameTask {
+	pub source:      Location,
+	pub destination: Location,
+}
+
+/// Create one empty folder, or one file that is empty or a copy of
+/// `template`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreateTask {
+	pub target:   Location,
+	pub template: Option<Location>,
+}
+
+/// Place a symbolic link to each source inside `destination`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LinkTask {
+	pub sources:     Vec<Location>,
+	pub destination: Location,
+}
+
 /// Public admission payload for the MVP scheduler.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TaskInput {
@@ -60,15 +83,24 @@ pub enum TaskInput {
 	Move(MoveTask),
 	Delete(DeleteTask),
 	Trash(TrashTask),
+	Rename(RenameTask),
+	CreateFolder(CreateTask),
+	CreateFile(CreateTask),
+	Link(LinkTask),
 }
 
 impl TaskInput {
 	pub(crate) fn validate(&self) -> Result<(), String> {
 		let (locations, destination) = match self {
-			Self::Copy(input) => (&input.sources, Some(&input.destination)),
-			Self::Move(input) => (&input.sources, Some(&input.destination)),
-			Self::Delete(input) => (&input.targets, None),
-			Self::Trash(input) => (&input.targets, None),
+			Self::Copy(input) => (input.sources.clone(), Some(&input.destination)),
+			Self::Move(input) => (input.sources.clone(), Some(&input.destination)),
+			Self::Delete(input) => (input.targets.clone(), None),
+			Self::Trash(input) => (input.targets.clone(), None),
+			Self::Rename(input) => (vec![input.source.clone()], Some(&input.destination)),
+			Self::CreateFolder(input) | Self::CreateFile(input) => {
+				(vec![input.target.clone()], input.template.as_ref())
+			}
+			Self::Link(input) => (input.sources.clone(), Some(&input.destination)),
 		};
 		if locations.is_empty() {
 			return Err("a task must contain at least one source or target".into());

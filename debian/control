@@ -1,0 +1,22 @@
+Source: thallium-files
+Section: utils
+Priority: optional
+Maintainer: Thallium OS <maintainers@thallium.local>
+Build-Depends: debhelper-compat (= 13), pkg-config, libgl1-mesa-dev,
+ qt6-base-dev, qt6-base-dev-tools,
+ qt6-declarative-dev, qt6-declarative-dev-tools
+Standards-Version: 4.6.2
+Homepage: https://github.com/thallium-os/thallium-files
+Rules-Requires-Root: no
+
+Package: thallium-files
+Architecture: any
+Depends: ${misc:Depends}, libc6, libgcc-s1, libstdc++6, libqt6core6t64, libqt6gui6, libqt6qml6, libqt6dbus6, libqt6network6, qt6-wayland, qml6-module-qtquick, qml6-module-qtquick-controls, qml6-module-qtquick-templates, qml6-module-qtquick-shapes, qml6-module-qtquick-effects, qml6-module-qtquick-window, qml6-module-qtqml-workerscript, tar, util-linux, xdg-utils
+Recommends: udisks2, libarchive-tools, ffmpegthumbnailer
+Suggests: rclone
+Description: File manager for Thallium OS
+ Thallium Files is a Qt file manager on a Rust backend: tabs, live
+ folders, background copy and move with conflict handling, trash,
+ bookmarks shared with GTK, drives, archives, custom actions, bulk
+ rename and undo. It answers org.freedesktop.FileManager1, so other
+ applications' "Show in folder" opens it.

@@ -88,7 +88,7 @@ fn navigate_to(state: &BrowserState, location: Location, mode: HistoryMode) -> R
 	];
 	finish(state, next, changes, vec![
 		StateEffect::ScanDirectory { location: location.clone(), generation },
-		StateEffect::WatchLocations { locations: vec![location] },
+		StateEffect::WatchLocations { locations: vec![location], generation },
 	])
 }
 

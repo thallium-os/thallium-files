@@ -2,9 +2,9 @@
 
 use std::{fmt, sync::Arc};
 
-use thallium_fs_core::{BackendId, FsError, FsErrorCode, Location};
+use thallium_fs_core::{BackendId, FsError, FsErrorCode, Location, NativePath};
 use thallium_protocol::{BrowserStateSnapshot, StateDelta, TaskInfo};
-use thallium_scheduler::{CopyTask, DeleteTask, MoveTask, Priority, Scheduler, SchedulerError, SchedulerEvent, TaskInput, TaskOptions, TrashTask};
+use thallium_scheduler::{CopyTask, CreateTask, DeleteTask, LinkTask, MoveTask, Priority, RenameTask, Scheduler, SchedulerError, SchedulerEvent, TaskInput, TaskOptions, TrashTask};
 use thallium_state::{BrowserState, Reduction, StateAction, StateEffect, TaskRequest, reduce};
 use thallium_vfs::{FileSystem, LocalBackend};
 use thallium_watcher::{WatchedSet, Watcher};
@@ -71,7 +71,11 @@ pub struct FeedbackReport {
 }
 
 enum WatcherCommand {
-	Synchronize(WatchedSet, oneshot::Sender<Result<thallium_watcher::WatchSetDiff, FsError>>),
+	Synchronize(
+		WatchedSet,
+		thallium_fs_core::ListingGeneration,
+		oneshot::Sender<Result<thallium_watcher::WatchSetDiff, FsError>>,
+	),
 	Refresh(Location, oneshot::Sender<Result<(), EffectError>>),
 	Shutdown(oneshot::Sender<Result<(), FsError>>),
 }
@@ -258,6 +262,47 @@ impl<V: FileSystem + 'static> Coordinator<V> {
 					conflict_policy: thallium_fs_core::ConflictPolicy::Abort,
 				}))
 			}
+			Command::Rename { source, name } => {
+				validate_locations(std::slice::from_ref(source))?;
+				validate_name(name)?;
+				let parent = source.parent().ok_or(ValidationError::InvalidLocation)?;
+				Action::Invoke(StateEffect::SubmitTask(TaskRequest {
+					kind:            thallium_protocol::TaskKind::Rename,
+					sources:         vec![source.clone()],
+					destination:     Some(parent.join(name)),
+					conflict_policy: thallium_fs_core::ConflictPolicy::Abort,
+				}))
+			}
+			Command::CreateFolder { parent, name } => {
+				validate_locations(std::slice::from_ref(parent))?;
+				validate_name(name)?;
+				Action::Invoke(StateEffect::SubmitTask(TaskRequest {
+					kind:            thallium_protocol::TaskKind::CreateFolder,
+					sources:         vec![parent.join(name)],
+					destination:     None,
+					conflict_policy: thallium_fs_core::ConflictPolicy::Abort,
+				}))
+			}
+			Command::CreateFile { parent, name, template } => {
+				validate_locations(std::slice::from_ref(parent))?;
+				validate_locations(template.as_slice())?;
+				validate_name(name)?;
+				Action::Invoke(StateEffect::SubmitTask(TaskRequest {
+					kind:            thallium_protocol::TaskKind::CreateFile,
+					sources:         vec![parent.join(name)],
+					destination:     template.clone(),
+					conflict_policy: thallium_fs_core::ConflictPolicy::Abort,
+				}))
+			}
+			Command::Link { sources, destination } => {
+				validate_task_locations(sources, Some(destination))?;
+				Action::Invoke(StateEffect::SubmitTask(TaskRequest {
+					kind:            thallium_protocol::TaskKind::Link,
+					sources:         sources.clone(),
+					destination:     Some(destination.clone()),
+					conflict_policy: thallium_fs_core::ConflictPolicy::Rename,
+				}))
+			}
 			Command::CancelTask(id) => {
 				let task = self.state.tasks.get(id).ok_or(ValidationError::UnknownTask(*id))?;
 				if !task.can_cancel() {
@@ -347,7 +392,7 @@ impl<V: FileSystem + 'static> Coordinator<V> {
 				Ok(entries) => Ok(EffectFeedback::DirectoryScanned { location, generation, entries }),
 				Err(error) => Ok(EffectFeedback::DirectoryScanFailed { location, generation, error }),
 			},
-			StateEffect::WatchLocations { locations } => {
+			StateEffect::WatchLocations { locations, generation } => {
 				// The watcher is inotify over the local filesystem. A remote has
 				// no equivalent to offer it, so those locations go unwatched and
 				// are refreshed when they are navigated to instead.
@@ -358,7 +403,7 @@ impl<V: FileSystem + 'static> Coordinator<V> {
 						.map(thallium_watcher::Watchee::local),
 				);
 				let (reply, response) = oneshot::channel();
-				self.send_watcher(WatcherCommand::Synchronize(desired, reply))?;
+				self.send_watcher(WatcherCommand::Synchronize(desired, generation, reply))?;
 				let diff = response
 					.await
 					.map_err(|_| service_stopped(EffectKind::Watcher))?
@@ -516,8 +561,8 @@ async fn run_watcher<V: FileSystem>(
 		tokio::select! {
 			biased;
 			command = commands.recv() => match command {
-				Some(WatcherCommand::Synchronize(desired, reply)) => {
-					let _ = reply.send(watcher.sync_watch_set(desired).await);
+				Some(WatcherCommand::Synchronize(desired, generation, reply)) => {
+					let _ = reply.send(watcher.sync_watch_set(desired, generation).await);
 				}
 				Some(WatcherCommand::Refresh(location, reply)) => {
 					let result = watcher.request_refresh(location.clone()).map_err(|error| EffectError {
@@ -569,6 +614,19 @@ fn validate_locations(locations: &[Location]) -> Result<(), ValidationError> {
 	Ok(())
 }
 
+fn validate_name(name: &NativePath) -> Result<(), ValidationError> {
+	let bytes = name.as_bytes();
+	if bytes.is_empty()
+		|| bytes == b"."
+		|| bytes == b".."
+		|| bytes.contains(&b'/')
+		|| bytes.contains(&0)
+	{
+		return Err(ValidationError::InvalidName);
+	}
+	Ok(())
+}
+
 fn validate_task_locations(
 	targets: &[Location],
 	destination: Option<&Location>,
@@ -606,6 +664,28 @@ fn task_input(request: TaskRequest) -> Result<TaskInput, EffectError> {
 		thallium_protocol::TaskKind::Trash => {
 			Ok(TaskInput::Trash(TrashTask { targets: request.sources, priority: Priority::Normal }))
 		}
+		thallium_protocol::TaskKind::Rename => Ok(TaskInput::Rename(RenameTask {
+			source:      single(request.sources)?,
+			destination: request.destination.ok_or_else(missing_destination)?,
+		})),
+		thallium_protocol::TaskKind::CreateFolder => {
+			Ok(TaskInput::CreateFolder(CreateTask { target: single(request.sources)?, template: None }))
+		}
+		thallium_protocol::TaskKind::CreateFile => Ok(TaskInput::CreateFile(CreateTask {
+			target:   single(request.sources)?,
+			template: request.destination,
+		})),
+		thallium_protocol::TaskKind::Link => Ok(TaskInput::Link(LinkTask {
+			sources:     request.sources,
+			destination: request.destination.ok_or_else(missing_destination)?,
+		})),
+	}
+}
+
+fn single(mut sources: Vec<Location>) -> Result<Location, EffectError> {
+	match (sources.pop(), sources.is_empty()) {
+		(Some(location), true) => Ok(location),
+		_ => Err(missing_destination()),
 	}
 }
 
