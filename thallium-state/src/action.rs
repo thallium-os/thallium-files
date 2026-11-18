@@ -14,6 +14,12 @@ pub enum StateAction {
 	NavigateTo(Location),
 	/// Navigate to the most recent location in backward history.
 	NavigateBack,
+	/// Walk this many steps back through history at once; every location
+	/// passed over joins forward history, as if Back had been pressed that
+	/// many times.
+	NavigateBackSteps(usize),
+	/// Forget every place Back and Forward could go to.
+	ClearHistory,
 	/// Navigate to the most recent location in forward history.
 	NavigateForward,
 	/// Accept a generation-tagged directory scan result.

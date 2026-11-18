@@ -23,6 +23,8 @@ mod drives;
 #[cfg_attr(not(feature = "qt"), allow(dead_code))]
 mod files_theme;
 #[cfg_attr(not(feature = "qt"), allow(dead_code))]
+mod present;
+#[cfg_attr(not(feature = "qt"), allow(dead_code))]
 mod properties;
 #[cfg_attr(not(feature = "qt"), allow(dead_code))]
 mod recents;
@@ -35,6 +37,8 @@ mod storage;
 mod trash_bin;
 #[cfg_attr(not(feature = "qt"), allow(dead_code))]
 mod uca;
+#[cfg_attr(not(feature = "qt"), allow(dead_code))]
+mod ui_state;
 #[cfg_attr(not(feature = "qt"), allow(dead_code))]
 mod undo;
 #[cfg_attr(not(feature = "qt"), allow(dead_code))]

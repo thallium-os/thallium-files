@@ -11,7 +11,7 @@ use thallium_icons::{IconService, Thumbnail};
 use thallium_protocol::{BrowserStateSnapshot, DirectoryEntryRow, PathBytes, TaskInfo, TaskStatus};
 use thallium_rclone::{Remotes, authorize, config::{Provider, Session, Step}};
 
-use crate::{Backend, BackendConfig, BackendResult, apps, archive, bookmarks, bulk_rename, drives, files_theme, properties, recents::Recent, search::Search, storage::Measure, trash_bin, uca, undo, uri};
+use crate::{Backend, BackendConfig, BackendResult, apps, archive, bookmarks, bulk_rename, drives, files_theme, present, properties, recents::Recent, search::Search, storage::Measure, trash_bin, uca, undo, uri};
 
 #[cxx_qt::bridge]
 pub mod ffi {
@@ -86,6 +86,114 @@ pub mod ffi {
 		fn up(self: Pin<&mut Self>);
 		#[qinvokable]
 		fn back(self: Pin<&mut Self>);
+		/// How many places Back can walk through.
+		#[qinvokable]
+		#[rust_name = "history_count"]
+		fn historyCount(&self) -> i32;
+		/// The place `index` steps back, the next one first.
+		#[qinvokable]
+		#[rust_name = "history_path"]
+		fn historyPath(&self, index: i32) -> QString;
+		/// Seconds since that place was left, or -1 if this session never saw
+		/// it left.
+		#[qinvokable]
+		#[rust_name = "history_age"]
+		fn historyAge(&self, index: i32) -> f64;
+		/// Jump straight to the place `index` steps back.
+		#[qinvokable]
+		#[rust_name = "go_back_to"]
+		fn goBackTo(self: Pin<&mut Self>, index: i32);
+		/// Select the entry called `name` in this folder as soon as it is
+		/// listed: now if it already is, or when it appears.
+		#[qinvokable]
+		#[rust_name = "select_named"]
+		fn selectNamed(self: Pin<&mut Self>, name: &QString);
+		/// An interface preference saved in `files.conf`, or `fallback`.
+		#[qinvokable]
+		#[rust_name = "ui_value"]
+		fn uiValue(&self, key: &QString, fallback: &QString) -> QString;
+		/// Save an interface preference to `files.conf`.
+		#[qinvokable]
+		#[rust_name = "set_ui_value"]
+		fn setUiValue(self: Pin<&mut Self>, key: &QString, value: &QString);
+		/// The type tag for a name: DIR, CODE, DOC, TXT, IMG, VID, AUD or ZIP.
+		#[qinvokable]
+		#[rust_name = "type_tag"]
+		fn typeTag(&self, name: &QString, folder: bool) -> QString;
+		/// The broad group a name sorts under for the Kind column.
+		#[qinvokable]
+		#[rust_name = "kind_group"]
+		fn kindGroup(&self, name: &QString, folder: bool) -> QString;
+		/// What a person would call the file: "TOML source", "PNG image".
+		#[qinvokable]
+		#[rust_name = "kind_name"]
+		fn kindName(&self, name: &QString, folder: bool) -> QString;
+		/// The composition group a type tag counts towards.
+		#[qinvokable]
+		#[rust_name = "bucket_of"]
+		fn bucketOf(&self, tag: &QString) -> QString;
+		/// A byte count as every size in the window reads.
+		#[qinvokable]
+		#[rust_name = "readable_size"]
+		fn readableSize(&self, bytes: f64) -> QString;
+		/// "Today, 09:58", "Yesterday, 23:02", "28 Oct, 16:31".
+		#[qinvokable]
+		#[rust_name = "stamp_text"]
+		fn stampText(&self, seconds: f64) -> QString;
+		/// The open folder's rows to show, in order, as comma-separated row
+		/// numbers: hidden entries kept only when asked, names containing
+		/// `needle`, folders first, then by `key`.
+		#[qinvokable]
+		#[rust_name = "visible_rows"]
+		fn visibleRows(
+			&self,
+			needle: &QString,
+			hidden: bool,
+			key: &QString,
+			ascending: bool,
+		) -> QString;
+		/// How many of those rows fall in each composition group, as
+		/// "dirs,code,docs,other".
+		#[qinvokable]
+		#[rust_name = "composition_counts"]
+		fn compositionCounts(&self, needle: &QString, hidden: bool) -> QString;
+		/// The current path as breadcrumbs, a JSON array of {label, path}.
+		#[qinvokable]
+		#[rust_name = "crumbs_json"]
+		fn crumbsJson(&self) -> QString;
+		/// The folders beneath `base` as sidebar tree rows (JSON), opened
+		/// along the current path and as `toggles` ({"path": bool}) says.
+		#[qinvokable]
+		#[rust_name = "folder_tree_json"]
+		fn folderTreeJson(
+			&self,
+			base: &QString,
+			first_depth: i32,
+			hidden: bool,
+			toggles: &QString,
+		) -> QString;
+		/// The folders directly inside `path`, a JSON array of {name, count}.
+		#[qinvokable]
+		#[rust_name = "subfolders_json"]
+		fn subfoldersJson(&self, path: &QString, hidden: bool) -> QString;
+		/// Running transfers as a JSON array of {id, title, progress, done,
+		/// total, rate}.
+		#[qinvokable]
+		#[rust_name = "transfers_json"]
+		fn transfersJson(&self) -> QString;
+		/// Up to `limit` recent files, a JSON array of {name, path, folder,
+		/// directory, seconds}.
+		#[qinvokable]
+		#[rust_name = "recents_json"]
+		fn recentsJson(&self, limit: i32) -> QString;
+		/// Forget the back and forward history.
+		#[qinvokable]
+		#[rust_name = "clear_history"]
+		fn clearHistory(self: Pin<&mut Self>);
+		/// Open a terminal in `path`, or in its folder when it is a file.
+		#[qinvokable]
+		#[rust_name = "open_terminal"]
+		fn openTerminal(self: Pin<&mut Self>, path: &QString);
 		#[qinvokable]
 		fn forward(self: Pin<&mut Self>);
 		#[qinvokable]
@@ -438,6 +546,28 @@ pub mod ffi {
 		#[qinvokable]
 		#[rust_name = "template_path"]
 		fn templatePath(&self, row: i32) -> QString;
+		/// Where templates live, or empty when they are switched off.
+		#[qinvokable]
+		#[rust_name = "templates_folder_path"]
+		fn templatesFolder(&self) -> QString;
+
+		/// The login name and the machine's name, for the sidebar's
+		/// `user@host` line. Read at run time, never stored.
+		#[qinvokable]
+		#[rust_name = "user_name"]
+		fn userName(&self) -> QString;
+		#[qinvokable]
+		#[rust_name = "host_name"]
+		fn hostName(&self) -> QString;
+		/// The first `lines` lines of a local text file, for the record card's
+		/// preview. Empty for anything that is not readable UTF-8 text.
+		#[qinvokable]
+		#[rust_name = "text_head"]
+		fn textHead(&self, path: &QString, lines: i32) -> QString;
+		/// How many entries a local folder holds; -1 when it cannot be read.
+		#[qinvokable]
+		#[rust_name = "entry_total"]
+		fn entryTotal(&self, path: &QString, include_hidden: bool) -> i32;
 
 		#[qinvokable]
 		#[rust_name = "remotes_configurable"]
@@ -505,6 +635,11 @@ pub mod ffi {
 		#[qinvokable]
 		#[rust_name = "remote_location"]
 		fn remoteLocation(&self, row: i32) -> QString;
+		/// A name for a new remote of `kind` that no remote has yet: the kind
+		/// itself, else the kind with 2, 3 and so on after it.
+		#[qinvokable]
+		#[rust_name = "free_remote_name"]
+		fn freeRemoteName(&self, kind: &QString) -> QString;
 
 		#[qinvokable]
 		#[rust_name = "task_count"]
@@ -527,6 +662,13 @@ pub mod ffi {
 		#[qinvokable]
 		#[rust_name = "cancel_task"]
 		fn cancelTask(self: Pin<&mut Self>, id: u64);
+		/// Hold or release every running transfer.
+		#[qinvokable]
+		#[rust_name = "set_tasks_paused"]
+		fn setTasksPaused(self: Pin<&mut Self>, paused: bool);
+		#[qinvokable]
+		#[rust_name = "tasks_paused"]
+		fn tasksPaused(&self) -> bool;
 	}
 }
 
@@ -540,6 +682,12 @@ pub struct BackendBridgeRust {
 	/// Whether a recursive search is still walking.
 	searching:      bool,
 	backend:        Option<Backend>,
+	/// Whether the transfers were last told to hold.
+	tasks_paused:   bool,
+	/// When each place was last left, for the back history's ages.
+	left_at:        std::collections::HashMap<String, std::time::Instant>,
+	/// Interface preferences from `files.conf`.
+	ui_values:      std::collections::BTreeMap<String, String>,
 	snapshot:       BrowserStateSnapshot,
 	icons:          IconService,
 	/// Storage systems rclone offers, read once when the panel is opened.
@@ -623,6 +771,9 @@ impl Default for BackendBridgeRust {
 					last_error: QString::default(),
 					model_revision: snapshot.revision.0,
 					backend: Some(backend),
+					tasks_paused: false,
+					left_at: std::collections::HashMap::new(),
+					ui_values: load_ui_values(),
 					snapshot,
 					icons: IconService::new(),
 					providers: Vec::new(),
@@ -658,6 +809,9 @@ impl Default for BackendBridgeRust {
 				last_error:     error.to_string().into(),
 				model_revision: 0,
 				backend:        None,
+				tasks_paused:   false,
+				left_at:        std::collections::HashMap::new(),
+				ui_values:      load_ui_values(),
 				snapshot:       BrowserStateSnapshot::default(),
 				icons:          IconService::new(),
 				providers:      Vec::new(),
@@ -1430,6 +1584,213 @@ impl ffi::BackendBridge {
 
 	pub fn back(self: Pin<&mut Self>) { self.submit_detached(Command::NavigateBack); }
 
+	pub fn history_count(&self) -> i32 { count(self.rust().snapshot.back_history.len()) }
+
+	pub fn history_path(&self, index: i32) -> QString {
+		let place =
+			usize::try_from(index).ok().and_then(|at| self.rust().snapshot.back_history.get(at));
+		self.display(place).into()
+	}
+
+	pub fn history_age(&self, index: i32) -> f64 {
+		let path = String::from(&self.history_path(index));
+		self.rust().left_at.get(&path).map_or(-1.0, |left| left.elapsed().as_secs_f64())
+	}
+
+	pub fn go_back_to(self: Pin<&mut Self>, index: i32) {
+		let Ok(at) = usize::try_from(index) else { return };
+		if at < self.rust().snapshot.back_history.len() {
+			self.submit_detached(Command::NavigateBackSteps(at + 1));
+		}
+	}
+
+	pub fn clear_history(self: Pin<&mut Self>) { self.submit(Command::ClearHistory); }
+
+	pub fn type_tag(&self, name: &QString, folder: bool) -> QString {
+		present::type_tag(&String::from(name), folder).into()
+	}
+
+	pub fn kind_group(&self, name: &QString, folder: bool) -> QString {
+		present::kind_group(&String::from(name), folder).into()
+	}
+
+	pub fn kind_name(&self, name: &QString, folder: bool) -> QString {
+		present::kind_name(&String::from(name), folder).into()
+	}
+
+	pub fn bucket_of(&self, tag: &QString) -> QString { present::bucket(&String::from(tag)).into() }
+
+	pub fn readable_size(&self, bytes: f64) -> QString { present::readable_size(bytes).into() }
+
+	pub fn stamp_text(&self, seconds: f64) -> QString { present::stamp(seconds).into() }
+
+	fn listed(&self) -> Vec<EntryFacts> {
+		self
+			.rust()
+			.snapshot
+			.directory
+			.entries
+			.iter()
+			.enumerate()
+			.map(|(row, entry)| {
+				let modified = entry.modified.map_or(0, |stamp| stamp.seconds);
+				(row, entry.name.display_lossy.clone(), entry.is_directory(), modified)
+			})
+			.collect()
+	}
+
+	fn ordered(
+		&self,
+		needle: &QString,
+		hidden: bool,
+		key: &str,
+		ascending: bool,
+	) -> (Vec<usize>, Vec<EntryFacts>) {
+		let listed = self.listed();
+		let entries: Vec<present::Listed<'_>> = listed
+			.iter()
+			.map(|(row, name, folder, modified)| present::Listed {
+				row: *row,
+				name,
+				folder: *folder,
+				modified: *modified,
+			})
+			.collect();
+		let rows = present::ordered_rows(&entries, &String::from(needle), hidden, key, ascending);
+		(rows, listed)
+	}
+
+	pub fn visible_rows(
+		&self,
+		needle: &QString,
+		hidden: bool,
+		key: &QString,
+		ascending: bool,
+	) -> QString {
+		let (rows, _) = self.ordered(needle, hidden, &String::from(key), ascending);
+		rows.iter().map(ToString::to_string).collect::<Vec<_>>().join(",").into()
+	}
+
+	pub fn composition_counts(&self, needle: &QString, hidden: bool) -> QString {
+		let (rows, listed) = self.ordered(needle, hidden, "name", true);
+		let counts =
+			present::composition(rows.iter().map(|&row| (listed[row].1.as_str(), listed[row].2)));
+		counts.iter().map(ToString::to_string).collect::<Vec<_>>().join(",").into()
+	}
+
+	pub fn crumbs_json(&self) -> QString {
+		let path = String::from(self.current_path());
+		let home = String::from(self.home_path());
+		present::crumbs_json(&present::crumbs(&path, &home)).into()
+	}
+
+	pub fn folder_tree_json(
+		&self,
+		base: &QString,
+		first_depth: i32,
+		hidden: bool,
+		toggles: &QString,
+	) -> QString {
+		let base = String::from(base);
+		if base.is_empty() {
+			return QString::from("[]");
+		}
+		let here = String::from(self.current_path());
+		let toggled = present::parse_toggles(&String::from(toggles));
+		let mut children = |path: &str| subfolders_of(std::path::Path::new(path), hidden);
+		let depth = usize::try_from(first_depth).unwrap_or(0);
+		present::tree_json(&present::folder_tree(&base, depth, &here, &toggled, &mut children)).into()
+	}
+
+	pub fn subfolders_json(&self, path: &QString, hidden: bool) -> QString {
+		let found = subfolders_of(std::path::Path::new(&String::from(path)), hidden);
+		let rows: Vec<String> = found
+			.iter()
+			.map(|(name, count)| format!("{{\"name\":{},\"count\":{count}}}", present::json_string(name)))
+			.collect();
+		format!("[{}]", rows.join(",")).into()
+	}
+
+	#[allow(clippy::cast_precision_loss)]
+	pub fn transfers_json(&self) -> QString {
+		let rows: Vec<String> = self
+			.rust()
+			.snapshot
+			.tasks
+			.iter()
+			.filter(|task| task.can_cancel())
+			.map(|task| {
+				format!(
+					"{{\"id\":{},\"title\":{},\"progress\":{},\"done\":{},\"total\":{},\"rate\":{}}}",
+					task.id.0,
+					present::json_string(&task.title),
+					f64::from(task.progress.basis_points()) / 100.0,
+					task.progress.bytes_completed as f64,
+					task.progress.bytes_total.map_or(-1.0, |total| total as f64),
+					transfer_rate(task),
+				)
+			})
+			.collect();
+		format!("[{}]", rows.join(",")).into()
+	}
+
+	pub fn recents_json(&self, limit: i32) -> QString {
+		let limit = usize::try_from(limit).unwrap_or(0);
+		let rows: Vec<String> = self
+			.rust()
+			.recents
+			.iter()
+			.take(limit)
+			.map(|entry| {
+				let folder =
+					entry.path.parent().map_or_else(String::new, |at| at.to_string_lossy().into_owned());
+				format!(
+					"{{\"name\":{},\"path\":{},\"folder\":{},\"directory\":{},\"seconds\":{}}}",
+					present::json_string(&entry.name),
+					present::json_string(&entry.path.to_string_lossy()),
+					present::json_string(&folder),
+					entry.path.is_dir(),
+					present::rfc3339_seconds(&entry.visited).unwrap_or(-1),
+				)
+			})
+			.collect();
+		format!("[{}]", rows.join(",")).into()
+	}
+
+	pub fn ui_value(&self, key: &QString, fallback: &QString) -> QString {
+		self
+			.rust()
+			.ui_values
+			.get(&String::from(key))
+			.map_or_else(|| fallback.clone(), |value| value.into())
+	}
+
+	pub fn set_ui_value(mut self: Pin<&mut Self>, key: &QString, value: &QString) {
+		let (key, value) = (String::from(key), String::from(value));
+		if self.rust().ui_values.get(&key) == Some(&value) {
+			return;
+		}
+		self.as_mut().rust_mut().ui_values.insert(key, value);
+		let Some(file) = crate::ui_state::path() else { return };
+		if let Err(error) = crate::ui_state::save(&file, &self.rust().ui_values) {
+			self.as_mut().set_last_error(format!("Could not save interface settings: {error}").into());
+		}
+	}
+
+	pub fn select_named(mut self: Pin<&mut Self>, name: &QString) {
+		self.as_mut().rust_mut().revealing = Some(String::from(name).into_bytes());
+		self.select_revealed();
+	}
+
+	pub fn open_terminal(mut self: Pin<&mut Self>, path: &QString) {
+		let place = PathBuf::from(String::from(path));
+		let folder =
+			if place.is_dir() { place } else { place.parent().map(PathBuf::from).unwrap_or(place) };
+		if let Err(error) = apps::open_terminal(&folder) {
+			self.as_mut().set_last_error(error.into());
+		}
+	}
+
 	pub fn forward(self: Pin<&mut Self>) { self.submit_detached(Command::NavigateForward); }
 
 	/// Re-read the directory, and count what it holds again.
@@ -1663,6 +2024,11 @@ impl ffi::BackendBridge {
 
 	pub fn template_count(&self) -> i32 { count(templates().len()) }
 
+	pub fn templates_folder_path(&self) -> QString {
+		templates_folder()
+			.map_or_else(QString::default, |folder| folder.to_string_lossy().as_ref().into())
+	}
+
 	pub fn template_name(&self, row: i32) -> QString {
 		template(row).map_or_else(QString::default, |path| {
 			path.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned()).into()
@@ -1671,6 +2037,23 @@ impl ffi::BackendBridge {
 
 	pub fn template_path(&self, row: i32) -> QString {
 		template(row).map_or_else(QString::default, |path| path.to_string_lossy().as_ref().into())
+	}
+
+	pub fn user_name(&self) -> QString { login_name().as_str().into() }
+
+	pub fn host_name(&self) -> QString { machine_name().as_str().into() }
+
+	pub fn text_head(&self, path: &QString, lines: i32) -> QString {
+		let wanted = usize::try_from(lines).unwrap_or(0);
+		head_lines(std::path::Path::new(&path.to_string()), wanted).as_str().into()
+	}
+
+	pub fn entry_total(&self, path: &QString, include_hidden: bool) -> i32 {
+		std::fs::read_dir(path.to_string()).map_or(-1, |entries| {
+			count(
+				entries.filter_map(Result::ok).filter(|e| visible(&e.file_name(), include_hidden)).count(),
+			)
+		})
 	}
 
 	pub fn delete_selected(self: Pin<&mut Self>) {
@@ -2080,6 +2463,12 @@ impl ffi::BackendBridge {
 		self.remote(row).map_or_else(QString::default, |remote| remote.name.clone().into())
 	}
 
+	pub fn free_remote_name(&self, kind: &QString) -> QString {
+		let taken: BTreeSet<String> =
+			(0..self.remote_count()).map(|row| String::from(&self.remote_name(row))).collect();
+		unused_name(&String::from(kind), &taken).into()
+	}
+
 	/// The location string that navigates into a remote's root.
 	pub fn remote_location(&self, row: i32) -> QString {
 		self.remote(row).map_or_else(QString::default, |remote| format!("{}:/", remote.name).into())
@@ -2106,6 +2495,13 @@ impl ffi::BackendBridge {
 	pub fn cancel_task(self: Pin<&mut Self>, id: u64) {
 		self.submit(Command::CancelTask(thallium_protocol::TaskId(id)));
 	}
+
+	pub fn set_tasks_paused(mut self: Pin<&mut Self>, paused: bool) {
+		self.as_mut().rust_mut().tasks_paused = paused;
+		self.submit_recorded(Command::PauseTasks(paused), false);
+	}
+
+	pub fn tasks_paused(&self) -> bool { self.rust().tasks_paused }
 
 	/// Read a location written by the frontend, which may name a remote.
 	fn location(&self, path: &QString) -> Location {
@@ -2199,6 +2595,10 @@ impl ffi::BackendBridge {
 		match result {
 			Ok(snapshot) if snapshot != self.rust().snapshot => {
 				let path = self.display(snapshot.current_location.as_ref());
+				let previous = String::from(self.current_path());
+				if previous != path && !previous.is_empty() {
+					self.as_mut().rust_mut().left_at.insert(previous, std::time::Instant::now());
+				}
 				self.as_mut().rust_mut().snapshot = snapshot;
 				self.as_mut().set_current_path(path.into());
 				let revision = self.model_revision().saturating_add(1);
@@ -2347,6 +2747,83 @@ fn clipboard_sources() -> Option<(bool, Vec<Location>)> {
 	(!sources.is_empty()).then_some((cut, sources))
 }
 
+/// `$USER`, else the password database's name for this uid.
+fn login_name() -> String {
+	if let Some(name) = std::env::var_os("USER").filter(|name| !name.is_empty()) {
+		return name.to_string_lossy().into_owned();
+	}
+	// SAFETY: getpwuid returns null or a pointer into static storage that
+	// stays valid until the next getpw* call; the name is copied out at once.
+	unsafe {
+		let entry = libc::getpwuid(libc::getuid());
+		if entry.is_null() || (*entry).pw_name.is_null() {
+			return String::new();
+		}
+		std::ffi::CStr::from_ptr((*entry).pw_name).to_string_lossy().into_owned()
+	}
+}
+
+/// The kernel's host name.
+fn machine_name() -> String {
+	let mut buffer = [0u8; 256];
+	// SAFETY: the buffer outlives the call and its length is passed with it.
+	let ok = unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) } == 0;
+	if !ok {
+		return String::new();
+	}
+	let end = buffer.iter().position(|byte| *byte == 0).unwrap_or(buffer.len());
+	String::from_utf8_lossy(&buffer[..end]).into_owned()
+}
+
+fn visible(name: &std::ffi::OsStr, include_hidden: bool) -> bool {
+	include_hidden || !name.to_string_lossy().starts_with('.')
+}
+
+/// Up to `wanted` lines from the start of a text file, read from its first
+/// 4 KiB. Binary files (a NUL byte, or not UTF-8 up to the last whole line)
+/// give nothing.
+fn head_lines(file: &std::path::Path, wanted: usize) -> String {
+	use std::io::Read;
+	if wanted == 0 || !file.is_file() {
+		return String::new();
+	}
+	let Ok(handle) = std::fs::File::open(file) else { return String::new() };
+	let mut bytes = Vec::with_capacity(4096);
+	if handle.take(4096).read_to_end(&mut bytes).is_err() || bytes.contains(&0) {
+		return String::new();
+	}
+	let text = match std::str::from_utf8(&bytes) {
+		Ok(text) => text,
+		// A read that stops inside a character still counts as text.
+		Err(error) if error.error_len().is_none() => {
+			std::str::from_utf8(&bytes[..error.valid_up_to()]).unwrap_or("")
+		}
+		Err(_) => return String::new(),
+	};
+	text.lines().take(wanted).map(|line| line.trim_end_matches('\r')).collect::<Vec<_>>().join("\n")
+}
+
+/// The folders directly inside `folder`, with how many entries each holds,
+/// in name order.
+fn subfolders_of(folder: &std::path::Path, include_hidden: bool) -> Vec<(String, i64)> {
+	let Ok(entries) = std::fs::read_dir(folder) else { return Vec::new() };
+	let mut found: Vec<(String, i64)> = entries
+		.filter_map(Result::ok)
+		.filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+		.filter(|entry| visible(&entry.file_name(), include_hidden))
+		.map(|entry| {
+			let count = std::fs::read_dir(entry.path())
+				.map(|inner| {
+					inner.filter_map(Result::ok).filter(|e| visible(&e.file_name(), include_hidden)).count()
+				})
+				.map_or(0, |count| i64::try_from(count).unwrap_or(i64::MAX));
+			(entry.file_name().to_string_lossy().into_owned(), count)
+		})
+		.collect();
+	found.sort_by_key(|(name, _)| name.to_lowercase());
+	found
+}
+
 /// The files in the XDG templates folder, which "New file" offers as starting
 /// points. Read on demand: the folder is small and edited outside the app.
 fn templates() -> Vec<PathBuf> {
@@ -2405,6 +2882,33 @@ fn format_size(bytes: u64) -> String {
 	if unit == 0 { format!("{bytes} B") } else { format!("{value:.1} {}", UNITS[unit]) }
 }
 
+/// One listed entry: its row, name, whether it is a folder, and when it was
+/// modified.
+type EntryFacts = (usize, String, bool, i64);
+
+fn load_ui_values() -> std::collections::BTreeMap<String, String> {
+	crate::ui_state::path().map(|file| crate::ui_state::load(&file)).unwrap_or_default()
+}
+
+/// `base` if nothing in `taken` has it, else `base2`, `base3` and so on.
+fn unused_name(base: &str, taken: &BTreeSet<String>) -> String {
+	if !taken.contains(base) {
+		return base.to_owned();
+	}
+	(2..).map(|n| format!("{base}{n}")).find(|name| !taken.contains(name)).unwrap_or_default()
+}
+
+/// Average throughput of a transfer in bytes per second, from when it was
+/// queued to its latest progress report. Zero until it has moved a byte.
+#[allow(clippy::cast_precision_loss)]
+fn transfer_rate(task: &TaskInfo) -> f64 {
+	let elapsed = task.updated_at_ms.saturating_sub(task.created_at_ms);
+	if elapsed == 0 || task.progress.bytes_completed == 0 {
+		return 0.0;
+	}
+	task.progress.bytes_completed as f64 * 1000.0 / elapsed as f64
+}
+
 fn status_text(status: TaskStatus) -> &'static str {
 	match status {
 		TaskStatus::Pending => "Pending",
@@ -2420,12 +2924,77 @@ fn status_text(status: TaskStatus) -> &'static str {
 mod tests {
 	use thallium_protocol::TaskStatus;
 
-	use super::{count, format_size, status_text};
+	use super::{count, format_size, head_lines, status_text, subfolders_of, transfer_rate, unused_name};
+
+	#[test]
+	fn remote_names_count_up_past_the_taken_ones() {
+		let taken: std::collections::BTreeSet<String> = ["drive", "drive2"].map(String::from).into();
+		assert_eq!(unused_name("drive", &taken), "drive3");
+		assert_eq!(unused_name("s3", &taken), "s3");
+	}
 
 	#[test]
 	fn presentation_helpers_are_stable() {
 		assert_eq!(count(3), 3);
 		assert_eq!(format_size(1536), "1.5 KiB");
 		assert_eq!(status_text(TaskStatus::Succeeded), "Complete");
+	}
+
+	#[test]
+	fn transfer_rate_averages_over_the_elapsed_time() {
+		let mut task = thallium_protocol::TaskInfo {
+			id:            thallium_protocol::TaskId(1),
+			revision:      thallium_protocol::TaskRevision(1),
+			kind:          thallium_protocol::TaskKind::Copy,
+			status:        TaskStatus::Started,
+			title:         String::new(),
+			progress:      thallium_protocol::TaskProgress::default(),
+			current_item:  None,
+			issue:         None,
+			created_at_ms: 1_000,
+			updated_at_ms: 1_000,
+		};
+		assert!(transfer_rate(&task).abs() < f64::EPSILON);
+		task.progress.bytes_completed = 4_000;
+		task.updated_at_ms = 3_000;
+		assert!((transfer_rate(&task) - 2_000.0).abs() < f64::EPSILON);
+	}
+
+	#[test]
+	fn subfolders_list_folders_with_their_counts() {
+		let root = std::env::temp_dir().join(format!("thallium-subfolders-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&root);
+		std::fs::create_dir_all(root.join("beta/one")).unwrap();
+		std::fs::create_dir_all(root.join("Alpha")).unwrap();
+		std::fs::create_dir_all(root.join(".hidden")).unwrap();
+		std::fs::write(root.join("beta/file.txt"), b"x").unwrap();
+		std::fs::write(root.join("beta/.dot"), b"x").unwrap();
+		std::fs::write(root.join("loose.txt"), b"x").unwrap();
+		assert_eq!(subfolders_of(&root, false), vec![("Alpha".to_owned(), 0), ("beta".to_owned(), 2)]);
+		assert_eq!(subfolders_of(&root, true), vec![
+			(".hidden".to_owned(), 0),
+			("Alpha".to_owned(), 0),
+			("beta".to_owned(), 3)
+		]);
+		assert!(subfolders_of(&root.join("missing"), false).is_empty());
+		std::fs::remove_dir_all(&root).unwrap();
+	}
+
+	#[test]
+	fn text_heads_read_lines_and_skip_binaries() {
+		let root = std::env::temp_dir().join(format!("thallium-head-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&root);
+		std::fs::create_dir_all(&root).unwrap();
+		std::fs::write(
+			root.join("a.toml"),
+			"[package]\r\nname = \"x\"\nversion = \"1\"\nedition = \"2021\"\n",
+		)
+		.unwrap();
+		std::fs::write(root.join("b.bin"), [0x7f, b'E', 0, 1]).unwrap();
+		assert_eq!(head_lines(&root.join("a.toml"), 3), "[package]\nname = \"x\"\nversion = \"1\"");
+		assert_eq!(head_lines(&root.join("b.bin"), 3), "");
+		assert_eq!(head_lines(&root, 3), "");
+		assert_eq!(head_lines(&root.join("a.toml"), 0), "");
+		std::fs::remove_dir_all(&root).unwrap();
 	}
 }

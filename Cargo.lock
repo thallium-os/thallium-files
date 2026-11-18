@@ -1631,7 +1631,7 @@ dependencies = [
 
 [[package]]
 name = "thallium-actions"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "tempfile",
  "thallium-fs-core",
@@ -1645,7 +1645,7 @@ dependencies = [
 
 [[package]]
 name = "thallium-backend"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cxx",
  "cxx-qt",
@@ -1669,11 +1669,11 @@ dependencies = [
 
 [[package]]
 name = "thallium-fs-core"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "thallium-icons"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "freedesktop-icons",
  "image",
@@ -1687,14 +1687,14 @@ dependencies = [
 
 [[package]]
 name = "thallium-protocol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "thallium-fs-core",
 ]
 
 [[package]]
 name = "thallium-rclone"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -1711,7 +1711,7 @@ dependencies = [
 
 [[package]]
 name = "thallium-scheduler"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "thallium-fs-core",
  "thallium-protocol",
@@ -1722,7 +1722,7 @@ dependencies = [
 
 [[package]]
 name = "thallium-state"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "thallium-fs-core",
  "thallium-protocol",
@@ -1730,7 +1730,7 @@ dependencies = [
 
 [[package]]
 name = "thallium-vfs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "filetime",
  "tempfile",
@@ -1741,7 +1741,7 @@ dependencies = [
 
 [[package]]
 name = "thallium-watcher"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "notify",
  "tempfile",

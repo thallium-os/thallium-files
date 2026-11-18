@@ -483,3 +483,69 @@ fn a_folder_left_and_reentered_is_still_watched() {
 	});
 	backend.shutdown().expect("shutdown");
 }
+
+#[test]
+fn paused_transfers_hold_until_resumed() {
+	let root = TempDir::new().expect("root");
+	let source = root.path().join("large.bin");
+	let target = root.path().join("target");
+	fs::write(&source, vec![4_u8; 4 * 1024 * 1024]).expect("seed");
+	fs::create_dir(&target).expect("target");
+
+	let mut backend = start(root.path());
+	backend.submit(Command::PauseTasks(true)).expect("pause");
+	backend
+		.submit(Command::Copy {
+			sources:         vec![at(&source)],
+			destination:     at(&target),
+			conflict_policy: ConflictPolicy::Overwrite,
+		})
+		.expect("submit copy");
+
+	std::thread::sleep(std::time::Duration::from_millis(400));
+	let held = backend.snapshot().expect("snapshot");
+	assert!(
+		held.tasks.iter().any(|task| task.kind == TaskKind::Copy && !task.status.is_terminal()),
+		"the paused copy should still be running"
+	);
+	assert!(!target.join("large.bin").exists());
+
+	backend.submit(Command::PauseTasks(false)).expect("resume");
+	let task = settle_task(&mut backend, TaskKind::Copy);
+	assert_eq!(task.status, TaskStatus::Succeeded, "copy failed: {:?}", task.issue);
+	assert_eq!(fs::metadata(target.join("large.bin")).expect("copied").len(), 4 * 1024 * 1024);
+	backend.shutdown().expect("shutdown");
+}
+
+#[test]
+fn back_history_is_listed_and_can_be_jumped_through() {
+	let root = TempDir::new().expect("root");
+	let one = root.path().join("one");
+	let two = one.join("two");
+	fs::create_dir_all(&two).expect("seed tree");
+
+	let mut backend = start(root.path());
+	backend.submit(Command::Navigate(at(&one))).expect("navigate one");
+	backend.submit(Command::Navigate(at(&two))).expect("navigate two");
+
+	let listed = backend.snapshot().expect("snapshot").back_history;
+	let paths: Vec<_> = listed.iter().map(|place| place.path.bytes.clone()).collect();
+	assert_eq!(paths, vec![
+		one.as_os_str().as_encoded_bytes().to_vec(),
+		root.path().as_os_str().as_encoded_bytes().to_vec()
+	]);
+
+	backend.submit(Command::NavigateBackSteps(2)).expect("jump back");
+	let jumped = backend.snapshot().expect("snapshot");
+	assert_eq!(
+		jumped.current_location.expect("location").path.bytes,
+		root.path().as_os_str().as_encoded_bytes()
+	);
+	assert!(jumped.back_history.is_empty());
+	assert!(jumped.can_go_forward);
+
+	assert!(backend.submit(Command::NavigateBackSteps(1)).is_err(), "nothing is left to go back to");
+	backend.submit(Command::ClearHistory).expect("clear");
+	assert!(!backend.snapshot().expect("snapshot").can_go_forward);
+	backend.shutdown().expect("shutdown");
+}

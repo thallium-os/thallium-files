@@ -5,7 +5,7 @@ use std::{collections::{HashSet, VecDeque}, sync::{Arc, atomic::{AtomicBool, Ato
 use thallium_fs_core::{ConflictPolicy, FileAttrs, FileKind, FsError, FsErrorCode, Location, NativePath};
 use thallium_protocol::{TaskId, TaskInfo, TaskKind};
 use thallium_vfs::{CreateDirOptions, DeleteOptions, FileSystem, OpenWriteOptions, StatOptions};
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::{mpsc, oneshot}};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::{mpsc, oneshot, watch}};
 use tokio_util::sync::CancellationToken;
 
 use crate::{CopyTask, DeleteTask, MoveTask, Ongoing, SchedulerError, SchedulerEvent, SchedulerResult, Task, TaskHandle, TaskInput, TaskSpec, TaskStatus, TrashTask};
@@ -49,6 +49,8 @@ pub struct Scheduler<V: FileSystem = thallium_vfs::LocalBackend> {
 	command_tx: mpsc::Sender<Command>,
 	event_rx:   tokio::sync::Mutex<mpsc::Receiver<SchedulerEvent>>,
 	event_sync: Arc<EventSync>,
+	/// Held while transfers are paused; workers wait on it between chunks.
+	pause:      watch::Sender<bool>,
 	_marker:    std::marker::PhantomData<fn() -> V>,
 }
 
@@ -100,11 +102,13 @@ impl<V: FileSystem + 'static> Scheduler<V> {
 		let event_sync =
 			Arc::new(EventSync { dirty: AtomicBool::new(false), notify: tokio::sync::Notify::new() });
 		let event_port = EventPort { tx: event_tx, sync: Arc::clone(&event_sync) };
-		tokio::spawn(run_manager(vfs, config, command_rx, worker_tx, worker_rx, event_port));
+		let (pause, gate) = watch::channel(false);
+		tokio::spawn(run_manager(vfs, config, command_rx, worker_tx, worker_rx, event_port, gate));
 		Self {
 			command_tx,
 			event_rx: tokio::sync::Mutex::new(event_rx),
 			event_sync,
+			pause,
 			_marker: std::marker::PhantomData,
 		}
 	}
@@ -123,6 +127,14 @@ impl<V: FileSystem + 'static> Scheduler<V> {
 		self.try_command(Command::Cancel(id, reply))?;
 		response.await.map_err(|_| SchedulerError::Unavailable)?
 	}
+
+	/// Hold or release every running transfer. Paused workers stop between
+	/// chunks and items; cancellation still reaches them while they wait.
+	pub fn set_paused(&self, paused: bool) { self.pause.send_replace(paused); }
+
+	/// Whether transfers are currently held.
+	#[must_use]
+	pub fn is_paused(&self) -> bool { *self.pause.borrow() }
 
 	/// Remove one retained terminal task.
 	pub async fn dismiss(&self, id: TaskId) -> SchedulerResult<()> {
@@ -188,6 +200,7 @@ async fn run_manager<V: FileSystem + 'static>(
 	worker_tx: mpsc::Sender<WorkerUpdate>,
 	mut workers: mpsc::Receiver<WorkerUpdate>,
 	events: EventPort,
+	gate: watch::Receiver<bool>,
 ) {
 	let mut registry = Ongoing::new();
 	let mut pending = VecDeque::new();
@@ -212,9 +225,10 @@ async fn run_manager<V: FileSystem + 'static>(
 			let cancellation = task.cancellation.clone();
 			let tx = worker_tx.clone();
 			let filesystem = Arc::clone(&vfs);
+			let held = gate.clone();
 			active.insert(id);
 			tokio::spawn(async move {
-				let result = execute_task(&*filesystem, id, input, cancellation, &tx).await;
+				let result = execute_task(&*filesystem, id, input, cancellation, held, &tx).await;
 				let _ = tx.send(WorkerUpdate::Finished { id, result }).await;
 			});
 		}
@@ -446,10 +460,11 @@ async fn execute_task<V: FileSystem>(
 	id: TaskId,
 	input: TaskInput,
 	cancellation: CancellationToken,
+	gate: watch::Receiver<bool>,
 	updates: &mpsc::Sender<WorkerUpdate>,
 ) -> Result<(), FsError> {
 	check_cancelled(&cancellation, None)?;
-	if let Some(result) = execute_quick(vfs, id, &input, updates).await {
+	if let Some(result) = execute_quick(vfs, id, &input, &cancellation, &gate, updates).await {
 		return result;
 	}
 	let prepared = prepare(vfs, &input).await?;
@@ -461,7 +476,7 @@ async fn execute_task<V: FileSystem>(
 		bytes: total_bytes,
 	})
 	.await?;
-	let mut progress = ProgressReporter::new(id, updates);
+	let mut progress = ProgressReporter::new(id, updates, gate, cancellation.clone());
 
 	match input {
 		TaskInput::Copy(task) => {
@@ -493,6 +508,8 @@ async fn execute_quick<V: FileSystem>(
 	vfs: &V,
 	id: TaskId,
 	input: &TaskInput,
+	cancellation: &CancellationToken,
+	gate: &watch::Receiver<bool>,
 	updates: &mpsc::Sender<WorkerUpdate>,
 ) -> Option<Result<(), FsError>> {
 	let items = match input {
@@ -503,7 +520,7 @@ async fn execute_quick<V: FileSystem>(
 	Some(
 		async {
 			send_update(updates, WorkerUpdate::Prepared { id, items, bytes: 0 }).await?;
-			let mut progress = ProgressReporter::new(id, updates);
+			let mut progress = ProgressReporter::new(id, updates, gate.clone(), cancellation.clone());
 			match input {
 				TaskInput::Rename(task) => {
 					progress.item_started(task.source.clone()).await?;
@@ -1026,22 +1043,48 @@ async fn send_update(
 }
 
 struct ProgressReporter<'a> {
-	id:      TaskId,
-	updates: &'a mpsc::Sender<WorkerUpdate>,
-	pending: u64,
-	last:    Instant,
+	id:           TaskId,
+	updates:      &'a mpsc::Sender<WorkerUpdate>,
+	pending:      u64,
+	last:         Instant,
+	gate:         watch::Receiver<bool>,
+	cancellation: CancellationToken,
 }
 
 impl<'a> ProgressReporter<'a> {
-	fn new(id: TaskId, updates: &'a mpsc::Sender<WorkerUpdate>) -> Self {
-		Self { id, updates, pending: 0, last: Instant::now() }
+	fn new(
+		id: TaskId,
+		updates: &'a mpsc::Sender<WorkerUpdate>,
+		gate: watch::Receiver<bool>,
+		cancellation: CancellationToken,
+	) -> Self {
+		Self { id, updates, pending: 0, last: Instant::now(), gate, cancellation }
+	}
+
+	/// Wait here while transfers are paused, reporting what was done first so
+	/// the progress shown is where the work actually stopped.
+	async fn hold(&mut self) -> Result<(), FsError> {
+		if !*self.gate.borrow() {
+			return Ok(());
+		}
+		self.flush().await?;
+		while *self.gate.borrow_and_update() {
+			tokio::select! {
+				biased;
+				() = self.cancellation.cancelled() => return Err(cancelled_error(None)),
+				changed = self.gate.changed() => if changed.is_err() { return Ok(()) },
+			}
+		}
+		Ok(())
 	}
 
 	async fn item_started(&mut self, location: Location) -> Result<(), FsError> {
+		self.hold().await?;
 		send_update(self.updates, WorkerUpdate::ItemStarted { id: self.id, location }).await
 	}
 
 	async fn advance(&mut self, bytes: u64) -> Result<(), FsError> {
+		self.hold().await?;
 		self.pending = self.pending.saturating_add(bytes);
 		if self.last.elapsed() >= PROGRESS_INTERVAL {
 			self.flush().await?;
@@ -1214,6 +1257,51 @@ mod tests {
 		assert_eq!(event, crate::SchedulerEvent::ResyncRequired);
 		let snapshots = scheduler.snapshots().await.expect("resync snapshots");
 		assert_eq!(snapshots, [terminal]);
+		scheduler.shutdown().await.expect("shutdown");
+	}
+
+	#[tokio::test]
+	async fn paused_copy_waits_and_finishes_when_resumed() {
+		let source_dir = TestDirectory::new("pause-source");
+		let destination = TestDirectory::new("pause-destination");
+		let source = source_dir.0.join("large.bin");
+		fs::write(&source, vec![5; 4 * 1024 * 1024]).expect("write source");
+		let scheduler = Scheduler::new(Arc::new(LocalBackend::new()), config());
+		scheduler.set_paused(true);
+		assert!(scheduler.is_paused());
+		let mut handle = scheduler.add(copy_input(&source, &destination)).await.expect("submit copy");
+
+		tokio::time::sleep(Duration::from_millis(300)).await;
+		let held = handle.snapshot();
+		assert!(!held.status.is_terminal(), "a paused copy finished: {held:?}");
+		assert!(!destination.0.join("large.bin").exists());
+
+		scheduler.set_paused(false);
+		let terminal =
+			tokio::time::timeout(Duration::from_secs(10), handle.wait()).await.expect("resume timeout");
+		assert_eq!(terminal.status, TaskStatus::Succeeded);
+		assert_eq!(
+			fs::read(destination.0.join("large.bin")).expect("read copy").len(),
+			4 * 1024 * 1024
+		);
+		scheduler.shutdown().await.expect("shutdown");
+	}
+
+	#[tokio::test]
+	async fn a_paused_copy_can_still_be_cancelled() {
+		let source_dir = TestDirectory::new("pause-cancel-source");
+		let destination = TestDirectory::new("pause-cancel-destination");
+		let source = source_dir.0.join("large.bin");
+		fs::write(&source, vec![6; 4 * 1024 * 1024]).expect("write source");
+		let scheduler = Scheduler::new(Arc::new(LocalBackend::new()), config());
+		scheduler.set_paused(true);
+		let mut handle = scheduler.add(copy_input(&source, &destination)).await.expect("submit copy");
+		tokio::time::sleep(Duration::from_millis(200)).await;
+		handle.cancel();
+		let terminal =
+			tokio::time::timeout(Duration::from_secs(5), handle.wait()).await.expect("cancel timeout");
+		assert_eq!(terminal.status, TaskStatus::Cancelled);
+		assert!(!destination.0.join("large.bin").exists());
 		scheduler.shutdown().await.expect("shutdown");
 	}
 

@@ -159,6 +159,7 @@ impl<V: FileSystem + 'static> Coordinator<V> {
 			Action::CancelTask(id) => {
 				self.scheduler.cancel(id).await.map_err(scheduler_error)?;
 			}
+			Action::PauseTasks(paused) => self.scheduler.set_paused(paused),
 			Action::DismissTask(id) => {
 				self.scheduler.dismiss(id).await.map_err(scheduler_error)?;
 				self.accept_feedback(EffectFeedback::TaskDismissed(id), &mut report);
@@ -202,7 +203,15 @@ impl<V: FileSystem + 'static> Coordinator<V> {
 			Command::NavigateForward if self.state.history.can_go_forward() => {
 				Action::Reduce(Box::new(StateAction::NavigateForward))
 			}
-			Command::NavigateBack | Command::NavigateForward => return Err(ValidationError::NoHistory),
+			Command::NavigateBackSteps(steps)
+				if *steps > 0 && *steps <= self.state.history.back.len() =>
+			{
+				Action::Reduce(Box::new(StateAction::NavigateBackSteps(*steps)))
+			}
+			Command::ClearHistory => Action::Reduce(Box::new(StateAction::ClearHistory)),
+			Command::NavigateBack | Command::NavigateBackSteps(_) | Command::NavigateForward => {
+				return Err(ValidationError::NoHistory);
+			}
 			Command::Refresh => {
 				let location =
 					self.state.current_location.clone().ok_or(ValidationError::NoCurrentLocation)?;
@@ -310,6 +319,7 @@ impl<V: FileSystem + 'static> Coordinator<V> {
 				}
 				Action::CancelTask(*id)
 			}
+			Command::PauseTasks(paused) => Action::PauseTasks(*paused),
 			Command::DismissTask(id) => {
 				let task = self.state.tasks.get(id).ok_or(ValidationError::UnknownTask(*id))?;
 				if !task.status.is_terminal() {

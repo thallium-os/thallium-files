@@ -11,6 +11,7 @@ pub enum Action {
 	Invoke(StateEffect),
 	CancelTask(TaskId),
 	DismissTask(TaskId),
+	PauseTasks(bool),
 }
 
 /// Validation output carrying the revision used for the decision.
